@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Warehouse Admin</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <p>AI Vision</p>
+          <strong>Warehouse Admin</strong>
+        </div>
+
+        <nav class="nav-menu" aria-label="Main navigation">
+          <button class="nav-btn active" data-tab="itemEntry">Item Entry</button>
+          <button class="nav-btn" data-tab="checkIn">Check In</button>
+          <button class="nav-btn" data-tab="recognitions">Recognitions</button>
+          <button class="nav-btn" data-tab="readyList">Ready List</button>
+        </nav>
+      </aside>
+
+      <section class="content-area">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Warehouse inventory</p>
+            <h1 id="pageTitle">Item Entry</h1>
+          </div>
+          <div class="status-pill" id="statusPill">Loading...</div>
+        </header>
+
+        <section class="page" id="itemEntry">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Add new item</h2>
+              <button id="refreshBtn" type="button">Refresh</button>
+            </div>
+            <form id="itemForm" class="form-grid">
+              <label>
+                Item ID
+                <input id="itemId" type="text" required placeholder="SKU or ID" />
+              </label>
+              <label>
+                Name
+                <input id="itemName" type="text" required placeholder="Item name" />
+              </label>
+              <label>
+                Type
+                <input id="itemType" type="text" placeholder="Item type" />
+              </label>
+              <label>
+                Image
+                <input id="itemImage" type="file" accept="image/*" />
+              </label>
+              <label class="full-width">
+                Note
+                <textarea id="itemNote" placeholder="Optional note"></textarea>
+              </label>
+              <button class="primary" type="submit">Add Item</button>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Current items</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Quantity</th>
+                  </tr>
+                </thead>
+                <tbody id="itemList"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="page hidden" id="checkIn">
+          <div class="metrics-row">
+            <div class="metric-card">
+              <span>Total items</span>
+              <strong id="totalItems">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Item types</span>
+              <strong id="itemTypes">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Total quantity</span>
+              <strong id="totalQuantity">0</strong>
+            </div>
+          </div>
+
+          <div class="panel split-panel">
+            <div>
+              <div class="panel-head">
+                <h2>Warehouse live view</h2>
+              </div>
+              <div class="video-frame">
+                <video id="warehouseVideo" autoplay playsinline muted></video>
+                <img id="warehouseFallback" alt="Live feed unavailable." class="hidden" />
+                <div class="video-hint" id="warehouseHint">Loading camera...</div>
+              </div>
+            </div>
+
+            <div>
+              <div class="panel-head">
+                <h2>Check in / out</h2>
+              </div>
+              <form id="checkInForm" class="form-grid">
+                <label>
+                  Item
+                  <select id="checkItemId" required></select>
+                </label>
+                <label>
+                  Quantity
+                  <input id="checkQuantity" type="number" min="1" value="1" required />
+                </label>
+                <label class="full-width">
+                  Note
+                  <textarea id="checkNote" placeholder="Optional note"></textarea>
+                </label>
+                <div class="button-row">
+                  <button class="primary" id="btnCheckIn" type="button">Check In</button>
+                  <button id="btnCheckOut" type="button">Check Out</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Item overview</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Quantity</th>
+                  </tr>
+                </thead>
+                <tbody id="checkItemTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Live recognition</h2>
+            </div>
+            <div class="metric-card-grid">
+              <div class="metric-card">
+                <span>Recognition status</span>
+                <strong id="videoRecognitionStatus">Waiting for feed</strong>
+              </div>
+              <div class="metric-card">
+                <span>Unique classes</span>
+                <strong id="videoRecognitionClassCount">0</strong>
+              </div>
+              <div class="metric-card">
+                <span>Recent detections</span>
+                <strong id="videoRecognitionEntryCount">0</strong>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Class</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody id="videoRecognitionEntries"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Latest recognition entries</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Class</th>
+                    <th>Camera</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody id="recognitionEntries"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Class counts</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Class</th>
+                    <th>Count</th>
+                  </tr>
+                </thead>
+                <tbody id="recognitionCounts"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="page hidden" id="readyList">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Ready item list</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Quantity</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody id="readyListTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Activity history</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Action</th>
+                    <th>ID</th>
+                    <th>Count</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody id="historyTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/app.js" type="module"></script>
+  </body>
+</html>

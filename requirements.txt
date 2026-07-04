@@ -2,12 +2,12 @@
 opencv-python>=4.9.0
 ultralytics>=8.2.0
 PyYAML>=6.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 
 # Phase 2+ (AI assistant / voice) - uncomment as you build these out
 # openai>=1.30.0
 # openai-whisper
 # piper-tts
-# fastapi
-# uvicorn
 # streamlit
 # sqlalchemy

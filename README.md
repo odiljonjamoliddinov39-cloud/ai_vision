@@ -81,6 +81,15 @@ zipped/committed even before those phases are built.
 
    A window opens per camera showing live detections. Press **q** to quit.
 
+6. **Run the JavaScript control panel:**
+
+   ```bash
+   uvicorn api.server:app --reload --host 0.0.0.0 --port 8000
+   ```
+
+   Open `http://localhost:8000` to start/stop/restart detection, edit
+   the main detection settings, and inspect recent logs/snapshots.
+
 ## Configuration reference (`config/config.yaml`)
 
 | Section       | Key                     | Meaning                                              |
