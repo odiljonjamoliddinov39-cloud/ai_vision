@@ -67,19 +67,20 @@ zipped/committed even before those phases are built.
    ```yaml
    cameras:
      - name: "Camera 1"
-       source: 0   # webcam index
-
-     # - name: "Camera 2"
-     #   source: "rtsp://user:pass@192.168.1.64:554/Streaming/Channels/101"
-   ```
-
+       source: "dummy"   # use "dummy" when no physical camera is available
 5. **Run it:**
 
    ```bash
    python main.py
    ```
 
-   A window opens per camera showing live detections. Press **q** to quit.
+   If your environment has no display, run:
+
+   ```bash
+   python main.py --no-display
+   ```
+
+   A window opens per camera showing live detections when display is available. Press **q** to quit.
 
 6. **Run the JavaScript control panel:**
 

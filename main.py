@@ -55,6 +55,10 @@ def main():
     config = load_config(args.config)
     display_cfg = config.get("display", {})
 
+    if not args.no_display and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        args.no_display = True
+        print("No display detected; enabling headless mode (--no-display).")
+
     # --- Cameras (FR-1) ---
     cameras = load_cameras(config["cameras"])
     if not cameras:
@@ -96,6 +100,7 @@ def main():
         event_logger = EventLogger(
             log_dir=log_cfg.get("log_dir", "logs"),
             log_file=log_cfg.get("log_file", "events.log"),
+            db_file=log_cfg.get("db_file", "detections.json"),
         )
 
     display_cfg = config.get("display", {})
@@ -144,6 +149,7 @@ def main():
 
                 if event_logger is not None:
                     event_logger.log_detections(cam.name, detections)
+                    event_logger.capture_detections(cam.name, detections)
 
                 if not args.no_display:
                     cv2.imshow(f"{window_prefix} {cam.name}", frame)

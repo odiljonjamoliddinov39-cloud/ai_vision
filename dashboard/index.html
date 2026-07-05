@@ -19,6 +19,7 @@
           <button class="nav-btn" data-tab="checkIn">Check In</button>
           <button class="nav-btn" data-tab="recognitions">Recognitions</button>
           <button class="nav-btn" data-tab="readyList">Ready List</button>
+          <button class="nav-btn" data-tab="occupancy">Occupancy</button>
         </nav>
       </aside>
 
@@ -260,6 +261,76 @@
                   </tr>
                 </thead>
                 <tbody id="historyTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+        <section class="page hidden" id="occupancy">
+          <div class="metrics-row">
+            <div class="metric-card">
+              <span>Currently checked in</span>
+              <strong id="occupancyTotal">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Distinct classes</span>
+              <strong id="occupancyClassCount">0</strong>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Live occupancy (per class)</h2>
+            </div>
+            <p class="panel-sub">Tracked with ByteTrack; a track counts as checked-in until it's unseen past the configured grace period.</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Class</th>
+                    <th>Count</th>
+                  </tr>
+                </thead>
+                <tbody id="occupancyCounts"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Currently checked in (by track ID)</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Track ID</th>
+                    <th>Class</th>
+                    <th>Camera</th>
+                    <th>Since</th>
+                  </tr>
+                </thead>
+                <tbody id="occupancyCurrentTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Recent check-in / check-out events</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Event</th>
+                    <th>Track ID</th>
+                    <th>Class</th>
+                    <th>Camera</th>
+                    <th>Dwell</th>
+                  </tr>
+                </thead>
+                <tbody id="occupancyEventsTable"></tbody>
               </table>
             </div>
           </div>

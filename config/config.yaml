@@ -13,6 +13,12 @@ display:
   box_thickness: 2
   font_scale: 0.6
   live_feed_enabled: true
+tracking:
+  enabled: true
+  tracker_config: bytetrack.yaml   # or botsort.yaml for appearance re-id
+  classes: null                    # null = track all detected classes
+  grace_period_seconds: 5.0        # how long a missing track is still "checked in"
+  db_path: database/tracking.db
 snapshots:
   enabled: true
   save_dir: snapshots

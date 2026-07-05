@@ -25,7 +25,9 @@ def draw_detections(frame, detections, box_thickness: int = 2, font_scale: float
     for det in detections:
         x1, y1, x2, y2 = det.box
         color = _color_for_class(det.class_name)
-        label = f"{det.class_name} {det.confidence * 100:.0f}%"
+        track_id = getattr(det, "track_id", None)
+        prefix = f"#{track_id} " if track_id is not None else ""
+        label = f"{prefix}{det.class_name} {det.confidence * 100:.0f}%"
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, box_thickness)
 

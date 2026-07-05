@@ -25,6 +25,9 @@ import asyncio
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from database.tracking_db import TrackingDB  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
 LOG_PATH = ROOT / "logs" / "events.log"
@@ -32,8 +35,18 @@ SNAPSHOT_DIR = ROOT / "snapshots"
 INVENTORY_PATH = ROOT / "logs" / "inventory.json"
 INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
 DASHBOARD_DIR = ROOT / "dashboard"
+TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
+
+_tracking_db: TrackingDB | None = None
+
+
+def _get_tracking_db() -> TrackingDB:
+    global _tracking_db
+    if _tracking_db is None:
+        _tracking_db = TrackingDB(db_path=str(TRACKING_DB_PATH))
+    return _tracking_db
 
 _process: subprocess.Popen | None = None
 _started_at: float | None = None
@@ -317,6 +330,31 @@ def snapshots(limit: int = 24) -> dict[str, Any]:
             for path in files[: max(1, min(limit, 100))]
         ]
     }
+
+
+@app.get("/api/occupancy")
+def occupancy(camera: str | None = None) -> dict[str, Any]:
+    """Currently checked-in tracked objects (from ByteTrack + SQLite),
+    plus per-class counts. Distinct from /api/inventory, which is the
+    manually-operated warehouse item ledger."""
+    db = _get_tracking_db()
+    current = db.current_occupancy(camera_name=camera)
+    counts = db.occupancy_counts(camera_name=camera)
+    return {
+        "current": current,
+        "counts": [
+            {"class_name": name, "count": count}
+            for name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+    }
+
+
+@app.get("/api/occupancy/events")
+def occupancy_events(limit: int = 50, camera: str | None = None) -> dict[str, Any]:
+    """Recent check-in / check-out events, most recent first."""
+    db = _get_tracking_db()
+    events = db.recent_events(limit=max(1, min(limit, 500)), camera_name=camera)
+    return {"events": events}
 
 
 @app.get("/api/inventory")

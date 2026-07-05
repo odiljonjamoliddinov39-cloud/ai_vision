@@ -34,6 +34,11 @@ const els = {
   recognitionEntryCount: document.querySelector("#recognitionEntryCount"),
   recognitionEntries: document.querySelector("#recognitionEntries"),
   recognitionCounts: document.querySelector("#recognitionCounts"),
+  occupancyTotal: document.querySelector("#occupancyTotal"),
+  occupancyClassCount: document.querySelector("#occupancyClassCount"),
+  occupancyCounts: document.querySelector("#occupancyCounts"),
+  occupancyCurrentTable: document.querySelector("#occupancyCurrentTable"),
+  occupancyEventsTable: document.querySelector("#occupancyEventsTable"),
   toast: document.querySelector("#toast"),
 };
 
@@ -92,6 +97,8 @@ const setActiveTab = (tab) => {
       ? "Check In"
       : tab === "recognitions"
       ? "Recognitions"
+      : tab === "occupancy"
+      ? "Occupancy"
       : "Ready List";
 };
 
@@ -185,6 +192,47 @@ const renderRecognitions = (data, running = false) => {
       .join("") || `<tr><td colspan="2">No recognized classes yet.</td></tr>`;
 };
 
+const loadOccupancy = async () => {
+  const [occupancy, events] = await Promise.all([
+    api("/api/occupancy"),
+    api("/api/occupancy/events?limit=50"),
+  ]);
+  return { occupancy, events: events.events || [] };
+};
+
+const renderOccupancy = ({ occupancy, events }) => {
+  const current = occupancy.current || [];
+  const counts = occupancy.counts || [];
+
+  els.occupancyTotal.textContent = current.length;
+  els.occupancyClassCount.textContent = counts.length;
+
+  els.occupancyCounts.innerHTML =
+    counts
+      .map((count) => `<tr><td>${count.class_name}</td><td>${count.count}</td></tr>`)
+      .join("") || `<tr><td colspan="2">Nothing checked in right now.</td></tr>`;
+
+  els.occupancyCurrentTable.innerHTML =
+    current
+      .map(
+        (row) =>
+          `<tr><td>#${row.track_id}</td><td>${row.class_name}</td><td>${row.camera_name}</td><td>${row.since}</td></tr>`
+      )
+      .join("") || `<tr><td colspan="4">Nothing checked in right now.</td></tr>`;
+
+  els.occupancyEventsTable.innerHTML =
+    events
+      .map((event) => {
+        const dwell =
+          event.event_type === "check_out" && event.duration_seconds != null
+            ? `${Math.round(event.duration_seconds)}s`
+            : "—";
+        const label = event.event_type === "check_in" ? "Check-in" : "Check-out";
+        return `<tr><td>${event.timestamp}</td><td>${label}</td><td>#${event.track_id}</td><td>${event.class_name}</td><td>${event.camera_name}</td><td>${dwell}</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="6">No occupancy events yet.</td></tr>`;
+};
+
 const refreshDashboard = async () => {
   try {
     await loadInventory();
@@ -192,6 +240,8 @@ const refreshDashboard = async () => {
     setStatus(status.running);
     const recognitions = await loadRecognitions();
     renderRecognitions(recognitions, status.running || recognitions.running);
+    const occupancyData = await loadOccupancy();
+    renderOccupancy(occupancyData);
   } catch (error) {
     toast(error.message);
   }
@@ -231,7 +281,7 @@ const handleAddItem = async (event) => {
     }
 
     els.itemForm.reset();
-    await refreshInventory();
+    await loadInventory();
     toast("Item added successfully.");
   } catch (error) {
     toast(error.message);
@@ -255,7 +305,7 @@ const handleCheckAction = async (action) => {
     });
     els.checkQuantity.value = 1;
     els.checkNote.value = "";
-    await refreshInventory();
+    await loadInventory();
     toast(`Item ${action.replace("check", "checked ")} successfully.`);
   } catch (error) {
     toast(error.message);
