@@ -132,6 +132,21 @@ textarea {
   margin-bottom: 24px;
 }
 
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.detection-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.detection-controls button {
+  min-height: 36px;
+}
+
 .eyebrow {
   margin: 0;
   color: var(--muted);
@@ -375,6 +390,14 @@ tr:nth-child(even) {
   .split-panel,
   .metrics-row {
     grid-template-columns: 1fr;
+  }
+
+  .page-header {
+    flex-wrap: wrap;
+  }
+
+  .header-controls {
+    flex-wrap: wrap;
   }
 }
 

@@ -2,6 +2,9 @@ const els = {
   pageTitle: document.querySelector("#pageTitle"),
   statusPill: document.querySelector("#statusPill"),
   refreshBtn: document.querySelector("#refreshBtn"),
+  btnStartDetection: document.querySelector("#btnStartDetection"),
+  btnStopDetection: document.querySelector("#btnStopDetection"),
+  btnRestartDetection: document.querySelector("#btnRestartDetection"),
   navButtons: Array.from(document.querySelectorAll(".nav-btn")),
   pages: Array.from(document.querySelectorAll(".page")),
   itemForm: document.querySelector("#itemForm"),
@@ -73,6 +76,9 @@ const toast = (message) => {
 const setStatus = (running) => {
   els.statusPill.textContent = running ? "Detection running" : "Detection stopped";
   els.statusPill.dataset.state = running ? "running" : "stopped";
+  els.btnStartDetection.disabled = running;
+  els.btnStopDetection.disabled = !running;
+  els.btnRestartDetection.disabled = !running;
 };
 
 const inventoryState = {
@@ -312,6 +318,31 @@ const handleCheckAction = async (action) => {
   }
 };
 
+const handleDetectionAction = async (action, button) => {
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Working...";
+  try {
+    const result = await api(`/api/${action}`, { method: "POST" });
+    setStatus(result.running);
+    toast(
+      action === "start"
+        ? "Detection started."
+        : action === "stop"
+        ? "Detection stopped."
+        : "Detection restarted."
+    );
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.textContent = originalText;
+    // setStatus() above already sets the correct disabled state; this
+    // guards the case where the request failed and status didn't change.
+    const status = await api("/api/status").catch(() => null);
+    if (status) setStatus(status.running);
+  }
+};
+
 const startLiveFeed = async () => {
   if (navigator.mediaDevices?.getUserMedia) {
     try {
@@ -343,6 +374,15 @@ els.navButtons.forEach((button) => {
 });
 
 els.refreshBtn.addEventListener("click", refreshDashboard);
+els.btnStartDetection.addEventListener("click", () =>
+  handleDetectionAction("start", els.btnStartDetection)
+);
+els.btnStopDetection.addEventListener("click", () =>
+  handleDetectionAction("stop", els.btnStopDetection)
+);
+els.btnRestartDetection.addEventListener("click", () =>
+  handleDetectionAction("restart", els.btnRestartDetection)
+);
 els.itemForm.addEventListener("submit", handleAddItem);
 els.btnCheckIn.addEventListener("click", () => handleCheckAction("checkin"));
 els.btnCheckOut.addEventListener("click", () => handleCheckAction("checkout"));
