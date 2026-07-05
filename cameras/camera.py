@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 import cv2
+import numpy as np
 
 
 class Camera:
@@ -27,9 +28,14 @@ class Camera:
         self.source = source
         self.reconnect_delay = reconnect_delay
         self.cap: cv2.VideoCapture | None = None
+        self._dummy_frame_number = 0
+        self._dummy = source == "dummy"
         self._open()
 
     def _open(self) -> None:
+        if self._dummy:
+            return
+
         self.cap = cv2.VideoCapture(self.source)
         if not self.cap.isOpened():
             raise ConnectionError(
@@ -41,6 +47,9 @@ class Camera:
         Returns a BGR frame (numpy array), or None if the frame could not
         be read after a reconnect attempt.
         """
+        if self._dummy:
+            return self._read_dummy_frame()
+
         if self.cap is None or not self.cap.isOpened():
             self._try_reconnect()
 
@@ -67,7 +76,26 @@ class Camera:
             self.cap.release()
 
     def is_opened(self) -> bool:
+        if self._dummy:
+            return True
         return self.cap is not None and self.cap.isOpened()
+
+    def _read_dummy_frame(self):
+        frame = np.zeros((600, 1000, 3), dtype="uint8")
+        y = min(520, 170 + self._dummy_frame_number * 5)
+        cv2.rectangle(frame, (430, y), (530, y + 80), (0, 180, 0), -1)
+        cv2.putText(
+            frame,
+            "Dummy warehouse feed",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        self._dummy_frame_number += 1
+        return frame
 
 
 def load_cameras(camera_configs: list[dict]) -> list[Camera]:

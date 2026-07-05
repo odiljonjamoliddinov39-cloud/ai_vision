@@ -36,11 +36,13 @@ import os
 
 from cameras.camera import load_cameras
 from detection.detector import Detector
-from detection.draw import draw_detections, draw_fps, draw_counts
+from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
 from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
-from tracking.tracker import ObjectTracker
+from database.warehouse_db import WarehouseDB
+from tracking.line_counter import LineCounter
+from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
 
 
@@ -58,6 +60,12 @@ def main():
         "--no-display",
         action="store_true",
         help="Run detection without opening OpenCV windows.",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=0,
+        help="Stop after N frames. 0 means keep running.",
     )
     args = parser.parse_args()
 
@@ -82,7 +90,10 @@ def main():
         device=det_cfg.get("device", "cpu"),
         classes=det_cfg.get("classes"),
     )
-    print("Model loaded. Starting live detection... (press 'q' to quit)")
+    if detector.model is None:
+        print("Using deterministic dummy detector. Starting demo run...")
+    else:
+        print("Model loaded. Starting live detection... (press 'q' to quit)")
 
     # --- Tracking (Phase 3) + occupancy (Phase 4) ---
     track_cfg = config.get("tracking", {})
@@ -91,7 +102,7 @@ def main():
     presence_tracker = None
     tracking_db = None
 
-    if tracking_enabled:
+    if tracking_enabled and detector.model is not None:
         object_tracker = ObjectTracker(
             model=detector.model,
             confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
@@ -107,6 +118,20 @@ def main():
             f"Tracking enabled ({track_cfg.get('tracker_config', 'bytetrack.yaml')}), "
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
         )
+
+    # --- Warehouse stock counting MVP ---
+    warehouse_cfg = config.get("warehouse_counting", {})
+    warehouse_enabled = warehouse_cfg.get("enabled", False)
+    warehouse_db = None
+    line_counters = {}
+    reviewed_unknown_ids: set[tuple[str, int]] = set()
+    if warehouse_enabled:
+        warehouse_db = WarehouseDB(db_path=warehouse_cfg.get("db_path", "database/warehouse.db"))
+        line = warehouse_cfg.get(
+            "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
+        )
+        line_counters = {cam.name: LineCounter(line=line, camera_id=cam.name) for cam in cameras}
+        print(f"Warehouse counting enabled. Stock DB: {warehouse_db.db_path}")
 
     # --- Snapshots (FR-5) ---
     snap_cfg = config.get("snapshots", {})
@@ -137,6 +162,8 @@ def main():
     window_prefix = display_cfg.get("window_prefix", "AI Vision -")
 
     prev_time = time.time()
+    frame_number = 0
+    dummy_positions = {cam.name: 0 for cam in cameras}
 
     try:
         while True:
@@ -162,6 +189,9 @@ def main():
                         print(
                             f"[{cam.name}] Check-in: #{event.track_id} {event.class_name}"
                         )
+                elif detector.model is None:
+                    detections = _demo_tracked_objects(dummy_positions[cam.name])
+                    dummy_positions[cam.name] += 1
                 else:
                     detections = detector.detect(frame)
 
@@ -169,6 +199,21 @@ def main():
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
                 draw_counts(frame, detections)
+
+                if warehouse_enabled and warehouse_db is not None:
+                    line = warehouse_cfg.get(
+                        "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
+                    )
+                    draw_counting_line(frame, line)
+                    _process_warehouse_counting(
+                        camera_name=cam.name,
+                        detections=detections,
+                        line_counter=line_counters[cam.name],
+                        warehouse_db=warehouse_db,
+                        confidence_threshold=warehouse_cfg.get("confidence_threshold", 0.5),
+                        reviewed_unknown_ids=reviewed_unknown_ids,
+                        count_unknown=warehouse_cfg.get("count_low_confidence_as_unknown", True),
+                    )
 
                 if snapshot_saver is not None:
                     saved = snapshot_saver.maybe_save(cam.name, frame, detections)
@@ -212,6 +257,10 @@ def main():
                 print("No frames available from any camera. Retrying...")
                 time.sleep(1)
 
+            frame_number += 1
+            if args.max_frames and frame_number >= args.max_frames:
+                break
+
             if not args.no_display and cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
@@ -221,6 +270,56 @@ def main():
         if not args.no_display:
             cv2.destroyAllWindows()
         print("Stopped.")
+
+
+def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
+    y = min(520, 170 + frame_index * 5)
+    return [TrackedObject(track_id=1, class_name="box", confidence=0.95, box=(430, y, 530, y + 80))]
+
+
+def _process_warehouse_counting(
+    camera_name: str,
+    detections,
+    line_counter: LineCounter,
+    warehouse_db: WarehouseDB,
+    confidence_threshold: float,
+    reviewed_unknown_ids: set[tuple[str, int]],
+    count_unknown: bool,
+) -> None:
+    tracked = [det for det in detections if hasattr(det, "track_id")]
+    if not tracked:
+        return
+
+    for det in tracked:
+        review_key = (camera_name, det.track_id)
+        if (
+            count_unknown
+            and det.confidence < confidence_threshold
+            and review_key not in reviewed_unknown_ids
+        ):
+            reviewed_unknown_ids.add(review_key)
+            warehouse_db.record_unknown_item(
+                tracking_id=det.track_id,
+                confidence=det.confidence,
+                screenshot_path=None,
+                camera_id=camera_name,
+            )
+
+    for event in line_counter.update(tracked):
+        if event.confidence < confidence_threshold:
+            continue
+
+        stock = warehouse_db.record_movement(
+            product_name=event.product_name,
+            direction=event.direction,
+            camera_id=event.camera_id,
+            tracking_id=event.tracking_id,
+            confidence=event.confidence,
+        )
+        print(
+            f"[{event.camera_id}] {event.product_name} ID={event.tracking_id} "
+            f"crossed {event.direction} | stock {event.product_name} = {stock}"
+        )
 
 
 if __name__ == "__main__":

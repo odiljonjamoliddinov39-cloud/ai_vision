@@ -79,3 +79,20 @@ def draw_counts(frame, detections, origin=(10, 55)):
             cv2.LINE_AA,
         )
     return frame
+
+
+def draw_counting_line(frame, line: dict, label: str = "COUNT LINE"):
+    start = (int(line["x1"]), int(line["y1"]))
+    end = (int(line["x2"]), int(line["y2"]))
+    cv2.line(frame, start, end, (0, 255, 255), 2)
+    cv2.putText(
+        frame,
+        label,
+        (start[0], max(20, start[1] - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (0, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return frame

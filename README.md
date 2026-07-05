@@ -82,6 +82,16 @@ zipped/committed even before those phases are built.
 
    A window opens per camera showing live detections when display is available. Press **q** to quit.
 
+   To verify the warehouse stock-counting flow without a physical camera
+   or YOLO weights, run the deterministic demo:
+
+   ```bash
+   python main.py --config config/demo.yaml --no-display --max-frames 40
+   ```
+
+   This uses a synthetic tracked box crossing the counting line and writes
+   stock movements to `database/warehouse.db`.
+
 6. **Run the JavaScript control panel:**
 
    ```bash

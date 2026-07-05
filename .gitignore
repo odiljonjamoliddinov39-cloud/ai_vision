@@ -5,6 +5,7 @@ __pycache__/
 models/*.pt
 logs/*.log
 logs/inventory.json
+database/*.db
 snapshots/*.jpg
 snapshots/inventory/
 !.gitkeep
