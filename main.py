@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 import time
@@ -343,9 +344,21 @@ def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
 def _write_detection_health(path: str, payload: dict) -> None:
     health_path = Path(path)
     health_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = health_path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp_path.replace(health_path)
+    data = json.dumps(payload, indent=2)
+    tmp_path = health_path.with_name(f"{health_path.stem}.{os.getpid()}.tmp")
+
+    for _ in range(3):
+        try:
+            tmp_path.write_text(data, encoding="utf-8")
+            tmp_path.replace(health_path)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+
+    # Windows can briefly lock files read by the API process. A direct write
+    # is safer than crashing the detector; the API already tolerates short
+    # JSON read races.
+    health_path.write_text(data, encoding="utf-8")
 
 
 def _process_warehouse_counting(
