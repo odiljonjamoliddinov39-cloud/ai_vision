@@ -308,9 +308,24 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="Detection is already running.")
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _stdout_handle = DETECTION_STDOUT_PATH.open("a", encoding="utf-8", buffering=1)
-    _stderr_handle = DETECTION_STDERR_PATH.open("a", encoding="utf-8", buffering=1)
+    _stdout_handle = DETECTION_STDOUT_PATH.open("w", encoding="utf-8", buffering=1)
+    _stderr_handle = DETECTION_STDERR_PATH.open("w", encoding="utf-8", buffering=1)
     _stdout_handle.write(f"\n--- detection start {_now_iso()} config={request.config_path} ---\n")
+    DETECTION_HEALTH_PATH.write_text(
+        json.dumps(
+            {
+                "state": "starting",
+                "error": None,
+                "frames_read": 0,
+                "last_frame_at": None,
+                "last_detection_count": 0,
+                "last_tracked_count": 0,
+                "updated_at": _now_iso(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     command = [
         sys.executable,
@@ -326,6 +341,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
         cwd=ROOT,
         stdout=_stdout_handle,
         stderr=_stderr_handle,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
         start_new_session=os.name != "nt",
     )
     _started_at = time.time()
@@ -358,6 +374,21 @@ def stop_detection() -> dict[str, Any]:
     _last_exit_code = process.returncode
     _process = None
     _started_at = None
+    DETECTION_HEALTH_PATH.write_text(
+        json.dumps(
+            {
+                "state": "stopped",
+                "error": None,
+                "frames_read": 0,
+                "last_frame_at": None,
+                "last_detection_count": 0,
+                "last_tracked_count": 0,
+                "updated_at": _now_iso(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     for handle in (_stdout_handle, _stderr_handle):
         if handle is not None:
             handle.close()
