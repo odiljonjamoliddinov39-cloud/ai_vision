@@ -374,6 +374,27 @@ tr:nth-child(even) {
   color: var(--bad);
 }
 
+.status-pill[data-state="connected"] {
+  background: #dff7eb;
+  color: var(--good);
+}
+
+.status-pill[data-state="failed"] {
+  background: #ffe7e4;
+  color: var(--bad);
+}
+
+.status-pill[data-state="loading"] {
+  background: #fff4d6;
+  color: #7a4b00;
+}
+
+.camera-active-form {
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  margin-bottom: 20px;
+}
+
 @media (max-width: 950px) {
   .app-shell {
     grid-template-columns: 1fr;

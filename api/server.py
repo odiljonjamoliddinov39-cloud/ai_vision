@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from database.camera_db import CameraDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
 
@@ -38,6 +39,7 @@ INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
 DASHBOARD_DIR = ROOT / "dashboard"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
+CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
@@ -46,6 +48,7 @@ app = FastAPI(title="AI Vision Control API", version="0.1.0")
 
 _tracking_db: TrackingDB | None = None
 _warehouse_db: WarehouseDB | None = None
+_camera_db: CameraDB | None = None
 
 
 def _get_tracking_db() -> TrackingDB:
@@ -60,6 +63,19 @@ def _get_warehouse_db() -> WarehouseDB:
     if _warehouse_db is None:
         _warehouse_db = WarehouseDB(db_path=str(WAREHOUSE_DB_PATH))
     return _warehouse_db
+
+
+def _get_camera_db() -> CameraDB:
+    global _camera_db
+    if _camera_db is None:
+        _camera_db = CameraDB(db_path=str(CAMERA_DB_PATH))
+        config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+        first_camera = (config.get("cameras") or [{"name": "Camera 1", "source": 0}])[0]
+        _camera_db.ensure_default_camera(
+            name=str(first_camera.get("name", "Camera 1")),
+            stream_url=str(first_camera.get("source", 0)),
+        )
+    return _camera_db
 
 _process: subprocess.Popen | None = None
 _started_at: float | None = None
@@ -95,6 +111,17 @@ class InventoryAction(BaseModel):
     note: str | None = None
 
 
+class CameraCreate(BaseModel):
+    name: str = Field(min_length=1)
+    stream_url: str = Field(min_length=1)
+    make_active: bool = True
+    test_connection: bool = True
+
+
+class CameraTestRequest(BaseModel):
+    stream_url: str = Field(min_length=1)
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -103,6 +130,70 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _write_yaml(path: Path, data: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False)
+
+
+def _camera_source_from_text(stream_url: str):
+    value = stream_url.strip()
+    if value.isdigit():
+        return int(value)
+    return value
+
+
+def _set_config_active_camera(name: str, stream_url: str) -> dict[str, Any]:
+    data = _read_yaml(CONFIG_PATH)
+    data["cameras"] = [{"name": name, "source": _camera_source_from_text(stream_url)}]
+    _write_yaml(CONFIG_PATH, data)
+    return data
+
+
+def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str, Any]:
+    code = r"""
+import json
+import os
+import sys
+import cv2
+
+raw = sys.argv[1].strip()
+source = int(raw) if raw.isdigit() else raw
+
+try:
+    if isinstance(source, int) and os.name == "nt":
+        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(source)
+
+    opened = bool(cap.isOpened())
+    ok = False
+    if opened:
+        ok, _ = cap.read()
+    cap.release()
+    print(json.dumps({"ok": bool(opened and ok), "opened": opened, "frame_read": bool(ok)}))
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}))
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, stream_url],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "message": "Connection timed out."}
+
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+    try:
+        payload = json.loads(stdout.splitlines()[-1]) if stdout else {}
+    except (IndexError, json.JSONDecodeError):
+        payload = {}
+
+    if payload.get("ok"):
+        return {"status": "connected", "message": "Camera stream opened and returned a frame."}
+
+    message = payload.get("error") or stderr or "Camera stream could not be opened or returned no frame."
+    return {"status": "failed", "message": message}
 
 
 def _load_inventory() -> dict[str, Any]:
@@ -297,6 +388,82 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
 
     _write_yaml(CONFIG_PATH, data)
     return data
+
+
+@app.get("/api/cameras")
+def list_cameras() -> dict[str, Any]:
+    db = _get_camera_db()
+    cameras = db.list_cameras(include_secret=False)
+    active = next((camera for camera in cameras if camera["is_active"]), None)
+    return {"cameras": cameras, "active_camera": active}
+
+
+@app.post("/api/cameras/test")
+def test_camera_stream(request: CameraTestRequest) -> dict[str, Any]:
+    return _test_camera_stream(request.stream_url)
+
+
+@app.post("/api/cameras")
+def save_camera(camera: CameraCreate) -> dict[str, Any]:
+    db = _get_camera_db()
+    test_result = (
+        _test_camera_stream(camera.stream_url)
+        if camera.test_connection
+        else {"status": "unknown", "message": "Saved without testing."}
+    )
+    saved = db.add_camera(
+        name=camera.name.strip(),
+        stream_url=camera.stream_url.strip(),
+        status=test_result["status"],
+    )
+
+    active = None
+    if camera.make_active and test_result["status"] == "connected":
+        active = db.set_active(saved["id"])
+        _set_config_active_camera(active["name"], active["stream_url"])
+        if _status()["running"]:
+            stop_detection()
+            start_detection(StartRequest())
+
+    return {
+        "camera": db.get_camera(saved["id"], include_secret=False),
+        "active_camera": db.get_camera(active["id"], include_secret=False) if active else None,
+        "test": test_result,
+        "cameras": db.list_cameras(include_secret=False),
+    }
+
+
+@app.post("/api/cameras/{camera_id}/test")
+def test_saved_camera(camera_id: int) -> dict[str, Any]:
+    db = _get_camera_db()
+    camera = db.get_camera(camera_id, include_secret=True)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+
+    result = _test_camera_stream(camera["stream_url"])
+    updated = db.set_status(camera_id, result["status"])
+    return {"camera": updated, "test": result}
+
+
+@app.post("/api/cameras/{camera_id}/activate")
+def set_active_camera(camera_id: int) -> dict[str, Any]:
+    db = _get_camera_db()
+    active = db.set_active(camera_id)
+    if active is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+
+    _set_config_active_camera(active["name"], active["stream_url"])
+    restarted = False
+    if _status()["running"]:
+        stop_detection()
+        start_detection(StartRequest())
+        restarted = True
+
+    return {
+        "active_camera": db.get_camera(camera_id, include_secret=False),
+        "cameras": db.list_cameras(include_secret=False),
+        "restarted": restarted,
+    }
 
 
 @app.post("/api/start")

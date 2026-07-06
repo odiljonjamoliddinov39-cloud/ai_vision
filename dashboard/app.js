@@ -7,6 +7,16 @@ const els = {
   btnRestartDetection: document.querySelector("#btnRestartDetection"),
   navButtons: Array.from(document.querySelectorAll(".nav-btn")),
   pages: Array.from(document.querySelectorAll(".page")),
+  cameraForm: document.querySelector("#cameraForm"),
+  cameraName: document.querySelector("#cameraName"),
+  cameraStreamUrl: document.querySelector("#cameraStreamUrl"),
+  btnTestCamera: document.querySelector("#btnTestCamera"),
+  btnConnectCamera: document.querySelector("#btnConnectCamera"),
+  btnRefreshCameras: document.querySelector("#btnRefreshCameras"),
+  btnSetActiveCamera: document.querySelector("#btnSetActiveCamera"),
+  activeCameraSelect: document.querySelector("#activeCameraSelect"),
+  savedCameraTable: document.querySelector("#savedCameraTable"),
+  cameraConnectionStatus: document.querySelector("#cameraConnectionStatus"),
   itemForm: document.querySelector("#itemForm"),
   itemId: document.querySelector("#itemId"),
   itemName: document.querySelector("#itemName"),
@@ -83,6 +93,14 @@ const toast = (message) => {
   window.setTimeout(() => els.toast.classList.remove("show"), 2400);
 };
 
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+
 const setStatus = (running) => {
   els.statusPill.textContent = running ? "Detection running" : "Detection stopped";
   els.statusPill.dataset.state = running ? "running" : "stopped";
@@ -109,6 +127,8 @@ const setActiveTab = (tab) => {
   els.pageTitle.textContent =
     tab === "itemEntry"
       ? "Item Entry"
+      : tab === "cameraSettings"
+      ? "Camera Settings"
       : tab === "checkIn"
       ? "Check In"
       : tab === "recognitions"
@@ -116,6 +136,127 @@ const setActiveTab = (tab) => {
       : tab === "occupancy"
       ? "Occupancy"
       : "Ready List";
+};
+
+const cameraState = {
+  cameras: [],
+  activeCamera: null,
+};
+
+const setCameraConnectionStatus = (status, message) => {
+  const labels = {
+    connected: "Connected",
+    failed: "Failed",
+    loading: "Loading",
+    unknown: "Not tested",
+  };
+  els.cameraConnectionStatus.textContent = message || labels[status] || labels.unknown;
+  els.cameraConnectionStatus.dataset.state = status;
+};
+
+const loadCameras = async () => {
+  const data = await api("/api/cameras");
+  cameraState.cameras = data.cameras || [];
+  cameraState.activeCamera = data.active_camera || null;
+  renderCameras();
+};
+
+const renderCameras = () => {
+  const cameras = cameraState.cameras;
+  els.activeCameraSelect.innerHTML =
+    cameras
+      .map(
+        (camera) =>
+          `<option value="${camera.id}" ${camera.is_active ? "selected" : ""}>${escapeHtml(camera.name)} — ${escapeHtml(camera.status)}</option>`
+      )
+      .join("") || `<option value="">No saved cameras</option>`;
+
+  els.savedCameraTable.innerHTML =
+    cameras
+      .map(
+        (camera) =>
+          `<tr><td>${escapeHtml(camera.name)}</td><td>${escapeHtml(camera.masked_stream_url)}</td><td>${escapeHtml(camera.status)}</td><td>${camera.is_active ? "Active" : "—"}</td></tr>`
+      )
+      .join("") || `<tr><td colspan="4">No saved cameras yet.</td></tr>`;
+};
+
+const handleTestCamera = async () => {
+  const streamUrl = els.cameraStreamUrl.value.trim();
+  if (!streamUrl) {
+    toast("Enter a camera stream URL first.");
+    return;
+  }
+
+  els.btnTestCamera.disabled = true;
+  setCameraConnectionStatus("loading", "Loading");
+  try {
+    const result = await api("/api/cameras/test", {
+      method: "POST",
+      body: JSON.stringify({ stream_url: streamUrl }),
+    });
+    const connected = result.status === "connected";
+    setCameraConnectionStatus(connected ? "connected" : "failed", connected ? "Connected" : "Failed");
+    toast(result.message);
+  } catch (error) {
+    setCameraConnectionStatus("failed", "Failed");
+    toast(error.message);
+  } finally {
+    els.btnTestCamera.disabled = false;
+  }
+};
+
+const handleConnectCamera = async (event) => {
+  event.preventDefault();
+  const name = els.cameraName.value.trim();
+  const streamUrl = els.cameraStreamUrl.value.trim();
+  if (!name || !streamUrl) {
+    toast("Camera name and stream URL are required.");
+    return;
+  }
+
+  els.btnConnectCamera.disabled = true;
+  setCameraConnectionStatus("loading", "Loading");
+  try {
+    const result = await api("/api/cameras", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        stream_url: streamUrl,
+        make_active: true,
+        test_connection: true,
+      }),
+    });
+    cameraState.cameras = result.cameras || [];
+    renderCameras();
+    const connected = result.test?.status === "connected";
+    setCameraConnectionStatus(connected ? "connected" : "failed", connected ? "Connected" : "Failed");
+    toast(connected ? "Camera connected and set active." : result.test?.message || "Camera saved but connection failed.");
+  } catch (error) {
+    setCameraConnectionStatus("failed", "Failed");
+    toast(error.message);
+  } finally {
+    els.btnConnectCamera.disabled = false;
+  }
+};
+
+const handleSetActiveCamera = async () => {
+  const cameraId = els.activeCameraSelect.value;
+  if (!cameraId) {
+    toast("Select a saved camera first.");
+    return;
+  }
+
+  els.btnSetActiveCamera.disabled = true;
+  try {
+    const result = await api(`/api/cameras/${cameraId}/activate`, { method: "POST" });
+    cameraState.cameras = result.cameras || [];
+    renderCameras();
+    toast(result.restarted ? "Active camera changed and detection restarted." : "Active camera changed.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    els.btnSetActiveCamera.disabled = false;
+  }
 };
 
 const loadInventory = async () => {
@@ -298,6 +439,7 @@ const renderOccupancy = ({ occupancy, events }) => {
 const refreshDashboard = async () => {
   try {
     await loadInventory();
+    await loadCameras();
     const status = await api("/api/status");
     setStatus(status.running);
     renderFunctionHealth(status);
@@ -418,6 +560,9 @@ els.navButtons.forEach((button) => {
 });
 
 els.refreshBtn.addEventListener("click", refreshDashboard);
+els.btnRefreshCameras.addEventListener("click", loadCameras);
+els.btnTestCamera.addEventListener("click", handleTestCamera);
+els.btnSetActiveCamera.addEventListener("click", handleSetActiveCamera);
 els.btnStartDetection.addEventListener("click", () =>
   handleDetectionAction("start", els.btnStartDetection)
 );
@@ -427,6 +572,7 @@ els.btnStopDetection.addEventListener("click", () =>
 els.btnRestartDetection.addEventListener("click", () =>
   handleDetectionAction("restart", els.btnRestartDetection)
 );
+els.cameraForm.addEventListener("submit", handleConnectCamera);
 els.itemForm.addEventListener("submit", handleAddItem);
 els.btnCheckIn.addEventListener("click", () => handleCheckAction("checkin"));
 els.btnCheckOut.addEventListener("click", () => handleCheckAction("checkout"));
