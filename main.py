@@ -41,7 +41,7 @@ from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
 from database.warehouse_db import WarehouseDB
-from tracking.line_counter import LineCounter
+from tracking.line_counter import AppearanceCounter, LineCounter
 from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
 
@@ -123,15 +123,26 @@ def main():
     warehouse_cfg = config.get("warehouse_counting", {})
     warehouse_enabled = warehouse_cfg.get("enabled", False)
     warehouse_db = None
-    line_counters = {}
+    warehouse_counters = {}
     reviewed_unknown_ids: set[tuple[str, int]] = set()
     if warehouse_enabled:
         warehouse_db = WarehouseDB(db_path=warehouse_cfg.get("db_path", "database/warehouse.db"))
+        count_mode = warehouse_cfg.get("mode", "appearance")
         line = warehouse_cfg.get(
             "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
         )
-        line_counters = {cam.name: LineCounter(line=line, camera_id=cam.name) for cam in cameras}
-        print(f"Warehouse counting enabled. Stock DB: {warehouse_db.db_path}")
+        warehouse_counters = {
+            cam.name: (
+                LineCounter(line=line, camera_id=cam.name)
+                if count_mode == "line"
+                else AppearanceCounter(camera_id=cam.name)
+            )
+            for cam in cameras
+        }
+        print(
+            f"Warehouse counting enabled ({count_mode} mode). "
+            f"Stock DB: {warehouse_db.db_path}"
+        )
 
     # --- Snapshots (FR-5) ---
     snap_cfg = config.get("snapshots", {})
@@ -204,15 +215,18 @@ def main():
                     line = warehouse_cfg.get(
                         "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
                     )
-                    draw_counting_line(frame, line)
+                    count_mode = warehouse_cfg.get("mode", "appearance")
+                    if count_mode == "line":
+                        draw_counting_line(frame, line)
                     _process_warehouse_counting(
                         camera_name=cam.name,
                         detections=detections,
-                        line_counter=line_counters[cam.name],
+                        warehouse_counter=warehouse_counters[cam.name],
                         warehouse_db=warehouse_db,
                         confidence_threshold=warehouse_cfg.get("confidence_threshold", 0.5),
                         reviewed_unknown_ids=reviewed_unknown_ids,
                         count_unknown=warehouse_cfg.get("count_low_confidence_as_unknown", True),
+                        count_mode=count_mode,
                     )
 
                 if snapshot_saver is not None:
@@ -280,11 +294,12 @@ def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
 def _process_warehouse_counting(
     camera_name: str,
     detections,
-    line_counter: LineCounter,
+    warehouse_counter,
     warehouse_db: WarehouseDB,
     confidence_threshold: float,
     reviewed_unknown_ids: set[tuple[str, int]],
     count_unknown: bool,
+    count_mode: str,
 ) -> None:
     tracked = [det for det in detections if hasattr(det, "track_id")]
     if not tracked:
@@ -305,10 +320,8 @@ def _process_warehouse_counting(
                 camera_id=camera_name,
             )
 
-    for event in line_counter.update(tracked):
-        if event.confidence < confidence_threshold:
-            continue
-
+    countable = [det for det in tracked if det.confidence >= confidence_threshold]
+    for event in warehouse_counter.update(countable):
         stock = warehouse_db.record_movement(
             product_name=event.product_name,
             direction=event.direction,
@@ -316,9 +329,10 @@ def _process_warehouse_counting(
             tracking_id=event.tracking_id,
             confidence=event.confidence,
         )
+        action = "recognized" if count_mode == "appearance" else f"crossed {event.direction}"
         print(
             f"[{event.camera_id}] {event.product_name} ID={event.tracking_id} "
-            f"crossed {event.direction} | stock {event.product_name} = {stock}"
+            f"{action} | stock {event.product_name} = {stock}"
         )
 
 

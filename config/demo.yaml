@@ -21,7 +21,8 @@ tracking:
   db_path: database/tracking.db
 warehouse_counting:
   enabled: true
-  db_path: database/warehouse.db
+  mode: appearance
+  db_path: database/demo_warehouse.db
   confidence_threshold: 0.5
   count_low_confidence_as_unknown: true
   counting_line:

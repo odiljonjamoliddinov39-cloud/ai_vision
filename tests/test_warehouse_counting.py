@@ -5,7 +5,7 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from database.warehouse_db import WarehouseDB
-from tracking.line_counter import LineCounter
+from tracking.line_counter import AppearanceCounter, LineCounter
 
 
 @dataclass
@@ -49,3 +49,16 @@ def test_warehouse_db_records_in_and_out_movements(tmp_path):
     assert len(movements) == 2
     assert movements[0]["direction"] == "OUT"
     assert movements[1]["direction"] == "IN"
+
+
+def test_appearance_counter_counts_first_confident_sighting_once():
+    counter = AppearanceCounter(camera_id="Camera 1")
+    obj = _FakeTrackedObject(track_id=10, class_name="box")
+
+    first = counter.update([obj])
+    second = counter.update([obj])
+
+    assert len(first) == 1
+    assert first[0].direction == "IN"
+    assert first[0].product_name == "box"
+    assert second == []

@@ -1,9 +1,11 @@
 """
-Virtual counting-line logic for warehouse stock movements.
+Warehouse stock movement counters.
 
 A tracked object is counted once when its center crosses the configured
 line. For a horizontal line, above -> below is IN and below -> above is
 OUT. For a vertical line, left -> right is IN and right -> left is OUT.
+Appearance mode is simpler: a tracked object is checked in once when it
+is confidently recognized by the camera.
 """
 
 from __future__ import annotations
@@ -90,6 +92,36 @@ class LineCounter:
             return None
 
         return "IN" if prev_side < current_side else "OUT"
+
+
+class AppearanceCounter:
+    def __init__(self, camera_id: str):
+        self.camera_id = camera_id
+        self.counted_ids: set[int] = set()
+
+    def update(self, tracked_objects) -> list[LineCrossingEvent]:
+        events: list[LineCrossingEvent] = []
+
+        for obj in tracked_objects:
+            if obj.track_id in self.counted_ids:
+                continue
+
+            self.counted_ids.add(obj.track_id)
+            center = _box_center(obj.box)
+            events.append(
+                LineCrossingEvent(
+                    tracking_id=obj.track_id,
+                    product_name=obj.class_name,
+                    confidence=obj.confidence,
+                    box=obj.box,
+                    previous_position=center,
+                    current_position=center,
+                    direction="IN",
+                    camera_id=self.camera_id,
+                )
+            )
+
+        return events
 
 
 def _box_center(box: tuple[int, int, int, int]) -> tuple[int, int]:
