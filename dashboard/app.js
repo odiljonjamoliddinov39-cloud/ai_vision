@@ -17,6 +17,11 @@ const els = {
   totalItems: document.querySelector("#totalItems"),
   itemTypes: document.querySelector("#itemTypes"),
   totalQuantity: document.querySelector("#totalQuantity"),
+  healthFrames: document.querySelector("#healthFrames"),
+  healthDetections: document.querySelector("#healthDetections"),
+  healthTracking: document.querySelector("#healthTracking"),
+  healthStockMode: document.querySelector("#healthStockMode"),
+  healthMessage: document.querySelector("#healthMessage"),
   warehouseVideo: document.querySelector("#warehouseVideo"),
   warehouseFallback: document.querySelector("#warehouseFallback"),
   warehouseHint: document.querySelector("#warehouseHint"),
@@ -229,6 +234,26 @@ const renderRecognitions = (data, running = false) => {
       .join("") || `<tr><td colspan="3">No camera-counted stock yet.</td></tr>`;
 };
 
+const renderFunctionHealth = (status) => {
+  const health = status.health || {};
+  els.healthFrames.textContent = health.frames_read ?? 0;
+  els.healthDetections.textContent = health.last_detection_count ?? 0;
+  els.healthTracking.textContent = health.last_tracked_count ?? 0;
+  els.healthStockMode.textContent =
+    health.warehouse_counting_enabled
+      ? health.warehouse_counting_mode || "on"
+      : "Off";
+
+  const parts = [];
+  parts.push(status.running ? "Detector process is running." : "Detector process is stopped.");
+  if (health.last_frame_at) parts.push(`Last frame: ${health.last_frame_at}.`);
+  if (health.error) parts.push(`Error: ${health.error}`);
+  if (!health.last_frame_at && status.running) {
+    parts.push("No processed frame has been reported yet.");
+  }
+  els.healthMessage.textContent = parts.join(" ");
+};
+
 const loadOccupancy = async () => {
   const [occupancy, events] = await Promise.all([
     api("/api/occupancy"),
@@ -275,6 +300,7 @@ const refreshDashboard = async () => {
     await loadInventory();
     const status = await api("/api/status");
     setStatus(status.running);
+    renderFunctionHealth(status);
     const recognitions = await loadRecognitions();
     renderRecognitions(recognitions, status.running || recognitions.running);
     const occupancyData = await loadOccupancy();
@@ -375,22 +401,9 @@ const handleDetectionAction = async (action, button) => {
 };
 
 const startLiveFeed = async () => {
-  if (navigator.mediaDevices?.getUserMedia) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      els.warehouseVideo.srcObject = stream;
-      els.warehouseVideo.classList.remove("hidden");
-      els.warehouseFallback.classList.add("hidden");
-      els.warehouseHint.textContent = "Using browser webcam";
-      return;
-    } catch (err) {
-      console.warn("Browser camera unavailable", err);
-    }
-  }
-
   els.warehouseVideo.classList.add("hidden");
   els.warehouseFallback.classList.remove("hidden");
-  els.warehouseHint.textContent = "Using backend live feed";
+  els.warehouseHint.textContent = "Using backend AI feed";
   const refreshImage = () => {
     els.warehouseFallback.src = "/api/live_mjpeg?t=" + Date.now();
   };

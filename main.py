@@ -28,6 +28,9 @@ Press "q" in any camera window to quit.
 from __future__ import annotations
 
 import argparse
+import json
+from datetime import datetime
+from pathlib import Path
 import time
 
 import cv2
@@ -75,6 +78,17 @@ def main():
     # --- Cameras (FR-1) ---
     cameras = load_cameras(config["cameras"])
     if not cameras:
+        _write_detection_health(
+            "logs/detection_health.json",
+            {
+                "state": "error",
+                "error": "No cameras could be opened. Check config/config.yaml.",
+                "frames_read": 0,
+                "last_frame_at": None,
+                "last_detection_count": 0,
+                "model_loaded": False,
+            },
+        )
         print("No cameras could be opened. Check config/config.yaml. Exiting.")
         return
 
@@ -171,6 +185,11 @@ def main():
     box_thickness = display_cfg.get("box_thickness", 2)
     font_scale = display_cfg.get("font_scale", 0.6)
     window_prefix = display_cfg.get("window_prefix", "AI Vision -")
+    health_path = log_cfg.get("health_file", "logs/detection_health.json")
+    frames_read = 0
+    last_detection_count = 0
+    last_tracked_count = 0
+    last_frame_at = None
 
     prev_time = time.time()
     frame_number = 0
@@ -189,9 +208,12 @@ def main():
                 if frame is None:
                     continue
                 any_frame = True
+                frames_read += 1
+                last_frame_at = datetime.now().isoformat(timespec="seconds")
 
                 if object_tracker is not None:
                     detections = object_tracker.update(frame)
+                    last_tracked_count = len(detections)
                     check_ins = presence_tracker.update(cam.name, detections, now)
                     for event in check_ins:
                         tracking_db.record_check_in(
@@ -203,8 +225,12 @@ def main():
                 elif detector.model is None:
                     detections = _demo_tracked_objects(dummy_positions[cam.name])
                     dummy_positions[cam.name] += 1
+                    last_tracked_count = len(detections)
                 else:
                     detections = detector.detect(frame)
+                    last_tracked_count = 0
+
+                last_detection_count = len(detections)
 
                 draw_detections(frame, detections, box_thickness, font_scale)
                 if display_cfg.get("show_fps", True):
@@ -271,6 +297,29 @@ def main():
                 print("No frames available from any camera. Retrying...")
                 time.sleep(1)
 
+            _write_detection_health(
+                health_path,
+                {
+                    "state": "running",
+                    "error": None if any_frame else "No frames available from any camera.",
+                    "camera_count": len(cameras),
+                    "frames_read": frames_read,
+                    "last_frame_at": last_frame_at,
+                    "last_detection_count": last_detection_count,
+                    "last_tracked_count": last_tracked_count,
+                    "model_loaded": detector.model is not None,
+                    "tracking_enabled": object_tracker is not None or detector.model is None,
+                    "warehouse_counting_enabled": warehouse_enabled,
+                    "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
+                    if warehouse_enabled
+                    else None,
+                    "live_feed_enabled": live_feed_enabled,
+                    "event_logging_enabled": event_logger is not None,
+                    "snapshot_enabled": snapshot_saver is not None,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+
             frame_number += 1
             if args.max_frames and frame_number >= args.max_frames:
                 break
@@ -289,6 +338,14 @@ def main():
 def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
     y = min(520, 170 + frame_index * 5)
     return [TrackedObject(track_id=1, class_name="box", confidence=0.95, box=(430, y, 530, y + 80))]
+
+
+def _write_detection_health(path: str, payload: dict) -> None:
+    health_path = Path(path)
+    health_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = health_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(health_path)
 
 
 def _process_warehouse_counting(

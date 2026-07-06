@@ -38,6 +38,9 @@ INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
 DASHBOARD_DIR = ROOT / "dashboard"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
+DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
+DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
+DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
 
@@ -61,6 +64,8 @@ def _get_warehouse_db() -> WarehouseDB:
 _process: subprocess.Popen | None = None
 _started_at: float | None = None
 _last_exit_code: int | None = None
+_stdout_handle = None
+_stderr_handle = None
 
 
 class StartRequest(BaseModel):
@@ -169,6 +174,22 @@ def _parse_event_log(limit: int = 40) -> list[dict[str, Any]]:
     return entries[-limit:]
 
 
+def _read_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _tail_file(path: Path, limit: int = 80) -> list[str]:
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return lines[-max(1, min(limit, 500)) :]
+
+
 @app.get("/api/recognitions")
 def recognitions(limit: int = 40) -> dict[str, Any]:
     entries = _parse_event_log(limit)
@@ -204,7 +225,7 @@ def warehouse_movements(limit: int = 50) -> dict[str, Any]:
 
 
 def _poll_process() -> None:
-    global _last_exit_code, _process, _started_at
+    global _last_exit_code, _process, _started_at, _stdout_handle, _stderr_handle
     if _process is None:
         return
 
@@ -213,6 +234,11 @@ def _poll_process() -> None:
         _last_exit_code = exit_code
         _process = None
         _started_at = None
+        for handle in (_stdout_handle, _stderr_handle):
+            if handle is not None:
+                handle.close()
+        _stdout_handle = None
+        _stderr_handle = None
 
 
 def _status() -> dict[str, Any]:
@@ -225,6 +251,9 @@ def _status() -> dict[str, Any]:
         if _started_at
         else 0,
         "last_exit_code": _last_exit_code,
+        "health": _read_json(DETECTION_HEALTH_PATH),
+        "stdout_tail": _tail_file(DETECTION_STDOUT_PATH, 40),
+        "stderr_tail": _tail_file(DETECTION_STDERR_PATH, 40),
     }
 
 
@@ -272,11 +301,16 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
 
 @app.post("/api/start")
 def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
-    global _process, _started_at, _last_exit_code
+    global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle
     request = request or StartRequest()
     _poll_process()
     if _process is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
+
+    DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _stdout_handle = DETECTION_STDOUT_PATH.open("a", encoding="utf-8", buffering=1)
+    _stderr_handle = DETECTION_STDERR_PATH.open("a", encoding="utf-8", buffering=1)
+    _stdout_handle.write(f"\n--- detection start {_now_iso()} config={request.config_path} ---\n")
 
     command = [
         sys.executable,
@@ -290,8 +324,8 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     _process = subprocess.Popen(
         command,
         cwd=ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=_stdout_handle,
+        stderr=_stderr_handle,
         start_new_session=os.name != "nt",
     )
     _started_at = time.time()
@@ -301,7 +335,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
 
 @app.post("/api/stop")
 def stop_detection() -> dict[str, Any]:
-    global _process, _started_at, _last_exit_code
+    global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle
     _poll_process()
     if _process is None:
         return _status()
@@ -324,6 +358,11 @@ def stop_detection() -> dict[str, Any]:
     _last_exit_code = process.returncode
     _process = None
     _started_at = None
+    for handle in (_stdout_handle, _stderr_handle):
+        if handle is not None:
+            handle.close()
+    _stdout_handle = None
+    _stderr_handle = None
     return _status()
 
 
@@ -340,6 +379,15 @@ def recent_logs(limit: int = 80) -> dict[str, Any]:
 
     lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
     return {"lines": lines[-max(1, min(limit, 500)) :]}
+
+
+@app.get("/api/detection/logs")
+def detection_logs(limit: int = 120) -> dict[str, Any]:
+    return {
+        "health": _read_json(DETECTION_HEALTH_PATH),
+        "stdout": _tail_file(DETECTION_STDOUT_PATH, limit),
+        "stderr": _tail_file(DETECTION_STDERR_PATH, limit),
+    }
 
 
 @app.get("/api/snapshots")

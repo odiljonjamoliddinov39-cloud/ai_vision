@@ -11,6 +11,7 @@ FR-1: Camera Connection
 
 from __future__ import annotations
 
+import os
 import time
 import cv2
 import numpy as np
@@ -30,17 +31,25 @@ class Camera:
         self.cap: cv2.VideoCapture | None = None
         self._dummy_frame_number = 0
         self._dummy = source == "dummy"
+        self._backend_index = 0
+        self._backends = self._camera_backends(source)
         self._open()
 
     def _open(self) -> None:
         if self._dummy:
             return
 
-        self.cap = cv2.VideoCapture(self.source)
+        backend_name, backend = self._backends[self._backend_index]
+        if backend is None:
+            self.cap = cv2.VideoCapture(self.source)
+        else:
+            self.cap = cv2.VideoCapture(self.source, backend)
+
         if not self.cap.isOpened():
             raise ConnectionError(
-                f"[{self.name}] Could not open camera source: {self.source!r}"
+                f"[{self.name}] Could not open camera source: {self.source!r} ({backend_name})"
             )
+        print(f"[{self.name}] Opened with backend: {backend_name}")
 
     def read(self):
         """
@@ -66,10 +75,14 @@ class Camera:
         if self.cap is not None:
             self.cap.release()
         time.sleep(self.reconnect_delay)
-        try:
-            self._open()
-        except ConnectionError as e:
-            print(str(e))
+
+        for _ in range(len(self._backends)):
+            self._backend_index = (self._backend_index + 1) % len(self._backends)
+            try:
+                self._open()
+                return
+            except ConnectionError as e:
+                print(str(e))
 
     def release(self) -> None:
         if self.cap is not None:
@@ -96,6 +109,16 @@ class Camera:
         )
         self._dummy_frame_number += 1
         return frame
+
+    @staticmethod
+    def _camera_backends(source) -> list[tuple[str, int | None]]:
+        if isinstance(source, int) and os.name == "nt":
+            return [
+                ("DirectShow", cv2.CAP_DSHOW),
+                ("MSMF", cv2.CAP_MSMF),
+                ("Auto", None),
+            ]
+        return [("Auto", None)]
 
 
 def load_cameras(camera_configs: list[dict]) -> list[Camera]:

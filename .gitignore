@@ -6,6 +6,7 @@ models/*.pt
 *.pt
 logs/*.log
 logs/inventory.json
+logs/detection_health.json
 database/*.db
 snapshots/*.jpg
 snapshots/inventory/
