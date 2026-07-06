@@ -194,6 +194,63 @@
             </div>
           </div>
 
+        </section>
+
+        <section class="page hidden" id="recognitions">
+          <div class="metrics-row">
+            <div class="metric-card">
+              <span>Automatic check-ins</span>
+              <strong id="visionCheckInTotal">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Automatic check-outs</span>
+              <strong id="visionCheckOutTotal">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Stocked classes</span>
+              <strong id="visionCurrentStockTotal">0</strong>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Vision check-in events</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Direction</th>
+                    <th>Item</th>
+                    <th>Camera</th>
+                    <th>Track ID</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody id="visionMovementEntries"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Camera stock</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Current stock</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody id="visionStockTable"></tbody>
+              </table>
+            </div>
+          </div>
+
           <div class="panel">
             <div class="panel-head">
               <h2>Latest recognition entries</h2>
@@ -360,6 +417,6 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/app.js" type="module"></script>
+    <script src="/assets/app.js?v=warehouse-counting" type="module"></script>
   </body>
 </html>

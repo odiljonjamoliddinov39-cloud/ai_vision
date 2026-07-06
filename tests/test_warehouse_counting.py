@@ -42,3 +42,10 @@ def test_warehouse_db_records_in_and_out_movements(tmp_path):
     stock = db.get_all_stock()
     assert stock[0]["name"] == "box"
     assert stock[0]["current_stock"] == 0
+
+    assert db.movement_counts() == {"IN": 1, "OUT": 1}
+
+    movements = db.recent_movements(limit=10)
+    assert len(movements) == 2
+    assert movements[0]["direction"] == "OUT"
+    assert movements[1]["direction"] == "IN"

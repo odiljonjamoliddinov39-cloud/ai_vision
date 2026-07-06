@@ -37,6 +37,11 @@ const els = {
   recognitionEntryCount: document.querySelector("#recognitionEntryCount"),
   recognitionEntries: document.querySelector("#recognitionEntries"),
   recognitionCounts: document.querySelector("#recognitionCounts"),
+  visionCheckInTotal: document.querySelector("#visionCheckInTotal"),
+  visionCheckOutTotal: document.querySelector("#visionCheckOutTotal"),
+  visionCurrentStockTotal: document.querySelector("#visionCurrentStockTotal"),
+  visionMovementEntries: document.querySelector("#visionMovementEntries"),
+  visionStockTable: document.querySelector("#visionStockTable"),
   occupancyTotal: document.querySelector("#occupancyTotal"),
   occupancyClassCount: document.querySelector("#occupancyClassCount"),
   occupancyCounts: document.querySelector("#occupancyCounts"),
@@ -156,6 +161,9 @@ const loadRecognitions = async () => {
 const renderRecognitions = (data, running = false) => {
   const entries = data.entries || [];
   const counts = data.counts || [];
+  const movements = data.movements || [];
+  const movementCounts = data.movement_counts || {};
+  const stock = data.stock || [];
   const classCount = counts.length;
   const entryCount = entries.length;
 
@@ -196,6 +204,29 @@ const renderRecognitions = (data, running = false) => {
         (count) => `<tr><td>${count.class_name}</td><td>${count.count}</td></tr>`
       )
       .join("") || `<tr><td colspan="2">No recognized classes yet.</td></tr>`;
+
+  els.visionCheckInTotal.textContent = movementCounts.IN || 0;
+  els.visionCheckOutTotal.textContent = movementCounts.OUT || 0;
+  els.visionCurrentStockTotal.textContent = stock.length;
+
+  els.visionMovementEntries.innerHTML =
+    movements
+      .map((movement) => {
+        const confidence =
+          movement.confidence == null
+            ? "—"
+            : `${Math.round(Number(movement.confidence) * 100)}%`;
+        return `<tr><td>${movement.created_at}</td><td>${movement.direction}</td><td>${movement.product_name}</td><td>${movement.camera_id || "—"}</td><td>#${movement.tracking_id}</td><td>${confidence}</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="6">No automatic camera check-ins yet.</td></tr>`;
+
+  els.visionStockTable.innerHTML =
+    stock
+      .map(
+        (item) =>
+          `<tr><td>${item.name}</td><td>${item.current_stock}</td><td>${item.created_at}</td></tr>`
+      )
+      .join("") || `<tr><td colspan="3">No camera-counted stock yet.</td></tr>`;
 };
 
 const loadOccupancy = async () => {

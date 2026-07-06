@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from database.tracking_db import TrackingDB  # noqa: E402
+from database.warehouse_db import WarehouseDB  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -36,10 +37,12 @@ INVENTORY_PATH = ROOT / "logs" / "inventory.json"
 INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
 DASHBOARD_DIR = ROOT / "dashboard"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
+WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
 
 _tracking_db: TrackingDB | None = None
+_warehouse_db: WarehouseDB | None = None
 
 
 def _get_tracking_db() -> TrackingDB:
@@ -47,6 +50,13 @@ def _get_tracking_db() -> TrackingDB:
     if _tracking_db is None:
         _tracking_db = TrackingDB(db_path=str(TRACKING_DB_PATH))
     return _tracking_db
+
+
+def _get_warehouse_db() -> WarehouseDB:
+    global _warehouse_db
+    if _warehouse_db is None:
+        _warehouse_db = WarehouseDB(db_path=str(WAREHOUSE_DB_PATH))
+    return _warehouse_db
 
 _process: subprocess.Popen | None = None
 _started_at: float | None = None
@@ -169,8 +179,28 @@ def recognitions(limit: int = 40) -> dict[str, Any]:
         {"class_name": class_name, "count": count}
         for class_name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
+    warehouse_db = _get_warehouse_db()
     status = _status()
-    return {"running": status["running"], "entries": entries, "counts": distinct}
+    return {
+        "running": status["running"],
+        "entries": entries,
+        "counts": distinct,
+        "movements": warehouse_db.recent_movements(limit),
+        "movement_counts": warehouse_db.movement_counts(),
+        "stock": warehouse_db.get_all_stock(),
+    }
+
+
+@app.get("/api/warehouse/stock")
+def warehouse_stock() -> dict[str, Any]:
+    db = _get_warehouse_db()
+    return {"stock": db.get_all_stock(), "movement_counts": db.movement_counts()}
+
+
+@app.get("/api/warehouse/movements")
+def warehouse_movements(limit: int = 50) -> dict[str, Any]:
+    db = _get_warehouse_db()
+    return {"movements": db.recent_movements(limit=max(1, min(limit, 500)))}
 
 
 def _poll_process() -> None:

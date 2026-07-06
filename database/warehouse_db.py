@@ -144,3 +144,32 @@ class WarehouseDB:
                 "SELECT name, category, current_stock, created_at FROM products ORDER BY name"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def recent_movements(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    product_name,
+                    direction,
+                    quantity,
+                    camera_id,
+                    tracking_id,
+                    confidence,
+                    screenshot_path,
+                    created_at
+                FROM movements
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def movement_counts(self) -> dict[str, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT direction, SUM(quantity) AS total FROM movements GROUP BY direction"
+            ).fetchall()
+        return {row["direction"]: int(row["total"] or 0) for row in rows}

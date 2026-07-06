@@ -19,6 +19,16 @@ tracking:
   classes: null                    # null = track all detected classes
   grace_period_seconds: 5.0        # how long a missing track is still "checked in"
   db_path: database/tracking.db
+warehouse_counting:
+  enabled: true
+  db_path: database/warehouse.db
+  confidence_threshold: 0.5
+  count_low_confidence_as_unknown: true
+  counting_line:
+    x1: 100
+    y1: 300
+    x2: 900
+    y2: 300
 snapshots:
   enabled: true
   save_dir: snapshots
