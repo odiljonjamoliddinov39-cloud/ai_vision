@@ -389,6 +389,14 @@ tr:nth-child(even) {
   color: #7a4b00;
 }
 
+.connection-detail {
+  min-height: 20px;
+  margin: -4px 0 18px;
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .camera-active-form {
   grid-template-columns: minmax(240px, 1fr) auto;
   align-items: end;

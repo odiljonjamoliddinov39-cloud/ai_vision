@@ -12,11 +12,13 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -122,6 +124,13 @@ class CameraTestRequest(BaseModel):
     stream_url: str = Field(min_length=1)
 
 
+STREAM_DEFAULT_PORTS = {
+    "rtsp": 554,
+    "http": 80,
+    "https": 443,
+}
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -139,6 +148,63 @@ def _camera_source_from_text(stream_url: str):
     return value
 
 
+def _is_local_capture_source(value: str) -> bool:
+    if value.isdigit() or value.lower() == "dummy":
+        return True
+    try:
+        return Path(value).exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _camera_stream_endpoint(stream_url: str) -> tuple[dict[str, Any] | None, str | None]:
+    value = stream_url.strip()
+    if _is_local_capture_source(value):
+        return None, None
+
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        return None, f"Invalid camera stream URL: {exc}"
+
+    scheme = parsed.scheme.lower()
+    if scheme not in STREAM_DEFAULT_PORTS:
+        return (
+            None,
+            "Use a full camera stream URL starting with rtsp://, http://, or https://, "
+            "or use a local webcam index like 0.",
+        )
+
+    if not parsed.hostname:
+        return None, "Camera stream URL is missing a host or IP address."
+
+    try:
+        port = parsed.port or STREAM_DEFAULT_PORTS[scheme]
+    except ValueError as exc:
+        return None, f"Invalid camera stream port: {exc}"
+
+    return {"scheme": scheme, "host": parsed.hostname, "port": port}, None
+
+
+def _check_camera_endpoint(endpoint: dict[str, Any], timeout_seconds: float = 2.0) -> str | None:
+    host = endpoint["host"]
+    port = endpoint["port"]
+    scheme = endpoint["scheme"].upper()
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds):
+            return None
+    except TimeoutError:
+        reason = "connection timed out"
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+
+    return (
+        f"Cannot reach {scheme} endpoint {host}:{port} ({reason}). "
+        "The camera is reachable only when this stream port is open; enable the camera stream service "
+        "or use the correct stream URL/port."
+    )
+
+
 def _set_config_active_camera(name: str, stream_url: str) -> dict[str, Any]:
     data = _read_yaml(CONFIG_PATH)
     data["cameras"] = [{"name": name, "source": _camera_source_from_text(stream_url)}]
@@ -147,6 +213,24 @@ def _set_config_active_camera(name: str, stream_url: str) -> dict[str, Any]:
 
 
 def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str, Any]:
+    endpoint, validation_error = _camera_stream_endpoint(stream_url)
+    if validation_error:
+        return {"status": "failed", "message": validation_error}
+
+    if endpoint is not None:
+        endpoint_error = _check_camera_endpoint(endpoint)
+        if endpoint_error:
+            return {
+                "status": "failed",
+                "message": endpoint_error,
+                "details": {
+                    "host": endpoint["host"],
+                    "port": endpoint["port"],
+                    "scheme": endpoint["scheme"],
+                    "endpoint_reachable": False,
+                },
+            }
+
     code = r"""
 import json
 import os
@@ -180,7 +264,15 @@ except Exception as exc:
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        return {"status": "failed", "message": "Connection timed out."}
+        response = {"status": "failed", "message": "OpenCV timed out while waiting for a video frame."}
+        if endpoint is not None:
+            response["details"] = {
+                "host": endpoint["host"],
+                "port": endpoint["port"],
+                "scheme": endpoint["scheme"],
+                "endpoint_reachable": True,
+            }
+        return response
 
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
@@ -190,10 +282,30 @@ except Exception as exc:
         payload = {}
 
     if payload.get("ok"):
-        return {"status": "connected", "message": "Camera stream opened and returned a frame."}
+        response = {"status": "connected", "message": "Camera stream opened and returned a frame."}
+        if endpoint is not None:
+            response["details"] = {
+                "host": endpoint["host"],
+                "port": endpoint["port"],
+                "scheme": endpoint["scheme"],
+                "endpoint_reachable": True,
+                "opencv_opened": True,
+                "frame_read": True,
+            }
+        return response
 
     message = payload.get("error") or stderr or "Camera stream could not be opened or returned no frame."
-    return {"status": "failed", "message": message}
+    response = {"status": "failed", "message": message}
+    if endpoint is not None:
+        response["details"] = {
+            "host": endpoint["host"],
+            "port": endpoint["port"],
+            "scheme": endpoint["scheme"],
+            "endpoint_reachable": True,
+            "opencv_opened": bool(payload.get("opened")),
+            "frame_read": bool(payload.get("frame_read")),
+        }
+    return response
 
 
 def _load_inventory() -> dict[str, Any]:

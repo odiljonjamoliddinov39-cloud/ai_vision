@@ -10,6 +10,7 @@ const els = {
   cameraForm: document.querySelector("#cameraForm"),
   cameraName: document.querySelector("#cameraName"),
   cameraStreamUrl: document.querySelector("#cameraStreamUrl"),
+  cameraConnectionDetail: document.querySelector("#cameraConnectionDetail"),
   btnTestCamera: document.querySelector("#btnTestCamera"),
   btnConnectCamera: document.querySelector("#btnConnectCamera"),
   btnRefreshCameras: document.querySelector("#btnRefreshCameras"),
@@ -150,8 +151,10 @@ const setCameraConnectionStatus = (status, message) => {
     loading: "Loading",
     unknown: "Not tested",
   };
-  els.cameraConnectionStatus.textContent = message || labels[status] || labels.unknown;
+  const label = labels[status] || labels.unknown;
+  els.cameraConnectionStatus.textContent = label;
   els.cameraConnectionStatus.dataset.state = status;
+  els.cameraConnectionDetail.textContent = message && message !== label ? message : "";
 };
 
 const loadCameras = async () => {
@@ -195,10 +198,10 @@ const handleTestCamera = async () => {
       body: JSON.stringify({ stream_url: streamUrl }),
     });
     const connected = result.status === "connected";
-    setCameraConnectionStatus(connected ? "connected" : "failed", connected ? "Connected" : "Failed");
+    setCameraConnectionStatus(connected ? "connected" : "failed", result.message);
     toast(result.message);
   } catch (error) {
-    setCameraConnectionStatus("failed", "Failed");
+    setCameraConnectionStatus("failed", error.message);
     toast(error.message);
   } finally {
     els.btnTestCamera.disabled = false;
@@ -229,10 +232,10 @@ const handleConnectCamera = async (event) => {
     cameraState.cameras = result.cameras || [];
     renderCameras();
     const connected = result.test?.status === "connected";
-    setCameraConnectionStatus(connected ? "connected" : "failed", connected ? "Connected" : "Failed");
+    setCameraConnectionStatus(connected ? "connected" : "failed", result.test?.message);
     toast(connected ? "Camera connected and set active." : result.test?.message || "Camera saved but connection failed.");
   } catch (error) {
-    setCameraConnectionStatus("failed", "Failed");
+    setCameraConnectionStatus("failed", error.message);
     toast(error.message);
   } finally {
     els.btnConnectCamera.disabled = false;
