@@ -119,18 +119,37 @@ class CameraDB:
 
 
 def mask_stream_url(stream_url: str) -> str:
+    stream_url = stream_url.strip()
     try:
         parsed = urlsplit(stream_url)
     except ValueError:
-        return stream_url
+        return _mask_stream_url_fallback(stream_url)
 
     if not parsed.username or parsed.password is None:
         return stream_url
 
     host = parsed.hostname or ""
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
+    try:
+        port = parsed.port
+    except ValueError:
+        return _mask_stream_url_fallback(stream_url)
+
+    if port is not None:
+        host = f"{host}:{port}"
 
     username = parsed.username
     netloc = f"{username}:****@{host}"
     return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def _mask_stream_url_fallback(stream_url: str) -> str:
+    if "://" not in stream_url or "@" not in stream_url:
+        return stream_url
+
+    scheme, rest = stream_url.split("://", 1)
+    credentials, endpoint = rest.split("@", 1)
+    if ":" not in credentials:
+        return stream_url
+
+    username, _password = credentials.split(":", 1)
+    return f"{scheme}://{username}:****@{endpoint}"

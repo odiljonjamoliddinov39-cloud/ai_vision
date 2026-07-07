@@ -13,6 +13,13 @@ def test_mask_stream_url_hides_password():
     assert "password" not in masked
 
 
+def test_mask_stream_url_handles_bad_port_without_exposing_password():
+    masked = mask_stream_url("rtsp://admin:secret@ 192.168.0.151: 554/stream1")
+
+    assert masked == "rtsp://admin:****@ 192.168.0.151: 554/stream1"
+    assert "secret" not in masked
+
+
 def test_camera_db_saves_masked_response_and_active_camera(tmp_path):
     db = CameraDB(db_path=str(tmp_path / "cameras.db"))
 

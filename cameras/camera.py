@@ -12,6 +12,7 @@ FR-1: Camera Connection
 from __future__ import annotations
 
 import os
+import re
 import time
 import cv2
 import numpy as np
@@ -47,7 +48,7 @@ class Camera:
 
         if not self.cap.isOpened():
             raise ConnectionError(
-                f"[{self.name}] Could not open camera source: {self.source!r} ({backend_name})"
+                f"[{self.name}] Could not open camera source: {_mask_source(self.source)!r} ({backend_name})"
             )
         print(f"[{self.name}] Opened with backend: {backend_name}")
 
@@ -134,7 +135,17 @@ def load_cameras(camera_configs: list[dict]) -> list[Camera]:
         source = entry.get("source")
         try:
             cameras.append(Camera(name=name, source=source))
-            print(f"[{name}] Connected (source={source})")
+            print(f"[{name}] Connected (source={_mask_source(source)})")
         except ConnectionError as e:
             print(f"WARNING: {e}")
     return cameras
+
+
+_SECRET_URL_RE = re.compile(r"\b(?P<scheme>rtsp|https?)://(?P<username>[^:/\s]+):(?P<password>[^@\s]+)@")
+
+
+def _mask_source(source) -> str:
+    return _SECRET_URL_RE.sub(
+        lambda match: f"{match.group('scheme')}://{match.group('username')}:****@",
+        str(source),
+    )

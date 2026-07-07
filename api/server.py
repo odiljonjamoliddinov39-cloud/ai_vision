@@ -130,6 +130,8 @@ STREAM_DEFAULT_PORTS = {
     "https": 443,
 }
 
+SECRET_URL_RE = re.compile(r"\b(?P<scheme>rtsp|https?)://(?P<username>[^:/\s]+):(?P<password>[^@\s]+)@")
+
 
 def _read_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
@@ -146,6 +148,13 @@ def _camera_source_from_text(stream_url: str):
     if value.isdigit():
         return int(value)
     return value
+
+
+def _redact_sensitive_text(text: str) -> str:
+    return SECRET_URL_RE.sub(
+        lambda match: f"{match.group('scheme')}://{match.group('username')}:****@",
+        text,
+    )
 
 
 def _is_local_capture_source(value: str) -> bool:
@@ -390,7 +399,7 @@ def _tail_file(path: Path, limit: int = 80) -> list[str]:
     if not path.exists():
         return []
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return lines[-max(1, min(limit, 500)) :]
+    return [_redact_sensitive_text(line) for line in lines[-max(1, min(limit, 500)) :]]
 
 
 @app.get("/api/recognitions")
@@ -518,6 +527,10 @@ def test_camera_stream(request: CameraTestRequest) -> dict[str, Any]:
 @app.post("/api/cameras")
 def save_camera(camera: CameraCreate) -> dict[str, Any]:
     db = _get_camera_db()
+    _endpoint, validation_error = _camera_stream_endpoint(camera.stream_url)
+    if validation_error:
+        raise HTTPException(status_code=400, detail=validation_error)
+
     test_result = (
         _test_camera_stream(camera.stream_url)
         if camera.test_connection
