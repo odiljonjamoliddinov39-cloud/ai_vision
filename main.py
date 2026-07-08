@@ -261,16 +261,8 @@ def main():
                     for path in saved:
                         print(f"[{cam.name}] Snapshot saved: {path}")
 
-                # write latest frame for live feed (MJPEG / frequent updates)
                 if live_feed_enabled:
-                    try:
-                        # overwrite latest.jpg for quick UI refresh
-                        latest_path = os.path.join(snapshots_dir, "latest.jpg")
-                        _, jpg = cv2.imencode('.jpg', frame)
-                        with open(latest_path, 'wb') as f:
-                            f.write(jpg.tobytes())
-                    except Exception:
-                        pass
+                    _write_live_frame(snapshots_dir, cam, frame)
 
                 if event_logger is not None:
                     event_logger.log_detections(cam.name, detections)
@@ -304,6 +296,10 @@ def main():
                     "state": "running",
                     "error": None if any_frame else "No frames available from any camera.",
                     "camera_count": len(cameras),
+                    "cameras": [
+                        {"name": cam.name, "slot_number": cam.slot_number}
+                        for cam in cameras
+                    ],
                     "frames_read": frames_read,
                     "last_frame_at": last_frame_at,
                     "last_detection_count": last_detection_count,
@@ -359,6 +355,28 @@ def _write_detection_health(path: str, payload: dict) -> None:
     # is safer than crashing the detector; the API already tolerates short
     # JSON read races.
     health_path.write_text(data, encoding="utf-8")
+
+
+def _write_live_frame(snapshots_dir: str, cam, frame) -> None:
+    try:
+        ok, jpg = cv2.imencode(".jpg", frame)
+        if not ok:
+            return
+
+        data = jpg.tobytes()
+        latest_path = Path(snapshots_dir) / "latest.jpg"
+        latest_path.write_bytes(data)
+
+        if cam.slot_number is not None:
+            (Path(snapshots_dir) / f"latest_slot_{cam.slot_number}.jpg").write_bytes(data)
+
+        (Path(snapshots_dir) / f"latest_{_safe_live_feed_name(cam.name)}.jpg").write_bytes(data)
+    except Exception:
+        pass
+
+
+def _safe_live_feed_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in str(value)).strip("_") or "camera"
 
 
 def _process_warehouse_counting(

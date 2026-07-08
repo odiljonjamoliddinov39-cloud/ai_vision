@@ -39,10 +39,38 @@ class CameraDB:
                     stream_url TEXT NOT NULL,
                     status TEXT DEFAULT 'unknown',
                     is_active INTEGER DEFAULT 0,
+                    slot_number INTEGER,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
+            )
+            self._ensure_slot_column(conn)
+            self._backfill_active_slots(conn)
+
+    @staticmethod
+    def _ensure_slot_column(conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(cameras)").fetchall()
+        }
+        if "slot_number" not in columns:
+            conn.execute("ALTER TABLE cameras ADD COLUMN slot_number INTEGER")
+
+    @staticmethod
+    def _backfill_active_slots(conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM cameras
+            WHERE is_active = 1 AND slot_number IS NULL
+            ORDER BY id
+            """
+        ).fetchall()
+        for slot_number, row in enumerate(rows, start=1):
+            conn.execute(
+                "UPDATE cameras SET slot_number = ? WHERE id = ?",
+                (slot_number, row["id"]),
             )
 
     def add_camera(self, name: str, stream_url: str, status: str = "unknown") -> dict:
@@ -64,7 +92,25 @@ class CameraDB:
 
     def list_cameras(self, include_secret: bool = False) -> list[dict]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM cameras ORDER BY is_active DESC, id DESC").fetchall()
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM cameras
+                ORDER BY is_active DESC, slot_number IS NULL, slot_number ASC, id DESC
+                """
+            ).fetchall()
+        return [self._serialize(row, include_secret=include_secret) for row in rows]
+
+    def list_active_cameras(self, include_secret: bool = False) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM cameras
+                WHERE is_active = 1
+                ORDER BY slot_number ASC, id ASC
+                """
+            ).fetchall()
         return [self._serialize(row, include_secret=include_secret) for row in rows]
 
     def set_status(self, camera_id: int, status: str) -> dict | None:
@@ -75,22 +121,43 @@ class CameraDB:
             )
         return self.get_camera(camera_id, include_secret=False)
 
-    def set_active(self, camera_id: int) -> dict | None:
+    def set_active(self, camera_id: int, slot_number: int = 1) -> dict | None:
+        return self.assign_slot(camera_id, slot_number)
+
+    def assign_slot(self, camera_id: int, slot_number: int) -> dict | None:
         camera = self.get_camera(camera_id, include_secret=True)
         if camera is None:
             return None
 
         with self._connect() as conn:
-            conn.execute("UPDATE cameras SET is_active = 0")
             conn.execute(
                 """
                 UPDATE cameras
-                SET is_active = 1, updated_at = CURRENT_TIMESTAMP
+                SET is_active = 0, slot_number = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? OR slot_number = ?
+                """,
+                (camera_id, slot_number),
+            )
+            conn.execute(
+                """
+                UPDATE cameras
+                SET is_active = 1, slot_number = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (camera_id,),
+                (slot_number, camera_id),
             )
         return self.get_camera(camera_id, include_secret=True)
+
+    def clear_slot(self, slot_number: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE cameras
+                SET is_active = 0, slot_number = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE slot_number = ?
+                """,
+                (slot_number,),
+            )
 
     def ensure_default_camera(self, name: str, stream_url: str) -> None:
         with self._connect() as conn:
@@ -100,8 +167,8 @@ class CameraDB:
 
             conn.execute(
                 """
-                INSERT INTO cameras (name, stream_url, status, is_active)
-                VALUES (?, ?, 'unknown', 1)
+                INSERT INTO cameras (name, stream_url, status, is_active, slot_number)
+                VALUES (?, ?, 'unknown', 1, 1)
                 """,
                 (name, stream_url),
             )

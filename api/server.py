@@ -118,10 +118,15 @@ class CameraCreate(BaseModel):
     stream_url: str = Field(min_length=1)
     make_active: bool = True
     test_connection: bool = True
+    slot_number: int | None = Field(default=None, ge=1, le=16)
 
 
 class CameraTestRequest(BaseModel):
     stream_url: str = Field(min_length=1)
+
+
+class CameraSlotRequest(BaseModel):
+    slot_number: int = Field(default=1, ge=1, le=16)
 
 
 STREAM_DEFAULT_PORTS = {
@@ -214,11 +219,34 @@ def _check_camera_endpoint(endpoint: dict[str, Any], timeout_seconds: float = 2.
     )
 
 
-def _set_config_active_camera(name: str, stream_url: str) -> dict[str, Any]:
+def _set_config_active_cameras(cameras: list[dict[str, Any]]) -> dict[str, Any]:
     data = _read_yaml(CONFIG_PATH)
-    data["cameras"] = [{"name": name, "source": _camera_source_from_text(stream_url)}]
+    data["cameras"] = [
+        {
+            "name": camera["name"],
+            "source": _camera_source_from_text(camera["stream_url"]),
+            "slot_number": camera.get("slot_number") or index,
+        }
+        for index, camera in enumerate(cameras, start=1)
+    ]
     _write_yaml(CONFIG_PATH, data)
     return data
+
+
+def _sync_config_active_cameras(db: CameraDB) -> dict[str, Any]:
+    return _set_config_active_cameras(db.list_active_cameras(include_secret=True))
+
+
+def _next_available_slot(cameras: list[dict[str, Any]]) -> int:
+    used_slots = {
+        int(camera["slot_number"])
+        for camera in cameras
+        if camera.get("is_active") and camera.get("slot_number") is not None
+    }
+    slot_number = 1
+    while slot_number in used_slots:
+        slot_number += 1
+    return slot_number
 
 
 def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str, Any]:
@@ -515,8 +543,9 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
 def list_cameras() -> dict[str, Any]:
     db = _get_camera_db()
     cameras = db.list_cameras(include_secret=False)
-    active = next((camera for camera in cameras if camera["is_active"]), None)
-    return {"cameras": cameras, "active_camera": active}
+    active_cameras = [camera for camera in cameras if camera["is_active"]]
+    active = active_cameras[0] if active_cameras else None
+    return {"cameras": cameras, "active_camera": active, "active_cameras": active_cameras}
 
 
 @app.post("/api/cameras/test")
@@ -544,17 +573,21 @@ def save_camera(camera: CameraCreate) -> dict[str, Any]:
 
     active = None
     if camera.make_active and test_result["status"] == "connected":
-        active = db.set_active(saved["id"])
-        _set_config_active_camera(active["name"], active["stream_url"])
+        slot_number = camera.slot_number or _next_available_slot(db.list_cameras(include_secret=False))
+        active = db.assign_slot(saved["id"], slot_number)
+        _sync_config_active_cameras(db)
         if _status()["running"]:
             stop_detection()
             start_detection(StartRequest())
 
+    cameras = db.list_cameras(include_secret=False)
+    active_cameras = [row for row in cameras if row["is_active"]]
     return {
         "camera": db.get_camera(saved["id"], include_secret=False),
         "active_camera": db.get_camera(active["id"], include_secret=False) if active else None,
+        "active_cameras": active_cameras,
         "test": test_result,
-        "cameras": db.list_cameras(include_secret=False),
+        "cameras": cameras,
     }
 
 
@@ -571,22 +604,52 @@ def test_saved_camera(camera_id: int) -> dict[str, Any]:
 
 
 @app.post("/api/cameras/{camera_id}/activate")
-def set_active_camera(camera_id: int) -> dict[str, Any]:
+def set_active_camera(
+    camera_id: int, request: CameraSlotRequest | None = None
+) -> dict[str, Any]:
     db = _get_camera_db()
-    active = db.set_active(camera_id)
+    request = request or CameraSlotRequest()
+    active = db.assign_slot(camera_id, request.slot_number)
     if active is None:
         raise HTTPException(status_code=404, detail="Camera not found.")
 
-    _set_config_active_camera(active["name"], active["stream_url"])
+    _sync_config_active_cameras(db)
     restarted = False
     if _status()["running"]:
         stop_detection()
         start_detection(StartRequest())
         restarted = True
 
+    cameras = db.list_cameras(include_secret=False)
+    active_cameras = [row for row in cameras if row["is_active"]]
     return {
         "active_camera": db.get_camera(camera_id, include_secret=False),
-        "cameras": db.list_cameras(include_secret=False),
+        "active_cameras": active_cameras,
+        "cameras": cameras,
+        "restarted": restarted,
+    }
+
+
+@app.delete("/api/camera-slots/{slot_number}")
+def clear_camera_slot(slot_number: int) -> dict[str, Any]:
+    if slot_number < 1 or slot_number > 16:
+        raise HTTPException(status_code=400, detail="Slot number must be between 1 and 16.")
+
+    db = _get_camera_db()
+    db.clear_slot(slot_number)
+    _sync_config_active_cameras(db)
+    restarted = False
+    if _status()["running"]:
+        stop_detection()
+        start_detection(StartRequest())
+        restarted = True
+
+    cameras = db.list_cameras(include_secret=False)
+    active_cameras = [row for row in cameras if row["is_active"]]
+    return {
+        "active_camera": active_cameras[0] if active_cameras else None,
+        "active_cameras": active_cameras,
+        "cameras": cameras,
         "restarted": restarted,
     }
 
@@ -850,17 +913,17 @@ async def stream_logs():
 
 
 @app.get("/api/live_mjpeg")
-async def live_mjpeg():
+async def live_mjpeg(slot: int | None = None, camera: str | None = None):
     """Return a multipart/x-mixed-replace MJPEG stream by repeatedly
-    reading snapshots/latest.jpg. This is a simple MJPEG server that
-    serves the latest frame written by the detector.
+    reading the latest frame written by the detector. Use ?slot=1, ?slot=2,
+    etc. to view individual active camera screens.
     """
 
     boundary = "frame"
+    latest = _live_feed_path(slot=slot, camera=camera)
 
     async def frame_generator():
         while True:
-            latest = SNAPSHOT_DIR / "latest.jpg"
             if latest.exists():
                 try:
                     data = latest.read_bytes()
@@ -876,6 +939,15 @@ async def live_mjpeg():
             await asyncio.sleep(0.05)
 
     return StreamingResponse(frame_generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
+
+
+def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
+    if slot is not None:
+        return SNAPSHOT_DIR / f"latest_slot_{slot}.jpg"
+    if camera:
+        safe_name = "".join(ch if ch.isalnum() else "_" for ch in camera).strip("_") or "camera"
+        return SNAPSHOT_DIR / f"latest_{safe_name}.jpg"
+    return SNAPSHOT_DIR / "latest.jpg"
 
 
 app.mount("/assets", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-assets")

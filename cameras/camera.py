@@ -19,7 +19,13 @@ import numpy as np
 
 
 class Camera:
-    def __init__(self, name: str, source, reconnect_delay: float = 2.0):
+    def __init__(
+        self,
+        name: str,
+        source,
+        reconnect_delay: float = 2.0,
+        slot_number: int | None = None,
+    ):
         """
         Args:
             name: Human-readable camera name, e.g. "Camera 1".
@@ -28,6 +34,7 @@ class Camera:
         """
         self.name = name
         self.source = source
+        self.slot_number = slot_number
         self.reconnect_delay = reconnect_delay
         self.cap: cv2.VideoCapture | None = None
         self._dummy_frame_number = 0
@@ -133,9 +140,11 @@ def load_cameras(camera_configs: list[dict]) -> list[Camera]:
     for entry in camera_configs:
         name = entry.get("name", "Camera")
         source = entry.get("source")
+        slot_number = entry.get("slot_number")
         try:
-            cameras.append(Camera(name=name, source=source))
-            print(f"[{name}] Connected (source={_mask_source(source)})")
+            cameras.append(Camera(name=name, source=source, slot_number=slot_number))
+            slot = f" slot={slot_number}" if slot_number is not None else ""
+            print(f"[{name}] Connected{slot} (source={_mask_source(source)})")
         except ConnectionError as e:
             print(f"WARNING: {e}")
     return cameras

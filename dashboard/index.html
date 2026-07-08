@@ -107,6 +107,10 @@
                 Camera IP / RTSP / HTTP URL
                 <input id="cameraStreamUrl" type="text" required placeholder="rtsp://username:password@192.168.1.64:554/stream1" />
               </label>
+              <label>
+                Camera Slot
+                <input id="cameraSlot" type="number" min="1" max="16" value="1" required />
+              </label>
               <div class="button-row full-width">
                 <button id="btnTestCamera" type="button">Test Connection</button>
                 <button class="primary" id="btnConnectCamera" type="submit">Connect Camera</button>
@@ -119,18 +123,25 @@
               <h2>Saved Cameras</h2>
               <button id="btnRefreshCameras" type="button">Refresh</button>
             </div>
+            <div class="active-slots" id="activeSlotList"></div>
             <div class="form-grid camera-active-form">
               <label>
-                Active Camera
-                <select id="activeCameraSelect"></select>
+                Slot
+                <input id="activeSlotNumber" type="number" min="1" max="16" value="1" />
               </label>
-              <button class="primary" id="btnSetActiveCamera" type="button">Set Active</button>
+              <label>
+                Camera
+                <select id="slotCameraSelect"></select>
+              </label>
+              <button class="primary" id="btnSetActiveCamera" type="button">Assign Slot</button>
+              <button id="btnClearCameraSlot" type="button">Clear Slot</button>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>Name</th>
+                    <th>Slot</th>
                     <th>Stream</th>
                     <th>Status</th>
                     <th>Active</th>
@@ -186,13 +197,9 @@
           <div class="panel split-panel">
             <div>
               <div class="panel-head">
-                <h2>Warehouse live view</h2>
+                <h2>Camera live views</h2>
               </div>
-              <div class="video-frame">
-                <video id="warehouseVideo" autoplay playsinline muted></video>
-                <img id="warehouseFallback" alt="Live feed unavailable." class="hidden" />
-                <div class="video-hint" id="warehouseHint">Loading camera...</div>
-              </div>
+              <div class="camera-live-grid" id="cameraLiveGrid"></div>
             </div>
 
             <div>
@@ -494,6 +501,6 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/app.js?v=cctv-camera-diagnostics" type="module"></script>
+    <script src="/assets/app.js?v=multi-camera-slots" type="module"></script>
   </body>
 </html>

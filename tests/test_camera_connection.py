@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from api.server import _redact_sensitive_text, _test_camera_stream
+from api.server import _live_feed_path, _next_available_slot, _redact_sensitive_text, _test_camera_stream
 from cameras.camera import _mask_source
 
 
@@ -41,6 +41,20 @@ def test_camera_log_source_masks_rtsp_password():
     masked = _mask_source(source)
 
     assert masked == "rtsp://admin:****@192.168.0.151:554/Streaming/Channels/101"
+
+
+def test_next_available_camera_slot_uses_first_gap():
+    cameras = [
+        {"is_active": True, "slot_number": 1},
+        {"is_active": True, "slot_number": 3},
+        {"is_active": False, "slot_number": 2},
+    ]
+
+    assert _next_available_slot(cameras) == 2
+
+
+def test_live_feed_path_can_target_slot():
+    assert _live_feed_path(slot=3).name == "latest_slot_3.jpg"
 
 
 def test_camera_stream_bare_ip_returns_actionable_message():

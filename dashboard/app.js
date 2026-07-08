@@ -10,12 +10,16 @@ const els = {
   cameraForm: document.querySelector("#cameraForm"),
   cameraName: document.querySelector("#cameraName"),
   cameraStreamUrl: document.querySelector("#cameraStreamUrl"),
+  cameraSlot: document.querySelector("#cameraSlot"),
   cameraConnectionDetail: document.querySelector("#cameraConnectionDetail"),
   btnTestCamera: document.querySelector("#btnTestCamera"),
   btnConnectCamera: document.querySelector("#btnConnectCamera"),
   btnRefreshCameras: document.querySelector("#btnRefreshCameras"),
   btnSetActiveCamera: document.querySelector("#btnSetActiveCamera"),
-  activeCameraSelect: document.querySelector("#activeCameraSelect"),
+  btnClearCameraSlot: document.querySelector("#btnClearCameraSlot"),
+  activeSlotNumber: document.querySelector("#activeSlotNumber"),
+  slotCameraSelect: document.querySelector("#slotCameraSelect"),
+  activeSlotList: document.querySelector("#activeSlotList"),
   savedCameraTable: document.querySelector("#savedCameraTable"),
   cameraConnectionStatus: document.querySelector("#cameraConnectionStatus"),
   itemForm: document.querySelector("#itemForm"),
@@ -33,9 +37,7 @@ const els = {
   healthTracking: document.querySelector("#healthTracking"),
   healthStockMode: document.querySelector("#healthStockMode"),
   healthMessage: document.querySelector("#healthMessage"),
-  warehouseVideo: document.querySelector("#warehouseVideo"),
-  warehouseFallback: document.querySelector("#warehouseFallback"),
-  warehouseHint: document.querySelector("#warehouseHint"),
+  cameraLiveGrid: document.querySelector("#cameraLiveGrid"),
   checkItemId: document.querySelector("#checkItemId"),
   checkQuantity: document.querySelector("#checkQuantity"),
   checkNote: document.querySelector("#checkNote"),
@@ -142,6 +144,7 @@ const setActiveTab = (tab) => {
 const cameraState = {
   cameras: [],
   activeCamera: null,
+  activeCameras: [],
 };
 
 const setCameraConnectionStatus = (status, message) => {
@@ -161,12 +164,14 @@ const loadCameras = async () => {
   const data = await api("/api/cameras");
   cameraState.cameras = data.cameras || [];
   cameraState.activeCamera = data.active_camera || null;
+  cameraState.activeCameras = data.active_cameras || [];
   renderCameras();
+  renderLiveScreens();
 };
 
 const renderCameras = () => {
   const cameras = cameraState.cameras;
-  els.activeCameraSelect.innerHTML =
+  els.slotCameraSelect.innerHTML =
     cameras
       .map(
         (camera) =>
@@ -174,13 +179,21 @@ const renderCameras = () => {
       )
       .join("") || `<option value="">No saved cameras</option>`;
 
+  els.activeSlotList.innerHTML =
+    cameraState.activeCameras
+      .map(
+        (camera) =>
+          `<div class="slot-chip"><span>Slot ${escapeHtml(camera.slot_number || "-")}</span><strong>${escapeHtml(camera.name)}</strong><em>${escapeHtml(camera.status)}</em></div>`
+      )
+      .join("") || `<p class="panel-sub">No active camera slots yet.</p>`;
+
   els.savedCameraTable.innerHTML =
     cameras
       .map(
         (camera) =>
-          `<tr><td>${escapeHtml(camera.name)}</td><td>${escapeHtml(camera.masked_stream_url)}</td><td>${escapeHtml(camera.status)}</td><td>${camera.is_active ? "Active" : "—"}</td></tr>`
+          `<tr><td>${escapeHtml(camera.name)}</td><td>${escapeHtml(camera.slot_number || "-")}</td><td>${escapeHtml(camera.masked_stream_url)}</td><td>${escapeHtml(camera.status)}</td><td>${camera.is_active ? "Active" : "-"}</td></tr>`
       )
-      .join("") || `<tr><td colspan="4">No saved cameras yet.</td></tr>`;
+      .join("") || `<tr><td colspan="5">No saved cameras yet.</td></tr>`;
 };
 
 const handleTestCamera = async () => {
@@ -212,8 +225,13 @@ const handleConnectCamera = async (event) => {
   event.preventDefault();
   const name = els.cameraName.value.trim();
   const streamUrl = els.cameraStreamUrl.value.trim();
+  const slotNumber = Number(els.cameraSlot.value || 1);
   if (!name || !streamUrl) {
     toast("Camera name and stream URL are required.");
+    return;
+  }
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
+    toast("Camera slot must be between 1 and 16.");
     return;
   }
 
@@ -227,10 +245,13 @@ const handleConnectCamera = async (event) => {
         stream_url: streamUrl,
         make_active: true,
         test_connection: true,
+        slot_number: slotNumber,
       }),
     });
     cameraState.cameras = result.cameras || [];
+    cameraState.activeCameras = result.active_cameras || [];
     renderCameras();
+    renderLiveScreens();
     const connected = result.test?.status === "connected";
     setCameraConnectionStatus(connected ? "connected" : "failed", result.test?.message);
     toast(connected ? "Camera connected and set active." : result.test?.message || "Camera saved but connection failed.");
@@ -243,22 +264,54 @@ const handleConnectCamera = async (event) => {
 };
 
 const handleSetActiveCamera = async () => {
-  const cameraId = els.activeCameraSelect.value;
+  const cameraId = els.slotCameraSelect.value;
+  const slotNumber = Number(els.activeSlotNumber.value || 1);
   if (!cameraId) {
     toast("Select a saved camera first.");
+    return;
+  }
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
+    toast("Slot must be between 1 and 16.");
     return;
   }
 
   els.btnSetActiveCamera.disabled = true;
   try {
-    const result = await api(`/api/cameras/${cameraId}/activate`, { method: "POST" });
+    const result = await api(`/api/cameras/${cameraId}/activate`, {
+      method: "POST",
+      body: JSON.stringify({ slot_number: slotNumber }),
+    });
     cameraState.cameras = result.cameras || [];
+    cameraState.activeCameras = result.active_cameras || [];
     renderCameras();
-    toast(result.restarted ? "Active camera changed and detection restarted." : "Active camera changed.");
+    renderLiveScreens();
+    toast(result.restarted ? "Camera slot assigned and detection restarted." : "Camera slot assigned.");
   } catch (error) {
     toast(error.message);
   } finally {
     els.btnSetActiveCamera.disabled = false;
+  }
+};
+
+const handleClearCameraSlot = async () => {
+  const slotNumber = Number(els.activeSlotNumber.value || 1);
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
+    toast("Slot must be between 1 and 16.");
+    return;
+  }
+
+  els.btnClearCameraSlot.disabled = true;
+  try {
+    const result = await api(`/api/camera-slots/${slotNumber}`, { method: "DELETE" });
+    cameraState.cameras = result.cameras || [];
+    cameraState.activeCameras = result.active_cameras || [];
+    renderCameras();
+    renderLiveScreens();
+    toast(result.restarted ? "Camera slot cleared and detection restarted." : "Camera slot cleared.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    els.btnClearCameraSlot.disabled = false;
   }
 };
 
@@ -545,15 +598,43 @@ const handleDetectionAction = async (action, button) => {
   }
 };
 
+const renderLiveScreens = () => {
+  if (!els.cameraLiveGrid) return;
+
+  const activeCameras = cameraState.activeCameras || [];
+  if (!activeCameras.length) {
+    els.cameraLiveGrid.innerHTML =
+      `<div class="camera-screen empty"><div><strong>No active camera slots</strong><span>Assign saved cameras to slots in Camera Settings.</span></div></div>`;
+    return;
+  }
+
+  els.cameraLiveGrid.innerHTML = activeCameras
+    .map((camera) => {
+      const slot = camera.slot_number || 1;
+      return `
+        <div class="camera-screen">
+          <div class="screen-head">
+            <span>Slot ${escapeHtml(slot)}</span>
+            <strong>${escapeHtml(camera.name)}</strong>
+            <em>${escapeHtml(camera.status)}</em>
+          </div>
+          <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} live view" />
+        </div>
+      `;
+    })
+    .join("");
+};
+
+const refreshLiveScreens = () => {
+  document.querySelectorAll("[data-live-slot]").forEach((image) => {
+    image.src = `/api/live_mjpeg?slot=${encodeURIComponent(image.dataset.liveSlot)}&t=${Date.now()}`;
+  });
+};
+
 const startLiveFeed = async () => {
-  els.warehouseVideo.classList.add("hidden");
-  els.warehouseFallback.classList.remove("hidden");
-  els.warehouseHint.textContent = "Using backend AI feed";
-  const refreshImage = () => {
-    els.warehouseFallback.src = "/api/live_mjpeg?t=" + Date.now();
-  };
-  refreshImage();
-  window.setInterval(refreshImage, 800);
+  renderLiveScreens();
+  refreshLiveScreens();
+  window.setInterval(refreshLiveScreens, 800);
 };
 
 els.navButtons.forEach((button) => {
@@ -566,6 +647,7 @@ els.refreshBtn.addEventListener("click", refreshDashboard);
 els.btnRefreshCameras.addEventListener("click", loadCameras);
 els.btnTestCamera.addEventListener("click", handleTestCamera);
 els.btnSetActiveCamera.addEventListener("click", handleSetActiveCamera);
+els.btnClearCameraSlot.addEventListener("click", handleClearCameraSlot);
 els.btnStartDetection.addEventListener("click", () =>
   handleDetectionAction("start", els.btnStartDetection)
 );
