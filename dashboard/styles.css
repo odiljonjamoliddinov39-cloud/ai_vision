@@ -467,12 +467,31 @@ tr:nth-child(even) {
   background: #f8fafc;
 }
 
+.screen-body {
+  position: relative;
+  background: #0b1220;
+}
+
 .camera-screen img {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 10;
   object-fit: cover;
   background: #0b1220;
+}
+
+.screen-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #cbd5e1;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.screen-body.has-frame .screen-placeholder {
+  display: none;
 }
 
 @media (max-width: 950px) {

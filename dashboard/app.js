@@ -618,16 +618,32 @@ const renderLiveScreens = () => {
             <strong>${escapeHtml(camera.name)}</strong>
             <em>${escapeHtml(camera.status)}</em>
           </div>
-          <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} live view" />
+          <div class="screen-body">
+            <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} live view" />
+            <span class="screen-placeholder" data-live-placeholder>Waiting for frames</span>
+          </div>
         </div>
       `;
     })
     .join("");
+  refreshLiveScreens();
 };
 
 const refreshLiveScreens = () => {
   document.querySelectorAll("[data-live-slot]").forEach((image) => {
-    image.src = `/api/live_mjpeg?slot=${encodeURIComponent(image.dataset.liveSlot)}&t=${Date.now()}`;
+    if (!image.dataset.bound) {
+      image.dataset.bound = "true";
+      image.addEventListener("load", () => {
+        image.closest(".screen-body")?.classList.add("has-frame");
+      });
+      image.addEventListener("error", () => {
+        image.closest(".screen-body")?.classList.remove("has-frame");
+      });
+    }
+
+    if (!image.getAttribute("src")) {
+      image.src = `/api/live_mjpeg?slot=${encodeURIComponent(image.dataset.liveSlot)}`;
+    }
   });
 };
 

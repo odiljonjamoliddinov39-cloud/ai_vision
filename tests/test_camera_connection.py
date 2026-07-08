@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from api.server import _live_feed_path, _next_available_slot, _redact_sensitive_text, _test_camera_stream
+from api.server import (
+    _live_feed_path,
+    _live_feed_paths,
+    _next_available_slot,
+    _redact_sensitive_text,
+    _test_camera_stream,
+)
 from cameras.camera import _mask_source
 
 
@@ -55,6 +61,12 @@ def test_next_available_camera_slot_uses_first_gap():
 
 def test_live_feed_path_can_target_slot():
     assert _live_feed_path(slot=3).name == "latest_slot_3.jpg"
+
+
+def test_live_feed_paths_fall_back_to_global_latest():
+    paths = _live_feed_paths(slot=3)
+
+    assert [path.name for path in paths] == ["latest_slot_3.jpg", "latest.jpg"]
 
 
 def test_camera_stream_bare_ip_returns_actionable_message():

@@ -45,6 +45,7 @@ CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
+DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
 
@@ -479,13 +480,167 @@ def _poll_process() -> None:
                 handle.close()
         _stdout_handle = None
         _stderr_handle = None
+        _clear_detector_pid()
+
+
+def _write_detector_pid(pid: int) -> None:
+    DETECTION_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DETECTION_PID_PATH.write_text(str(pid), encoding="utf-8")
+
+
+def _clear_detector_pid() -> None:
+    try:
+        DETECTION_PID_PATH.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _read_detector_pid() -> int | None:
+    try:
+        value = DETECTION_PID_PATH.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+
+    try:
+        return int(value)
+    except ValueError:
+        _clear_detector_pid()
+        return None
+
+
+def _is_detector_command(command_line: str | None) -> bool:
+    if not command_line:
+        return False
+    normalized = command_line.replace("\\", "/").lower()
+    root_marker = str(ROOT).replace("\\", "/").lower()
+    main_marker = str(ROOT / "main.py").replace("\\", "/").lower()
+    return root_marker in normalized and main_marker in normalized and "--config" in normalized
+
+
+def _process_command_line(pid: int) -> str | None:
+    if pid <= 0:
+        return None
+
+    if os.name == "nt":
+        command = (
+            "$p = Get-CimInstance Win32_Process -Filter 'ProcessId = "
+            f"{pid}' -ErrorAction SilentlyContinue; "
+            "if ($p) { $p.CommandLine }"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+
+    proc_cmdline = Path("/proc") / str(pid) / "cmdline"
+    try:
+        return proc_cmdline.read_text(encoding="utf-8", errors="replace").replace("\x00", " ")
+    except OSError:
+        return None
+
+
+def _pid_is_detector(pid: int) -> bool:
+    return _is_detector_command(_process_command_line(pid))
+
+
+def _discover_detector_pid() -> int | None:
+    if os.name == "nt":
+        command = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.Name -like 'python*' -and $_.CommandLine -like '*main.py*' } | "
+            'ForEach-Object { [string]$_.ProcessId + "`t" + $_.CommandLine }'
+        )
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        lines = result.stdout.splitlines()
+    else:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-af", "main.py"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            return None
+        lines = result.stdout.splitlines()
+
+    for line in lines:
+        pid_text, _separator, command_line = line.partition("\t")
+        if not command_line and " " in pid_text:
+            pid_text, _separator, command_line = pid_text.partition(" ")
+        try:
+            pid = int(pid_text.strip())
+        except ValueError:
+            continue
+        if _is_detector_command(command_line):
+            return pid
+    return None
+
+
+def _detector_pid() -> int | None:
+    _poll_process()
+    if _process is not None:
+        return _process.pid
+
+    pid = _read_detector_pid()
+    if pid is None:
+        discovered_pid = _discover_detector_pid()
+        if discovered_pid is not None:
+            _write_detector_pid(discovered_pid)
+        return discovered_pid
+    if _pid_is_detector(pid):
+        return pid
+
+    _clear_detector_pid()
+    return None
+
+
+def _terminate_pid(pid: int) -> int | None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T"], capture_output=True, text=True, timeout=10)
+        if _pid_is_detector(pid):
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        return None
+
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if not _pid_is_detector(pid):
+            return 0
+        time.sleep(0.2)
+
+    os.kill(pid, signal.SIGKILL)
+    return None
 
 
 def _status() -> dict[str, Any]:
-    _poll_process()
+    pid = _detector_pid()
     return {
-        "running": _process is not None,
-        "pid": _process.pid if _process else None,
+        "running": pid is not None,
+        "pid": pid,
         "started_at": _started_at,
         "uptime_seconds": round(time.time() - _started_at, 1)
         if _started_at
@@ -658,8 +813,7 @@ def clear_camera_slot(slot_number: int) -> dict[str, Any]:
 def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle
     request = request or StartRequest()
-    _poll_process()
-    if _process is not None:
+    if _detector_pid() is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -701,34 +855,41 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     )
     _started_at = time.time()
     _last_exit_code = None
+    _write_detector_pid(_process.pid)
     return _status()
 
 
 @app.post("/api/stop")
 def stop_detection() -> dict[str, Any]:
     global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle
-    _poll_process()
-    if _process is None:
+    process = _process
+    pid = _detector_pid()
+    if pid is None:
         return _status()
 
-    process = _process
-    if os.name == "nt":
-        process.terminate()
+    if process is None:
+        _last_exit_code = _terminate_pid(pid)
+    elif os.name == "nt":
+        _terminate_pid(process.pid)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        _last_exit_code = process.returncode
     else:
         os.killpg(process.pid, signal.SIGTERM)
 
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            process.kill()
-        else:
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
+            process.wait(timeout=5)
+        _last_exit_code = process.returncode
 
-    _last_exit_code = process.returncode
     _process = None
     _started_at = None
+    _clear_detector_pid()
     DETECTION_HEALTH_PATH.write_text(
         json.dumps(
             {
@@ -920,11 +1081,12 @@ async def live_mjpeg(slot: int | None = None, camera: str | None = None):
     """
 
     boundary = "frame"
-    latest = _live_feed_path(slot=slot, camera=camera)
+    latest_paths = _live_feed_paths(slot=slot, camera=camera)
 
     async def frame_generator():
         while True:
-            if latest.exists():
+            latest = next((path for path in latest_paths if path.exists()), None)
+            if latest is not None:
                 try:
                     data = latest.read_bytes()
                     header = (
@@ -948,6 +1110,14 @@ def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
         safe_name = "".join(ch if ch.isalnum() else "_" for ch in camera).strip("_") or "camera"
         return SNAPSHOT_DIR / f"latest_{safe_name}.jpg"
     return SNAPSHOT_DIR / "latest.jpg"
+
+
+def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list[Path]:
+    paths = [_live_feed_path(slot=slot, camera=camera)]
+    fallback = SNAPSHOT_DIR / "latest.jpg"
+    if fallback not in paths:
+        paths.append(fallback)
+    return paths
 
 
 app.mount("/assets", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-assets")
