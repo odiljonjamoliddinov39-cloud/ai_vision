@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 import cv2
 import numpy as np
@@ -41,7 +42,16 @@ class Camera:
         self._dummy = source == "dummy"
         self._backend_index = 0
         self._backends = self._camera_backends(source)
+        self._is_network_stream = isinstance(source, str) and source.lower().startswith(
+            ("rtsp://", "http://", "https://")
+        )
+        self._frame = None
+        self._frame_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._reader_thread: threading.Thread | None = None
         self._open()
+        if self._is_network_stream:
+            self._start_reader()
 
     def _open(self) -> None:
         if self._dummy:
@@ -57,6 +67,8 @@ class Camera:
             raise ConnectionError(
                 f"[{self.name}] Could not open camera source: {_mask_source(self.source)!r} ({backend_name})"
             )
+        if self._is_network_stream:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         print(f"[{self.name}] Opened with backend: {backend_name}")
 
     def read(self):
@@ -66,6 +78,15 @@ class Camera:
         """
         if self._dummy:
             return self._read_dummy_frame()
+
+        if self._is_network_stream:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and not self._stop_event.is_set():
+                with self._frame_lock:
+                    if self._frame is not None:
+                        return self._frame.copy()
+                time.sleep(0.02)
+            return None
 
         if self.cap is None or not self.cap.isOpened():
             self._try_reconnect()
@@ -78,13 +99,43 @@ class Camera:
                 return None
         return frame
 
+    def _start_reader(self) -> None:
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name=f"camera-reader-{self.name}",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+    def _reader_loop(self) -> None:
+        while not self._stop_event.is_set():
+            cap = self.cap
+            if cap is None or not cap.isOpened():
+                self._try_reconnect()
+                continue
+
+            ok, frame = cap.read()
+            if ok:
+                with self._frame_lock:
+                    self._frame = frame
+                continue
+
+            with self._frame_lock:
+                self._frame = None
+            self._try_reconnect()
+
     def _try_reconnect(self) -> None:
+        if self._stop_event.is_set():
+            return
         print(f"[{self.name}] Connection lost, reconnecting...")
         if self.cap is not None:
             self.cap.release()
-        time.sleep(self.reconnect_delay)
+        if self._stop_event.wait(self.reconnect_delay):
+            return
 
         for _ in range(len(self._backends)):
+            if self._stop_event.is_set():
+                return
             self._backend_index = (self._backend_index + 1) % len(self._backends)
             try:
                 self._open()
@@ -93,8 +144,14 @@ class Camera:
                 print(str(e))
 
     def release(self) -> None:
+        self._stop_event.set()
         if self.cap is not None:
             self.cap.release()
+        if (
+            self._reader_thread is not None
+            and self._reader_thread is not threading.current_thread()
+        ):
+            self._reader_thread.join(timeout=2.0)
 
     def is_opened(self) -> bool:
         if self._dummy:

@@ -95,18 +95,32 @@ class LineCounter:
 
 
 class AppearanceCounter:
-    def __init__(self, camera_id: str):
+    def __init__(self, camera_id: str, duplicate_iou_threshold: float = 0.3):
         self.camera_id = camera_id
+        self.duplicate_iou_threshold = duplicate_iou_threshold
         self.counted_ids: set[int] = set()
+        self.counted_objects: list[tuple[str, tuple[int, int, int, int]]] = []
+        self.track_to_object: dict[int, int] = {}
 
     def update(self, tracked_objects) -> list[LineCrossingEvent]:
         events: list[LineCrossingEvent] = []
 
         for obj in tracked_objects:
-            if obj.track_id in self.counted_ids:
+            existing_index = self.track_to_object.get(obj.track_id)
+            if existing_index is not None:
+                self.counted_objects[existing_index] = (obj.class_name, obj.box)
                 continue
 
+            duplicate_index = self._find_spatial_duplicate(obj)
             self.counted_ids.add(obj.track_id)
+            if duplicate_index is not None:
+                self.track_to_object[obj.track_id] = duplicate_index
+                self.counted_objects[duplicate_index] = (obj.class_name, obj.box)
+                continue
+
+            object_index = len(self.counted_objects)
+            self.counted_objects.append((obj.class_name, obj.box))
+            self.track_to_object[obj.track_id] = object_index
             center = _box_center(obj.box)
             events.append(
                 LineCrossingEvent(
@@ -123,10 +137,36 @@ class AppearanceCounter:
 
         return events
 
+    def _find_spatial_duplicate(self, obj) -> int | None:
+        for index, (class_name, box) in enumerate(self.counted_objects):
+            if class_name != obj.class_name:
+                continue
+            if _box_iou(box, obj.box) >= self.duplicate_iou_threshold:
+                return index
+        return None
+
 
 def _box_center(box: tuple[int, int, int, int]) -> tuple[int, int]:
     x1, y1, x2, y2 = box
     return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+
+def _box_iou(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> float:
+    x1 = max(first[0], second[0])
+    y1 = max(first[1], second[1])
+    x2 = min(first[2], second[2])
+    y2 = min(first[3], second[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    if intersection == 0:
+        return 0.0
+
+    first_area = max(0, first[2] - first[0]) * max(0, first[3] - first[1])
+    second_area = max(0, second[2] - second[0]) * max(0, second[3] - second[1])
+    union = first_area + second_area - intersection
+    return intersection / union if union else 0.0
 
 
 def _line_side(point: tuple[int, int], x1: int, y1: int, x2: int, y2: int) -> int:

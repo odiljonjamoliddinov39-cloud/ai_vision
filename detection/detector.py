@@ -9,6 +9,7 @@ FR-2: Object Detection
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -25,28 +26,42 @@ class Detector:
         confidence_threshold: float = 0.5,
         device: str = "cpu",
         classes: list[str] | None = None,
+        class_prompts: list[str] | None = None,
+        image_size: int = 640,
+        class_agnostic_nms: bool = False,
     ):
         if model_path == "dummy":
             self.model = None
             self.confidence_threshold = confidence_threshold
             self.device = device
             self.classes_filter = set(classes) if classes else None
+            self.class_prompts = class_prompts or []
+            self.image_size = image_size
+            self.class_agnostic_nms = class_agnostic_nms
             return
 
         # Imported lazily so the rest of the project can be explored/tested
         # without requiring ultralytics/torch to be installed.
         from ultralytics import YOLO
 
-        if model_path == "models/yolov8n.pt":
-            from pathlib import Path
-
-            if not Path(model_path).exists():
-                model_path = "yolov8n.pt"
+        if not Path(model_path).exists() and Path(model_path).parent.name == "models":
+            model_path = Path(model_path).name
 
         self.model = YOLO(model_path)
         self.confidence_threshold = confidence_threshold
         self.device = device
         self.classes_filter = set(classes) if classes else None
+        self.class_prompts = class_prompts or []
+        self.image_size = image_size
+        self.class_agnostic_nms = class_agnostic_nms
+
+        if self.class_prompts:
+            set_classes = getattr(self.model, "set_classes", None)
+            if set_classes is None:
+                raise ValueError(
+                    "detection.class_prompts requires an open-vocabulary YOLO model."
+                )
+            set_classes(self.class_prompts)
 
     def detect(self, frame) -> list[Detection]:
         """
@@ -60,6 +75,8 @@ class Detector:
             source=frame,
             conf=self.confidence_threshold,
             device=self.device,
+            imgsz=self.image_size,
+            agnostic_nms=self.class_agnostic_nms,
             verbose=False,
         )
 

@@ -1,6 +1,7 @@
 # Core (Phase 1 MVP)
 opencv-python>=4.9.0
 ultralytics>=8.2.0
+git+https://github.com/ultralytics/CLIP.git
 PyYAML>=6.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0

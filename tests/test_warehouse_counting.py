@@ -62,3 +62,21 @@ def test_appearance_counter_counts_first_confident_sighting_once():
     assert first[0].direction == "IN"
     assert first[0].product_name == "box"
     assert second == []
+
+
+def test_appearance_counter_suppresses_overlapping_tracker_id_change():
+    counter = AppearanceCounter(camera_id="Camera 1")
+
+    first = counter.update(
+        [_FakeTrackedObject(track_id=2, class_name="box", box=(100, 100, 300, 300))]
+    )
+    reassigned = counter.update(
+        [_FakeTrackedObject(track_id=32, class_name="box", box=(108, 104, 305, 304))]
+    )
+    separate = counter.update(
+        [_FakeTrackedObject(track_id=33, class_name="box", box=(400, 100, 600, 300))]
+    )
+
+    assert len(first) == 1
+    assert reassigned == []
+    assert len(separate) == 1

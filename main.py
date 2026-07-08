@@ -104,6 +104,9 @@ def main():
         confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
         device=det_cfg.get("device", "cpu"),
         classes=det_cfg.get("classes"),
+        class_prompts=det_cfg.get("class_prompts"),
+        image_size=det_cfg.get("image_size", 640),
+        class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
     )
     if detector.model is None:
         print("Using deterministic dummy detector. Starting demo run...")
@@ -124,6 +127,8 @@ def main():
             device=det_cfg.get("device", "cpu"),
             classes=track_cfg.get("classes", det_cfg.get("classes")),
             tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
+            image_size=det_cfg.get("image_size", 640),
+            class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
         )
         presence_tracker = PresenceTracker(
             grace_period_seconds=track_cfg.get("grace_period_seconds", 5.0)

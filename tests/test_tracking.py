@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from dataclasses import dataclass
 
 from tracking.presence import PresenceTracker
+from tracking.tracker import ObjectTracker
 from database.tracking_db import TrackingDB
 
 
@@ -107,3 +108,54 @@ def test_tracking_db_recent_events_most_recent_first(tmp_path):
     assert len(events) == 2
     assert events[0]["event_type"] == "check_out"
     assert events[1]["event_type"] == "check_in"
+
+
+def test_object_tracker_keeps_stationary_detection_and_image_size():
+    class Values:
+        def __init__(self, values):
+            self.values = values
+
+        def tolist(self):
+            return self.values
+
+        def __getitem__(self, index):
+            value = self.values[index]
+            return Values(value) if isinstance(value, list) else value
+
+    class FakeBoxes:
+        id = Values([17])
+        cls = Values([0])
+        conf = Values([0.2])
+        xyxy = Values([[100, 100, 300, 300]])
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def track(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                type(
+                    "Result",
+                    (),
+                    {"names": {0: "stack of sacks"}, "boxes": FakeBoxes()},
+                )()
+            ]
+
+    model = FakeModel()
+    tracker = ObjectTracker(
+        model=model,
+        confidence_threshold=0.08,
+        tracker_config="config/warehouse_bytetrack.yaml",
+        image_size=960,
+        class_agnostic_nms=True,
+    )
+
+    first = tracker.update(object())
+    second = tracker.update(object())
+
+    assert first[0].track_id == second[0].track_id == 17
+    assert first[0].class_name == "stack of sacks"
+    assert model.calls[0]["persist"] is True
+    assert model.calls[0]["imgsz"] == 960
+    assert model.calls[0]["agnostic_nms"] is True
