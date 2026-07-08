@@ -18,6 +18,24 @@ detection:
   - wrapped pallet
   - wooden pallet
   - warehouse package
+spatial_analysis:
+  enabled: true
+  horizontal_fov_degrees: 90.0
+  camera_height_m: 1.2
+  horizon_y_ratio: 0.28
+  min_distance_m: 0.5
+  max_distance_m: 50.0
+  estimate_depth_layers: false
+  max_units_per_detection: 200
+  unit_dimensions:
+    cardboard box:
+      width_m: 0.45
+      height_m: 0.35
+      depth_m: 0.35
+    sack:
+      width_m: 0.55
+      height_m: 0.18
+      depth_m: 0.25
 display:
   show_fps: true
   window_prefix: AI Vision -

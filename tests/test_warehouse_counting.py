@@ -51,6 +51,31 @@ def test_warehouse_db_records_in_and_out_movements(tmp_path):
     assert movements[1]["direction"] == "IN"
 
 
+def test_warehouse_db_records_spatial_quantity_metadata(tmp_path):
+    db = WarehouseDB(db_path=str(tmp_path / "warehouse.db"))
+
+    stock = db.record_movement(
+        "cardboard box",
+        "IN",
+        "Camera 1",
+        7,
+        0.9,
+        quantity=8,
+        object_type="cuboid",
+        dimensions_m=(1.73, 0.7, 0.95),
+        distance_m=6.14,
+        quantity_grid=(4, 2, 1),
+        measurement_method="monocular_ground_plane",
+    )
+
+    assert stock == 8
+    movement = db.recent_movements(limit=1)[0]
+    assert movement["quantity"] == 8
+    assert movement["object_type"] == "cuboid"
+    assert movement["estimated_width_m"] == 1.73
+    assert movement["quantity_grid"] == "4x2x1"
+
+
 def test_appearance_counter_counts_first_confident_sighting_once():
     counter = AppearanceCounter(camera_id="Camera 1")
     obj = _FakeTrackedObject(track_id=10, class_name="box")
@@ -80,3 +105,27 @@ def test_appearance_counter_suppresses_overlapping_tracker_id_change():
     assert len(first) == 1
     assert reassigned == []
     assert len(separate) == 1
+
+
+def test_appearance_counter_carries_spatial_unit_count():
+    counter = AppearanceCounter(camera_id="Camera 1")
+    obj = _FakeTrackedObject(
+        track_id=10,
+        class_name="stack of cardboard boxes",
+        box=(100, 100, 300, 300),
+    )
+    obj.inventory_name = "cardboard box"
+    obj.object_type = "cuboid"
+    obj.quantity = 8
+    obj.quantity_grid = (4, 2, 1)
+    obj.width_m = 1.73
+    obj.height_m = 0.7
+    obj.depth_m = 0.95
+    obj.distance_m = 6.14
+    obj.method = "monocular_ground_plane"
+
+    event = counter.update([obj])[0]
+
+    assert event.product_name == "cardboard box"
+    assert event.quantity == 8
+    assert event.dimensions_m == (1.73, 0.7, 0.95)

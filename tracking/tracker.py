@@ -27,6 +27,15 @@ class TrackedObject:
     class_name: str
     confidence: float
     box: tuple  # (x1, y1, x2, y2)
+    object_type: str | None = None
+    inventory_name: str | None = None
+    quantity: int = 1
+    quantity_grid: tuple[int, int, int] = (1, 1, 1)
+    width_m: float | None = None
+    height_m: float | None = None
+    depth_m: float | None = None
+    distance_m: float | None = None
+    method: str | None = None
 
 
 class ObjectTracker:

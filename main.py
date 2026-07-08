@@ -41,6 +41,7 @@ import os
 from cameras.camera import load_cameras
 from detection.detector import Detector
 from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
+from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
@@ -112,6 +113,19 @@ def main():
         print("Using deterministic dummy detector. Starting demo run...")
     else:
         print("Model loaded. Starting live detection... (press 'q' to quit)")
+
+    spatial_cfg = config.get("spatial_analysis", {})
+    spatial_analyzer = (
+        SpatialAnalyzer.from_config(spatial_cfg)
+        if spatial_cfg.get("enabled", False)
+        else None
+    )
+    if spatial_analyzer is not None:
+        print(
+            "Monocular 3D sizing enabled "
+            f"(camera height {spatial_analyzer.camera_height_m:.2f}m, "
+            f"horizontal FOV {spatial_analyzer.horizontal_fov_degrees:.1f}deg)."
+        )
 
     # --- Tracking (Phase 3) + occupancy (Phase 4) ---
     track_cfg = config.get("tracking", {})
@@ -196,6 +210,7 @@ def main():
     last_detection_count = 0
     last_tracked_count = 0
     last_frame_at = None
+    last_spatial_objects = []
 
     prev_time = time.time()
     frame_number = 0
@@ -237,6 +252,15 @@ def main():
                     last_tracked_count = 0
 
                 last_detection_count = len(detections)
+                if spatial_analyzer is not None:
+                    measurements = spatial_analyzer.enrich(frame, detections)
+                    last_spatial_objects = [
+                        {
+                            **measurement.__dict__,
+                            "quantity_grid": list(measurement.quantity_grid),
+                        }
+                        for measurement in measurements
+                    ]
 
                 draw_detections(frame, detections, box_thickness, font_scale)
                 if display_cfg.get("show_fps", True):
@@ -315,6 +339,8 @@ def main():
                     "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
                     if warehouse_enabled
                     else None,
+                    "spatial_analysis_enabled": spatial_analyzer is not None,
+                    "last_spatial_objects": last_spatial_objects,
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
@@ -421,10 +447,17 @@ def _process_warehouse_counting(
             camera_id=event.camera_id,
             tracking_id=event.tracking_id,
             confidence=event.confidence,
+            quantity=event.quantity,
+            object_type=event.object_type,
+            dimensions_m=event.dimensions_m,
+            distance_m=event.distance_m,
+            quantity_grid=event.quantity_grid,
+            measurement_method=event.measurement_method,
         )
         action = "recognized" if count_mode == "appearance" else f"crossed {event.direction}"
         print(
-            f"[{event.camera_id}] {event.product_name} ID={event.tracking_id} "
+            f"[{event.camera_id}] {event.quantity}x {event.product_name} "
+            f"ID={event.tracking_id} "
             f"{action} | stock {event.product_name} = {stock}"
         )
 

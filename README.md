@@ -110,9 +110,26 @@ zipped/committed even before those phases are built.
 | `detection`   | `confidence_threshold`  | Minimum confidence to keep a detection (0–1)          |
 | `detection`   | `device`                | `"cpu"` or `"cuda"`                                    |
 | `detection`   | `classes`                | `null` for all classes, or a list like `["person"]`   |
+| `spatial_analysis` | `camera_height_m`  | Camera lens height above the floor                     |
+| `spatial_analysis` | `horizon_y_ratio`  | Horizon row divided by frame height                    |
+| `spatial_analysis` | `horizontal_fov_degrees` | Camera horizontal field of view                  |
+| `spatial_analysis` | `unit_dimensions`  | Known unit dimensions used for stack quantity estimates |
 | `snapshots`   | `trigger_classes`        | Classes that trigger an auto-saved image              |
 | `snapshots`   | `cooldown_seconds`       | Minimum gap between snapshots of the same class       |
 | `logging`     | `log_file`                | Where detection events are appended                    |
+
+### Monocular 3D estimates
+
+The live feed and recognition dashboard show estimated object type,
+distance, `W x H x D`, and stack quantity. Stack quantity is calculated
+from the calibrated view and the configured dimensions of one unit. The
+default keeps depth layers at one because a single CCTV image cannot see
+hidden layers reliably. Set `estimate_depth_layers: true` only after
+calibrating against known stacks.
+
+For accurate metric sizing, measure the lens height, tune the horizon to
+the camera view, and enter the real box or sack dimensions. Certified
+measurements require a stereo or depth camera.
 
 ## Troubleshooting
 
@@ -120,8 +137,8 @@ zipped/committed even before those phases are built.
   or `2` if `0` doesn't work (some systems have multiple video
   devices registered). For RTSP, double check the URL works in VLC
   first (`Media → Open Network Stream`).
-- **Low FPS on CPU**: use `yolov8n.pt` (already the default — the
-  smallest/fastest model), lower your camera resolution, or run on a
+- **Low FPS on CPU**: lower `detection.image_size`, use a smaller model,
+  lower your camera resolution, or run on a
   machine with a CUDA GPU and set `device: "cuda"`.
 - **RTSP keeps disconnecting**: this is normal for some CCTV/NVR
   setups; `cameras/camera.py` already retries automatically, but

@@ -298,6 +298,28 @@
 
           <div class="panel">
             <div class="panel-head">
+              <h2>Live 3D estimates</h2>
+            </div>
+            <p class="panel-sub">Estimated from the calibrated camera view. Exact metric sizing requires a depth or stereo camera.</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Inventory item</th>
+                    <th>Physical type</th>
+                    <th>Units</th>
+                    <th>Grid</th>
+                    <th>Estimated W x H x D</th>
+                    <th>Distance</th>
+                  </tr>
+                </thead>
+                <tbody id="spatialEstimateTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
               <h2>Vision check-in events</h2>
             </div>
             <div class="table-wrap">
@@ -307,6 +329,9 @@
                     <th>Time</th>
                     <th>Direction</th>
                     <th>Item</th>
+                    <th>Quantity</th>
+                    <th>Physical type</th>
+                    <th>Estimated size</th>
                     <th>Camera</th>
                     <th>Track ID</th>
                     <th>Confidence</th>

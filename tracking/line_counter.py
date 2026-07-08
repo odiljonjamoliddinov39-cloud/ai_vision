@@ -23,6 +23,12 @@ class LineCrossingEvent:
     current_position: tuple[int, int]
     direction: str
     camera_id: str
+    quantity: int = 1
+    object_type: str | None = None
+    dimensions_m: tuple[float, float, float] | None = None
+    distance_m: float | None = None
+    quantity_grid: tuple[int, int, int] = (1, 1, 1)
+    measurement_method: str | None = None
 
 
 class LineCounter:
@@ -52,13 +58,14 @@ class LineCounter:
             events.append(
                 LineCrossingEvent(
                     tracking_id=track_id,
-                    product_name=obj.class_name,
+                    product_name=getattr(obj, "inventory_name", None) or obj.class_name,
                     confidence=obj.confidence,
                     box=obj.box,
                     previous_position=previous,
                     current_position=current,
                     direction=direction,
                     camera_id=self.camera_id,
+                    **_spatial_event_fields(obj),
                 )
             )
 
@@ -125,13 +132,14 @@ class AppearanceCounter:
             events.append(
                 LineCrossingEvent(
                     tracking_id=obj.track_id,
-                    product_name=obj.class_name,
+                    product_name=getattr(obj, "inventory_name", None) or obj.class_name,
                     confidence=obj.confidence,
                     box=obj.box,
                     previous_position=center,
                     current_position=center,
                     direction="IN",
                     camera_id=self.camera_id,
+                    **_spatial_event_fields(obj),
                 )
             )
 
@@ -167,6 +175,23 @@ def _box_iou(
     second_area = max(0, second[2] - second[0]) * max(0, second[3] - second[1])
     union = first_area + second_area - intersection
     return intersection / union if union else 0.0
+
+
+def _spatial_event_fields(obj) -> dict:
+    width = getattr(obj, "width_m", None)
+    height = getattr(obj, "height_m", None)
+    depth = getattr(obj, "depth_m", None)
+    dimensions = None
+    if width is not None and height is not None and depth is not None:
+        dimensions = (width, height, depth)
+    return {
+        "quantity": max(1, int(getattr(obj, "quantity", 1))),
+        "object_type": getattr(obj, "object_type", None),
+        "dimensions_m": dimensions,
+        "distance_m": getattr(obj, "distance_m", None),
+        "quantity_grid": getattr(obj, "quantity_grid", (1, 1, 1)),
+        "measurement_method": getattr(obj, "method", None),
+    }
 
 
 def _line_side(point: tuple[int, int], x1: int, y1: int, x2: int, y2: int) -> int:

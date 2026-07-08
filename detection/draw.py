@@ -28,25 +28,38 @@ def draw_detections(frame, detections, box_thickness: int = 2, font_scale: float
         track_id = getattr(det, "track_id", None)
         prefix = f"#{track_id} " if track_id is not None else ""
         label = f"{prefix}{det.class_name} {det.confidence * 100:.0f}%"
+        spatial_label = _spatial_label(det)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, box_thickness)
 
-        (text_w, text_h), _ = cv2.getTextSize(
-            label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1
-        )
+        labels = [label] + ([spatial_label] if spatial_label else [])
+        text_sizes = [
+            cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)[0]
+            for text in labels
+        ]
+        text_w = max(size[0] for size in text_sizes)
+        text_h = max(size[1] for size in text_sizes)
+        panel_height = (text_h + 5) * len(labels) + 3
+        label_x = min(max(0, x1), max(0, frame.shape[1] - text_w - 6))
+        panel_top = max(0, y1 - panel_height)
         cv2.rectangle(
-            frame, (x1, max(0, y1 - text_h - 8)), (x1 + text_w + 4, y1), color, -1
-        )
-        cv2.putText(
             frame,
-            label,
-            (x1 + 2, max(12, y1 - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
+            (label_x, panel_top),
+            (label_x + text_w + 6, min(frame.shape[0] - 1, panel_top + panel_height)),
+            color,
+            -1,
         )
+        for index, text in enumerate(labels):
+            cv2.putText(
+                frame,
+                text,
+                (label_x + 3, panel_top + text_h + 2 + index * (text_h + 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
     return frame
 
 
@@ -65,7 +78,10 @@ def draw_fps(frame, fps: float):
 
 
 def draw_counts(frame, detections, origin=(10, 55)):
-    counts = Counter(d.class_name for d in detections)
+    counts = Counter()
+    for detection in detections:
+        name = getattr(detection, "inventory_name", None) or detection.class_name
+        counts[name] += max(1, int(getattr(detection, "quantity", 1)))
     x, y = origin
     for i, (class_name, count) in enumerate(sorted(counts.items())):
         cv2.putText(
@@ -79,6 +95,20 @@ def draw_counts(frame, detections, origin=(10, 55)):
             cv2.LINE_AA,
         )
     return frame
+
+
+def _spatial_label(detection) -> str | None:
+    width = getattr(detection, "width_m", None)
+    height = getattr(detection, "height_m", None)
+    depth = getattr(detection, "depth_m", None)
+    distance = getattr(detection, "distance_m", None)
+    if None in (width, height, depth, distance):
+        return None
+
+    quantity = max(1, int(getattr(detection, "quantity", 1)))
+    object_type = getattr(detection, "object_type", None) or "object"
+    estimated = f"~{width:.2f}x{height:.2f}x{depth:.2f}m @ {distance:.1f}m"
+    return f"x{quantity} {object_type} | {estimated}"
 
 
 def draw_counting_line(frame, line: dict, label: str = "COUNT LINE"):

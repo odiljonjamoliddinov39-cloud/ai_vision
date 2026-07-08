@@ -57,6 +57,7 @@ class WarehouseDB:
                 )
                 """
             )
+            self._ensure_movement_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS unknown_items (
@@ -71,6 +72,24 @@ class WarehouseDB:
                 """
             )
 
+    @staticmethod
+    def _ensure_movement_columns(conn) -> None:
+        existing = {
+            row["name"] for row in conn.execute("PRAGMA table_info(movements)").fetchall()
+        }
+        columns = {
+            "object_type": "TEXT",
+            "estimated_width_m": "REAL",
+            "estimated_height_m": "REAL",
+            "estimated_depth_m": "REAL",
+            "estimated_distance_m": "REAL",
+            "quantity_grid": "TEXT",
+            "measurement_method": "TEXT",
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE movements ADD COLUMN {name} {sql_type}")
+
     def record_movement(
         self,
         product_name: str,
@@ -80,6 +99,11 @@ class WarehouseDB:
         confidence: float,
         screenshot_path: str | None = None,
         quantity: int = 1,
+        object_type: str | None = None,
+        dimensions_m: tuple[float, float, float] | None = None,
+        distance_m: float | None = None,
+        quantity_grid: tuple[int, int, int] | None = None,
+        measurement_method: str | None = None,
     ) -> int:
         if direction not in {"IN", "OUT"}:
             raise ValueError("direction must be IN or OUT")
@@ -97,8 +121,21 @@ class WarehouseDB:
             conn.execute(
                 """
                 INSERT INTO movements (
-                    product_name, direction, quantity, camera_id, tracking_id, confidence, screenshot_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    product_name,
+                    direction,
+                    quantity,
+                    camera_id,
+                    tracking_id,
+                    confidence,
+                    screenshot_path,
+                    object_type,
+                    estimated_width_m,
+                    estimated_height_m,
+                    estimated_depth_m,
+                    estimated_distance_m,
+                    quantity_grid,
+                    measurement_method
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     product_name,
@@ -108,6 +145,15 @@ class WarehouseDB:
                     tracking_id,
                     confidence,
                     screenshot_path,
+                    object_type,
+                    dimensions_m[0] if dimensions_m else None,
+                    dimensions_m[1] if dimensions_m else None,
+                    dimensions_m[2] if dimensions_m else None,
+                    distance_m,
+                    "x".join(str(value) for value in quantity_grid)
+                    if quantity_grid
+                    else None,
+                    measurement_method,
                 ),
             )
 
@@ -158,6 +204,13 @@ class WarehouseDB:
                     tracking_id,
                     confidence,
                     screenshot_path,
+                    object_type,
+                    estimated_width_m,
+                    estimated_height_m,
+                    estimated_depth_m,
+                    estimated_distance_m,
+                    quantity_grid,
+                    measurement_method,
                     created_at
                 FROM movements
                 ORDER BY id DESC

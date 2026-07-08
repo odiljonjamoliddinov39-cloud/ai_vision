@@ -37,6 +37,7 @@ const els = {
   healthTracking: document.querySelector("#healthTracking"),
   healthStockMode: document.querySelector("#healthStockMode"),
   healthMessage: document.querySelector("#healthMessage"),
+  spatialEstimateTable: document.querySelector("#spatialEstimateTable"),
   cameraLiveGrid: document.querySelector("#cameraLiveGrid"),
   checkItemId: document.querySelector("#checkItemId"),
   checkQuantity: document.querySelector("#checkQuantity"),
@@ -418,9 +419,16 @@ const renderRecognitions = (data, running = false) => {
           movement.confidence == null
             ? "—"
             : `${Math.round(Number(movement.confidence) * 100)}%`;
-        return `<tr><td>${movement.created_at}</td><td>${movement.direction}</td><td>${movement.product_name}</td><td>${movement.camera_id || "—"}</td><td>#${movement.tracking_id}</td><td>${confidence}</td></tr>`;
+        const quantity = movement.quantity_grid
+          ? `${movement.quantity} (${movement.quantity_grid})`
+          : movement.quantity || 1;
+        const size =
+          movement.estimated_width_m == null
+            ? "—"
+            : `~${Number(movement.estimated_width_m).toFixed(2)} x ${Number(movement.estimated_height_m).toFixed(2)} x ${Number(movement.estimated_depth_m).toFixed(2)} m`;
+        return `<tr><td>${movement.created_at}</td><td>${movement.direction}</td><td>${escapeHtml(movement.product_name)}</td><td>${quantity}</td><td>${escapeHtml(movement.object_type || "—")}</td><td>${size}</td><td>${escapeHtml(movement.camera_id || "—")}</td><td>#${movement.tracking_id}</td><td>${confidence}</td></tr>`;
       })
-      .join("") || `<tr><td colspan="6">No automatic camera check-ins yet.</td></tr>`;
+      .join("") || `<tr><td colspan="9">No automatic camera check-ins yet.</td></tr>`;
 
   els.visionStockTable.innerHTML =
     stock
@@ -433,6 +441,7 @@ const renderRecognitions = (data, running = false) => {
 
 const renderFunctionHealth = (status) => {
   const health = status.health || {};
+  const spatialObjects = health.last_spatial_objects || [];
   els.healthFrames.textContent = health.frames_read ?? 0;
   els.healthDetections.textContent = health.last_detection_count ?? 0;
   els.healthTracking.textContent = health.last_tracked_count ?? 0;
@@ -448,7 +457,19 @@ const renderFunctionHealth = (status) => {
   if (!health.last_frame_at && status.running) {
     parts.push("No processed frame has been reported yet.");
   }
+  if (health.spatial_analysis_enabled) {
+    parts.push("Monocular 3D estimation is active.");
+  }
   els.healthMessage.textContent = parts.join(" ");
+
+  els.spatialEstimateTable.innerHTML =
+    spatialObjects
+      .map((item) => {
+        const grid = (item.quantity_grid || [1, 1, 1]).join(" x ");
+        const size = `~${Number(item.width_m).toFixed(2)} x ${Number(item.height_m).toFixed(2)} x ${Number(item.depth_m).toFixed(2)} m`;
+        return `<tr><td>${escapeHtml(item.inventory_name)}</td><td>${escapeHtml(item.object_type)}</td><td>${item.quantity}</td><td>${grid}</td><td>${size}</td><td>~${Number(item.distance_m).toFixed(1)} m</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="6">No current 3D estimates.</td></tr>`;
 };
 
 const loadOccupancy = async () => {
