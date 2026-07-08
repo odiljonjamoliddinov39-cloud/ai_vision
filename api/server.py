@@ -636,6 +636,33 @@ def _terminate_pid(pid: int) -> int | None:
     return None
 
 
+def _validate_active_cameras_for_start() -> None:
+    db = _get_camera_db()
+    active_cameras = db.list_active_cameras(include_secret=True)
+    if not active_cameras:
+        raise HTTPException(
+            status_code=400,
+            detail="Assign at least one active camera slot before starting detection.",
+        )
+
+    failures: list[str] = []
+    for camera in active_cameras:
+        result = _test_camera_stream(str(camera["stream_url"]))
+        db.set_status(camera["id"], result["status"])
+        if result["status"] != "connected":
+            slot = camera.get("slot_number") or "-"
+            failures.append(f"Slot {slot} ({camera['name']}): {result['message']}")
+
+    if failures:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot start detection until active camera slots are reachable. "
+            + " ".join(failures),
+        )
+
+    _sync_config_active_cameras(db)
+
+
 def _status() -> dict[str, Any]:
     pid = _detector_pid()
     return {
@@ -815,6 +842,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     request = request or StartRequest()
     if _detector_pid() is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
+    _validate_active_cameras_for_start()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _stdout_handle = DETECTION_STDOUT_PATH.open("w", encoding="utf-8", buffering=1)
