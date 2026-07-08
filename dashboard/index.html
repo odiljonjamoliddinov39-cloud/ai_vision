@@ -20,6 +20,7 @@
           <button class="nav-btn" data-tab="recognitions">Recognitions</button>
           <button class="nav-btn" data-tab="readyList">Ready List</button>
           <button class="nav-btn" data-tab="occupancy">Occupancy</button>
+          <button class="nav-btn" data-tab="warehouse">Warehouse Events</button>
         </nav>
       </aside>
 
@@ -352,6 +353,89 @@
                   </tr>
                 </thead>
                 <tbody id="occupancyEventsTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+        <section class="page hidden" id="warehouse">
+          <div class="metrics-row">
+            <div class="metric-card">
+              <span>Items in zones now</span>
+              <strong id="warehouseItemsNow">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Items in (total)</span>
+              <strong id="warehouseItemsIn">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Items out (total)</span>
+              <strong id="warehouseItemsOut">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Suspicious removals</span>
+              <strong id="warehouseSuspicious">0</strong>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Suspicious activity (possible theft)</h2>
+            </div>
+            <p class="panel-sub">Item removals flagged by rules: after_hours (outside working hours), unattended (no person in zone), bulk_removal (many items out in a short window).</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Zone</th>
+                    <th>Item</th>
+                    <th>Track</th>
+                    <th>Reasons</th>
+                    <th>People in zone</th>
+                  </tr>
+                </thead>
+                <tbody id="warehouseAlertsTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Live zone counts</h2>
+            </div>
+            <p class="panel-sub">Objects currently inside each configured zone (updated ~1x per second while detection runs).</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Zone</th>
+                    <th>Class</th>
+                    <th>Count</th>
+                  </tr>
+                </thead>
+                <tbody id="warehouseZoneCounts"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Recent zone events (items &amp; people in/out)</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Event</th>
+                    <th>Zone</th>
+                    <th>Class</th>
+                    <th>Track</th>
+                    <th>Camera</th>
+                    <th>Flag</th>
+                  </tr>
+                </thead>
+                <tbody id="warehouseEventsTable"></tbody>
               </table>
             </div>
           </div>

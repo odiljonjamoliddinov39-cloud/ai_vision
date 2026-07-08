@@ -92,6 +92,29 @@ class TrackingDB:
                 ON occupancy_events (timestamp)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS zone_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    zone_name TEXT NOT NULL,
+                    camera_name TEXT NOT NULL,
+                    track_id INTEGER NOT NULL,
+                    class_name TEXT NOT NULL,
+                    event_type TEXT NOT NULL
+                        CHECK (event_type IN ('item_in', 'item_out', 'person_in', 'person_out')),
+                    suspicious INTEGER NOT NULL DEFAULT 0,
+                    reasons TEXT,          -- comma-separated rule names, e.g. 'after_hours,unattended'
+                    persons_in_zone INTEGER NOT NULL DEFAULT 0,
+                    timestamp TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_zone_events_ts
+                ON zone_events (timestamp)
+                """
+            )
 
     # ------------------------------------------------------------------
     # Writes
@@ -154,6 +177,40 @@ class TrackingDB:
 
         return OccupancyEvent(track_id, camera_name, class_name, "check_out", ts, duration)
 
+    def record_zone_event(
+        self,
+        zone_name: str,
+        camera_name: str,
+        track_id: int,
+        class_name: str,
+        event_type: str,
+        suspicious: bool = False,
+        reasons: list[str] | None = None,
+        persons_in_zone: int = 0,
+        timestamp: str | None = None,
+    ) -> None:
+        ts = timestamp or _now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO zone_events
+                    (zone_name, camera_name, track_id, class_name, event_type,
+                     suspicious, reasons, persons_in_zone, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    zone_name,
+                    camera_name,
+                    track_id,
+                    class_name,
+                    event_type,
+                    1 if suspicious else 0,
+                    ",".join(reasons) if reasons else None,
+                    persons_in_zone,
+                    ts,
+                ),
+            )
+
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
@@ -202,3 +259,47 @@ class TrackingDB:
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def recent_zone_events(
+        self,
+        limit: int = 50,
+        camera_name: str | None = None,
+        suspicious_only: bool = False,
+    ) -> list[dict]:
+        query = "SELECT * FROM zone_events"
+        clauses = []
+        params: tuple = ()
+        if camera_name:
+            clauses.append("camera_name = ?")
+            params += (camera_name,)
+        if suspicious_only:
+            clauses.append("suspicious = 1")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id DESC LIMIT ?"
+        params += (limit,)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        events = [dict(row) for row in rows]
+        for event in events:
+            event["suspicious"] = bool(event["suspicious"])
+            event["reasons"] = event["reasons"].split(",") if event["reasons"] else []
+        return events
+
+    def zone_event_totals(self) -> dict[str, int]:
+        """Lifetime totals: items in, items out, suspicious removals."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_type, suspicious, COUNT(*) AS n
+                FROM zone_events GROUP BY event_type, suspicious
+                """
+            ).fetchall()
+        totals = {"item_in": 0, "item_out": 0, "suspicious": 0}
+        for row in rows:
+            if row["event_type"] in ("item_in", "item_out"):
+                totals[row["event_type"]] += row["n"]
+                if row["event_type"] == "item_out" and row["suspicious"]:
+                    totals["suspicious"] += row["n"]
+        return totals

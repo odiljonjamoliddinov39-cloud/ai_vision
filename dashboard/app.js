@@ -42,6 +42,13 @@ const els = {
   occupancyCounts: document.querySelector("#occupancyCounts"),
   occupancyCurrentTable: document.querySelector("#occupancyCurrentTable"),
   occupancyEventsTable: document.querySelector("#occupancyEventsTable"),
+  warehouseItemsNow: document.querySelector("#warehouseItemsNow"),
+  warehouseItemsIn: document.querySelector("#warehouseItemsIn"),
+  warehouseItemsOut: document.querySelector("#warehouseItemsOut"),
+  warehouseSuspicious: document.querySelector("#warehouseSuspicious"),
+  warehouseAlertsTable: document.querySelector("#warehouseAlertsTable"),
+  warehouseZoneCounts: document.querySelector("#warehouseZoneCounts"),
+  warehouseEventsTable: document.querySelector("#warehouseEventsTable"),
   toast: document.querySelector("#toast"),
 };
 
@@ -105,6 +112,8 @@ const setActiveTab = (tab) => {
       ? "Recognitions"
       : tab === "occupancy"
       ? "Occupancy"
+      : tab === "warehouse"
+      ? "Warehouse Events"
       : "Ready List";
 };
 
@@ -239,6 +248,57 @@ const renderOccupancy = ({ occupancy, events }) => {
       .join("") || `<tr><td colspan="6">No occupancy events yet.</td></tr>`;
 };
 
+const renderWarehouse = (data) => {
+  const zones = data.zones || {};
+  const totals = data.totals || {};
+  const events = data.events || [];
+  const alerts = data.alerts || [];
+
+  let itemsNow = 0;
+  const zoneRows = [];
+  Object.entries(zones).forEach(([zoneName, counts]) => {
+    const entries = Object.entries(counts || {});
+    if (entries.length === 0) {
+      zoneRows.push(`<tr><td>${zoneName}</td><td colspan="2">empty</td></tr>`);
+      return;
+    }
+    entries.forEach(([className, count]) => {
+      itemsNow += count;
+      zoneRows.push(`<tr><td>${zoneName}</td><td>${className}</td><td>${count}</td></tr>`);
+    });
+  });
+
+  els.warehouseItemsNow.textContent = itemsNow;
+  els.warehouseItemsIn.textContent = totals.item_in ?? 0;
+  els.warehouseItemsOut.textContent = totals.item_out ?? 0;
+  els.warehouseSuspicious.textContent = totals.suspicious ?? 0;
+
+  els.warehouseZoneCounts.innerHTML =
+    zoneRows.join("") || `<tr><td colspan="3">No zone data yet — start detection.</td></tr>`;
+
+  els.warehouseAlertsTable.innerHTML =
+    alerts
+      .map(
+        (event) =>
+          `<tr class="alert-row"><td>${event.timestamp}</td><td>${event.zone_name}</td><td>${event.class_name}</td><td>#${event.track_id}</td><td>${(event.reasons || []).join(", ")}</td><td>${event.persons_in_zone}</td></tr>`
+      )
+      .join("") || `<tr><td colspan="6">No suspicious activity detected.</td></tr>`;
+
+  const eventLabel = {
+    item_in: "Item IN",
+    item_out: "Item OUT",
+    person_in: "Person IN",
+    person_out: "Person OUT",
+  };
+  els.warehouseEventsTable.innerHTML =
+    events
+      .map(
+        (event) =>
+          `<tr><td>${event.timestamp}</td><td>${eventLabel[event.event_type] || event.event_type}</td><td>${event.zone_name}</td><td>${event.class_name}</td><td>#${event.track_id}</td><td>${event.camera_name}</td><td>${event.suspicious ? "⚠ " + (event.reasons || []).join(", ") : "—"}</td></tr>`
+      )
+      .join("") || `<tr><td colspan="7">No zone events yet.</td></tr>`;
+};
+
 const refreshDashboard = async () => {
   try {
     await loadInventory();
@@ -248,6 +308,8 @@ const refreshDashboard = async () => {
     renderRecognitions(recognitions, status.running || recognitions.running);
     const occupancyData = await loadOccupancy();
     renderOccupancy(occupancyData);
+    const warehouseData = await api("/api/warehouse");
+    renderWarehouse(warehouseData);
   } catch (error) {
     toast(error.message);
   }
@@ -360,11 +422,16 @@ const startLiveFeed = async () => {
   els.warehouseVideo.classList.add("hidden");
   els.warehouseFallback.classList.remove("hidden");
   els.warehouseHint.textContent = "Using backend live feed";
-  const refreshImage = () => {
-    els.warehouseFallback.src = "/api/live_mjpeg?t=" + Date.now();
-  };
-  refreshImage();
-  window.setInterval(refreshImage, 800);
+  // MJPEG is a continuous multipart stream: set src ONCE and let it run.
+  // (Re-setting src on a timer restarts the stream over and over, which
+  // is what made the live view stutter and lag.)
+  els.warehouseFallback.src = "/api/live_mjpeg?t=" + Date.now();
+  els.warehouseFallback.addEventListener("error", () => {
+    // stream dropped (e.g. server restarted) — reconnect after a moment
+    window.setTimeout(() => {
+      els.warehouseFallback.src = "/api/live_mjpeg?t=" + Date.now();
+    }, 2000);
+  });
 };
 
 els.navButtons.forEach((button) => {

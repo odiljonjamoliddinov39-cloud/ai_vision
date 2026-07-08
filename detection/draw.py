@@ -64,6 +64,35 @@ def draw_fps(frame, fps: float):
     return frame
 
 
+def draw_zones(frame, zones, zone_counts=None):
+    """Outline each zone polygon and label it with its live item counts.
+    `zones` are tracking.zones.Zone objects (normalized polygons);
+    `zone_counts` is the ZoneMonitor.counts() dict."""
+    import numpy as np
+
+    h, w = frame.shape[:2]
+    for zone in zones:
+        if zone.polygon is None:
+            pts = [(2, 2), (w - 3, 2), (w - 3, h - 3), (2, h - 3)]
+        else:
+            pts = [(int(x * w), int(y * h)) for x, y in zone.polygon]
+
+        cv2.polylines(
+            frame, [np.array(pts, dtype=np.int32)], isClosed=True,
+            color=(0, 200, 255), thickness=2,
+        )
+
+        counts = (zone_counts or {}).get(zone.name, {})
+        summary = ", ".join(f"{name}: {n}" for name, n in sorted(counts.items()))
+        label = f"[{zone.name}] {summary}" if summary else f"[{zone.name}] empty"
+        lx, ly = pts[0]
+        cv2.putText(
+            frame, label, (lx + 4, max(16, ly + 18)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2, cv2.LINE_AA,
+        )
+    return frame
+
+
 def draw_counts(frame, detections, origin=(10, 55)):
     counts = Counter(d.class_name for d in detections)
     x, y = origin

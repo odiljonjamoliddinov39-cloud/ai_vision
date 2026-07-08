@@ -36,6 +36,7 @@ INVENTORY_PATH = ROOT / "logs" / "inventory.json"
 INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
 DASHBOARD_DIR = ROOT / "dashboard"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
+ZONE_STATUS_PATH = ROOT / "logs" / "zone_status.json"
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
 
@@ -357,6 +358,43 @@ def occupancy_events(limit: int = 50, camera: str | None = None) -> dict[str, An
     return {"events": events}
 
 
+@app.get("/api/warehouse")
+def warehouse(camera: str | None = None) -> dict[str, Any]:
+    """Zone-based warehouse state: live per-zone per-class counts
+    (written by the detector to logs/zone_status.json about once per
+    second), recent item/person zone events, and lifetime totals."""
+    zones: dict[str, Any] = {}
+    updated_at: str | None = None
+    if ZONE_STATUS_PATH.exists():
+        try:
+            status = json.loads(ZONE_STATUS_PATH.read_text(encoding="utf-8"))
+            zones = status.get("zones", {})
+            updated_at = status.get("updated_at")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    db = _get_tracking_db()
+    return {
+        "running": _status()["running"],
+        "updated_at": updated_at,
+        "zones": zones,
+        "totals": db.zone_event_totals(),
+        "events": db.recent_zone_events(limit=50, camera_name=camera),
+        "alerts": db.recent_zone_events(limit=20, camera_name=camera, suspicious_only=True),
+    }
+
+
+@app.get("/api/warehouse/events")
+def warehouse_events(
+    limit: int = 50, camera: str | None = None, suspicious: bool = False
+) -> dict[str, Any]:
+    db = _get_tracking_db()
+    events = db.recent_zone_events(
+        limit=max(1, min(limit, 500)), camera_name=camera, suspicious_only=suspicious
+    )
+    return {"events": events}
+
+
 @app.get("/api/inventory")
 def inventory() -> dict[str, Any]:
     data = _ensure_inventory()
@@ -458,21 +496,28 @@ async def live_mjpeg():
     boundary = "frame"
 
     async def frame_generator():
+        last_mtime = 0.0
+        latest = SNAPSHOT_DIR / "latest.jpg"
         while True:
-            latest = SNAPSHOT_DIR / "latest.jpg"
             if latest.exists():
                 try:
-                    data = latest.read_bytes()
-                    header = (
-                        f"--{boundary}\r\n"
-                        "Content-Type: image/jpeg\r\n"
-                        f"Content-Length: {len(data)}\r\n\r\n"
-                    ).encode("utf-8")
-                    yield header + data + b"\r\n"
+                    # Only push a frame when the detector has written a new
+                    # one — re-sending the same JPEG at 20Hz just wastes
+                    # bandwidth and makes the browser buffer/stutter.
+                    mtime = latest.stat().st_mtime
+                    if mtime != last_mtime:
+                        last_mtime = mtime
+                        data = latest.read_bytes()
+                        header = (
+                            f"--{boundary}\r\n"
+                            "Content-Type: image/jpeg\r\n"
+                            f"Content-Length: {len(data)}\r\n\r\n"
+                        ).encode("utf-8")
+                        yield header + data + b"\r\n"
                 except Exception:
                     # ignore read errors
                     pass
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.03)
 
     return StreamingResponse(frame_generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
 

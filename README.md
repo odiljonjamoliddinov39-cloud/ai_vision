@@ -18,6 +18,29 @@ the Technical Design doc.
   when a trigger class (e.g. person, car) appears, with a cooldown.
 - **FR-6 Event Log** — `database/event_log.py`: appends detection
   events to `logs/events.log` in the format from the design doc.
+- **Low-latency video** — `cameras/camera.py` grabs frames on a
+  background thread and always hands over the *newest* frame, so slow
+  YOLO inference drops stale frames instead of queueing them (no more
+  growing live-view delay). `latest.jpg` is written atomically and the
+  MJPEG endpoint only pushes frames when a new one exists.
+- **Zone counting (Phase 5)** — `tracking/zones.py`: polygon zones per
+  camera (normalized coords, `null` = whole frame); counts objects
+  currently *inside the warehouse zone* using each object's
+  bottom-center point, with hysteresis so edge-straddling objects don't
+  flap. Live counts are drawn on the frame and published to
+  `logs/zone_status.json` for the dashboard.
+- **Warehouse event recognition + theft flags (Phase 5)** —
+  `tracking/warehouse.py`: zone enter/exit becomes `item_in` /
+  `item_out` / `person_in` / `person_out` events stored in SQLite.
+  Item removals are flagged as suspicious when they happen
+  **after hours**, **unattended** (no person in the zone), or as a
+  **bulk removal** (many items out within a short window). See the
+  "Warehouse Events" tab in the dashboard.
+
+  > Note: stock COCO YOLOv8 weights have no "cardboard box" class —
+  > suitcase/backpack/handbag are the closest built-ins. For real boxes,
+  > point `detection.model_path` at a custom-trained model and list its
+  > class name in `warehouse.item_classes`.
 
 ## Project structure
 
@@ -103,6 +126,12 @@ zipped/committed even before those phases are built.
 | `snapshots`   | `trigger_classes`        | Classes that trigger an auto-saved image              |
 | `snapshots`   | `cooldown_seconds`       | Minimum gap between snapshots of the same class       |
 | `logging`     | `log_file`                | Where detection events are appended                    |
+| `zones`       | `polygon`                | Normalized zone vertices, or `null` for the whole frame |
+| `warehouse`   | `item_classes`           | Class names counted as warehouse items                 |
+| `warehouse`   | `working_hours`          | `start`/`end` (HH:MM); removals outside are flagged    |
+| `warehouse`   | `bulk_removal_count`     | N items out within the window ⇒ flagged                |
+| `warehouse`   | `flag_unattended`        | Flag removals with no person in the zone               |
+| `display`     | `live_feed_jpeg_quality` | JPEG quality (0–100) of the live MJPEG feed            |
 
 ## Troubleshooting
 

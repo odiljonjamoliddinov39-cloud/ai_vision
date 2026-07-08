@@ -12,10 +12,14 @@ What this does:
   6. Logs detection events to a text log.                     (FR-6)
   7. Tracks per-object identity across frames (ByteTrack).    (Phase 3)
   8. Records check-in/check-out events + dwell time to SQLite. (Phase 4)
+  9. Counts objects inside warehouse zones and recognizes
+     item-in / item-out events, flagging suspicious removals
+     (after-hours, unattended, bulk).                          (Phase 5)
 
-Tracking is on by default (see `tracking.enabled` in config.yaml) but
-can be turned off to fall back to plain per-frame detection with no
-persistent IDs and no occupancy database.
+Cameras are read by a background grabber thread that always hands over
+the *newest* frame, so slow YOLO inference no longer causes the live
+view to lag behind reality (frames that can't be processed in time are
+dropped instead of queueing up).
 
 Run:
     python main.py
@@ -28,6 +32,7 @@ Press "q" in any camera window to quit.
 from __future__ import annotations
 
 import argparse
+import json
 import time
 
 import cv2
@@ -36,17 +41,28 @@ import os
 
 from cameras.camera import load_cameras
 from detection.detector import Detector
-from detection.draw import draw_detections, draw_fps, draw_counts
+from detection.draw import draw_detections, draw_fps, draw_counts, draw_zones
 from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
 from tracking.tracker import ObjectTracker
 from tracking.presence import PresenceTracker
+from tracking.zones import ZoneMonitor, load_zones
+from tracking.warehouse import WarehouseEventDetector
 
 
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def write_atomic(path: str, data: bytes) -> None:
+    """Write via a temp file + rename so readers (the MJPEG endpoint)
+    never see a half-written JPEG."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+    os.replace(tmp_path, path)
 
 
 def main():
@@ -108,6 +124,40 @@ def main():
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
         )
 
+    # --- Warehouse zones + event recognition (Phase 5) ---
+    wh_cfg = config.get("warehouse", {})
+    zone_monitor = None
+    warehouse_detector = None
+    zone_status_path = wh_cfg.get("status_file", "logs/zone_status.json")
+    last_status_write = 0.0
+
+    if tracking_enabled and wh_cfg.get("enabled", True):
+        default_camera = cameras[0].name
+        zones = load_zones(config.get("zones"), default_camera=default_camera)
+        if not zones:
+            # No zones configured: watch the whole frame of every camera.
+            zones = load_zones(
+                [{"name": f"{cam.name} area", "camera": cam.name} for cam in cameras]
+            )
+        zone_monitor = ZoneMonitor(
+            zones,
+            min_frames=wh_cfg.get("min_frames", 3),
+            lost_after_seconds=track_cfg.get("grace_period_seconds", 5.0),
+        )
+        warehouse_detector = WarehouseEventDetector(
+            item_classes=wh_cfg.get("item_classes"),
+            person_class=wh_cfg.get("person_class", "person"),
+            working_hours=wh_cfg.get("working_hours"),
+            bulk_removal_count=wh_cfg.get("bulk_removal_count", 3),
+            bulk_removal_window_seconds=wh_cfg.get("bulk_removal_window_seconds", 60.0),
+            flag_unattended=wh_cfg.get("flag_unattended", True),
+        )
+        os.makedirs(os.path.dirname(zone_status_path) or ".", exist_ok=True)
+        print(
+            f"Warehouse events enabled: zones={[z.name for z in zones]}, "
+            f"items={sorted(warehouse_detector.item_classes)}"
+        )
+
     # --- Snapshots (FR-5) ---
     snap_cfg = config.get("snapshots", {})
     snapshot_saver = None
@@ -121,6 +171,7 @@ def main():
     snapshots_dir = snap_cfg.get("save_dir", "snapshots")
     os.makedirs(snapshots_dir, exist_ok=True)
     live_feed_enabled = display_cfg.get("live_feed_enabled", True)
+    jpeg_quality = int(display_cfg.get("live_feed_jpeg_quality", 80))
 
     # --- Event log (FR-6) ---
     log_cfg = config.get("logging", {})
@@ -131,7 +182,6 @@ def main():
             log_file=log_cfg.get("log_file", "events.log"),
         )
 
-    display_cfg = config.get("display", {})
     box_thickness = display_cfg.get("box_thickness", 2)
     font_scale = display_cfg.get("font_scale", 0.6)
     window_prefix = display_cfg.get("window_prefix", "AI Vision -")
@@ -165,7 +215,37 @@ def main():
                 else:
                     detections = detector.detect(frame)
 
+                # --- zone events (Phase 5) ---
+                if zone_monitor is not None:
+                    h, w = frame.shape[:2]
+                    zone_events = zone_monitor.update(
+                        cam.name, detections, now, frame_size=(w, h)
+                    )
+                    for wh_event in warehouse_detector.process(zone_events):
+                        tracking_db.record_zone_event(
+                            zone_name=wh_event.zone_name,
+                            camera_name=wh_event.camera_name,
+                            track_id=wh_event.track_id,
+                            class_name=wh_event.class_name,
+                            event_type=wh_event.event_type,
+                            suspicious=wh_event.suspicious,
+                            reasons=wh_event.reasons,
+                            persons_in_zone=wh_event.persons_in_zone,
+                        )
+                        flag = (
+                            f"  << SUSPICIOUS ({', '.join(wh_event.reasons)})"
+                            if wh_event.suspicious
+                            else ""
+                        )
+                        print(
+                            f"[{cam.name}] {wh_event.event_type}: #{wh_event.track_id} "
+                            f"{wh_event.class_name} in {wh_event.zone_name}{flag}"
+                        )
+
                 draw_detections(frame, detections, box_thickness, font_scale)
+                if zone_monitor is not None:
+                    cam_zones = [z for z in zone_monitor.zones if z.camera_name == cam.name]
+                    draw_zones(frame, cam_zones, zone_monitor.counts())
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
                 draw_counts(frame, detections)
@@ -175,14 +255,17 @@ def main():
                     for path in saved:
                         print(f"[{cam.name}] Snapshot saved: {path}")
 
-                # write latest frame for live feed (MJPEG / frequent updates)
+                # write latest frame for live feed (MJPEG)
                 if live_feed_enabled:
                     try:
-                        # overwrite latest.jpg for quick UI refresh
-                        latest_path = os.path.join(snapshots_dir, "latest.jpg")
-                        _, jpg = cv2.imencode('.jpg', frame)
-                        with open(latest_path, 'wb') as f:
-                            f.write(jpg.tobytes())
+                        ok, jpg = cv2.imencode(
+                            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+                        )
+                        if ok:
+                            write_atomic(
+                                os.path.join(snapshots_dir, "latest.jpg"),
+                                jpg.tobytes(),
+                            )
                     except Exception:
                         pass
 
@@ -208,9 +291,48 @@ def main():
                         f"{event.class_name} (dwell {duration_str})"
                     )
 
+            if zone_monitor is not None:
+                for wh_event in warehouse_detector.process(zone_monitor.expire(now)):
+                    tracking_db.record_zone_event(
+                        zone_name=wh_event.zone_name,
+                        camera_name=wh_event.camera_name,
+                        track_id=wh_event.track_id,
+                        class_name=wh_event.class_name,
+                        event_type=wh_event.event_type,
+                        suspicious=wh_event.suspicious,
+                        reasons=wh_event.reasons,
+                        persons_in_zone=wh_event.persons_in_zone,
+                    )
+                    flag = (
+                        f"  << SUSPICIOUS ({', '.join(wh_event.reasons)})"
+                        if wh_event.suspicious
+                        else ""
+                    )
+                    print(
+                        f"[{wh_event.camera_name}] {wh_event.event_type}: "
+                        f"#{wh_event.track_id} {wh_event.class_name} "
+                        f"in {wh_event.zone_name}{flag}"
+                    )
+
+                # publish live zone counts for the API/dashboard (~1x per second)
+                if now - last_status_write >= 1.0:
+                    last_status_write = now
+                    try:
+                        status = {
+                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "zones": zone_monitor.counts(),
+                        }
+                        write_atomic(
+                            zone_status_path,
+                            json.dumps(status, indent=2).encode("utf-8"),
+                        )
+                    except Exception:
+                        pass
+
             if not any_frame:
-                print("No frames available from any camera. Retrying...")
-                time.sleep(1)
+                # The grabber threads hand out each frame only once; a short
+                # sleep is enough — a 1s sleep here would add visible lag.
+                time.sleep(0.005)
 
             if not args.no_display and cv2.waitKey(1) & 0xFF == ord("q"):
                 break

@@ -5,13 +5,20 @@ Thin wrapper around OpenCV's VideoCapture that supports:
   - USB webcams (integer index, e.g. 0, 1, 2)
   - RTSP CCTV streams (rtsp:// URL)
   - Basic reconnect logic for flaky RTSP streams
+  - Latest-frame grabbing: a background thread continuously drains the
+    capture so `read()` always returns the *newest* frame instead of the
+    oldest buffered one. Without this, when YOLO inference runs slower
+    than the camera's FPS, OpenCV's internal buffer fills with stale
+    frames and the live view lags further and further behind reality.
 
 FR-1: Camera Connection
 """
 
 from __future__ import annotations
 
+import threading
 import time
+
 import cv2
 
 
@@ -27,42 +34,76 @@ class Camera:
         self.source = source
         self.reconnect_delay = reconnect_delay
         self.cap: cv2.VideoCapture | None = None
+
+        self._lock = threading.Lock()
+        self._latest_frame = None
+        self._stopped = False
+
         self._open()
+
+        self._grab_thread = threading.Thread(
+            target=self._grab_loop, name=f"grab-{name}", daemon=True
+        )
+        self._grab_thread.start()
 
     def _open(self) -> None:
         self.cap = cv2.VideoCapture(self.source)
+        # Keep the driver-side buffer as small as the backend allows so a
+        # slow consumer can't accumulate seconds of latency.
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not self.cap.isOpened():
             raise ConnectionError(
                 f"[{self.name}] Could not open camera source: {self.source!r}"
             )
 
+    def _grab_loop(self) -> None:
+        """Continuously pull frames as fast as the camera produces them,
+        keeping only the most recent one."""
+        while not self._stopped:
+            cap = self.cap
+            if cap is None or not cap.isOpened():
+                self._try_reconnect()
+                continue
+
+            ok, frame = cap.read()
+            if not ok:
+                self._try_reconnect()
+                continue
+
+            with self._lock:
+                self._latest_frame = frame
+
     def read(self):
         """
-        Returns a BGR frame (numpy array), or None if the frame could not
-        be read after a reconnect attempt.
+        Returns the newest BGR frame (numpy array), or None if no frame
+        has arrived yet / the stream is down. Never blocks on the camera.
         """
-        if self.cap is None or not self.cap.isOpened():
-            self._try_reconnect()
-
-        ok, frame = self.cap.read()
-        if not ok:
-            self._try_reconnect()
-            ok, frame = self.cap.read()
-            if not ok:
-                return None
+        with self._lock:
+            frame = self._latest_frame
+            # Hand each frame out only once so a stalled stream doesn't get
+            # re-processed as if it were live footage.
+            self._latest_frame = None
         return frame
 
     def _try_reconnect(self) -> None:
+        if self._stopped:
+            return
         print(f"[{self.name}] Connection lost, reconnecting...")
         if self.cap is not None:
             self.cap.release()
+            self.cap = None
         time.sleep(self.reconnect_delay)
+        if self._stopped:
+            return
         try:
             self._open()
         except ConnectionError as e:
             print(str(e))
 
     def release(self) -> None:
+        self._stopped = True
+        if self._grab_thread.is_alive():
+            self._grab_thread.join(timeout=2)
         if self.cap is not None:
             self.cap.release()
 

@@ -19,6 +19,30 @@ tracking:
   classes: null                    # null = track all detected classes
   grace_period_seconds: 5.0        # how long a missing track is still "checked in"
   db_path: database/tracking.db
+zones:
+- name: Warehouse
+  camera: Camera 1
+  polygon: null   # null = whole frame, or normalized vertices like [[0.1, 0.2], [0.9, 0.2], [0.9, 0.95], [0.1, 0.95]]
+warehouse:
+  enabled: true
+  # class names counted as warehouse items. Stock COCO YOLOv8 has no
+  # "box" class — suitcase/backpack/handbag are the closest built-ins.
+  # For real cardboard boxes, train/point detection.model_path at a
+  # custom model and list its class name here (e.g. "box").
+  item_classes:
+  - box
+  - suitcase
+  - backpack
+  - handbag
+  person_class: person
+  min_frames: 3                     # frames on the other side of a zone edge before enter/exit fires
+  working_hours:                    # item removals outside these hours are flagged
+    start: "08:00"
+    end: "18:00"
+  bulk_removal_count: 3             # >= N items out within the window => flagged
+  bulk_removal_window_seconds: 60
+  flag_unattended: true             # flag item_out when no person is in the zone
+  status_file: logs/zone_status.json
 snapshots:
   enabled: true
   save_dir: snapshots
