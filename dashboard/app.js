@@ -157,6 +157,7 @@ const cameraState = {
   activeCamera: null,
   activeCameras: [],
 };
+const MAX_CAMERA_SLOTS = 50;
 
 const setCameraConnectionStatus = (status, message) => {
   const labels = {
@@ -241,8 +242,8 @@ const handleConnectCamera = async (event) => {
     toast("Camera name and stream URL are required.");
     return;
   }
-  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
-    toast("Camera slot must be between 1 and 16.");
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > MAX_CAMERA_SLOTS) {
+    toast(`Camera slot must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
 
@@ -281,8 +282,8 @@ const handleSetActiveCamera = async () => {
     toast("Select a saved camera first.");
     return;
   }
-  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
-    toast("Slot must be between 1 and 16.");
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > MAX_CAMERA_SLOTS) {
+    toast(`Slot must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
 
@@ -306,8 +307,8 @@ const handleSetActiveCamera = async () => {
 
 const handleClearCameraSlot = async () => {
   const slotNumber = Number(els.activeSlotNumber.value || 1);
-  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
-    toast("Slot must be between 1 and 16.");
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > MAX_CAMERA_SLOTS) {
+    toast(`Slot must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
 

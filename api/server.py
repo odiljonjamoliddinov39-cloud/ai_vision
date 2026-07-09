@@ -47,6 +47,7 @@ DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
 DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
+MAX_CAMERA_SLOTS = 50
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
 
@@ -128,7 +129,7 @@ class CameraCreate(BaseModel):
     stream_url: str = Field(min_length=1)
     make_active: bool = True
     test_connection: bool = True
-    slot_number: int | None = Field(default=None, ge=1, le=16)
+    slot_number: int | None = Field(default=None, ge=1, le=MAX_CAMERA_SLOTS)
 
 
 class CameraTestRequest(BaseModel):
@@ -136,7 +137,7 @@ class CameraTestRequest(BaseModel):
 
 
 class CameraSlotRequest(BaseModel):
-    slot_number: int = Field(default=1, ge=1, le=16)
+    slot_number: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
 
 
 STREAM_DEFAULT_PORTS = {
@@ -826,8 +827,11 @@ def set_active_camera(
 
 @app.delete("/api/camera-slots/{slot_number}")
 def clear_camera_slot(slot_number: int) -> dict[str, Any]:
-    if slot_number < 1 or slot_number > 16:
-        raise HTTPException(status_code=400, detail="Slot number must be between 1 and 16.")
+    if slot_number < 1 or slot_number > MAX_CAMERA_SLOTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Slot number must be between 1 and {MAX_CAMERA_SLOTS}.",
+        )
 
     db = _get_camera_db()
     db.clear_slot(slot_number)
