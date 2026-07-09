@@ -12,14 +12,10 @@ What this does:
   6. Logs detection events to a text log.                     (FR-6)
   7. Tracks per-object identity across frames (ByteTrack).    (Phase 3)
   8. Records check-in/check-out events + dwell time to SQLite. (Phase 4)
-  9. Counts objects inside warehouse zones and recognizes
-     item-in / item-out events, flagging suspicious removals
-     (after-hours, unattended, bulk).                          (Phase 5)
 
-Cameras are read by a background grabber thread that always hands over
-the *newest* frame, so slow YOLO inference no longer causes the live
-view to lag behind reality (frames that can't be processed in time are
-dropped instead of queueing up).
+Tracking is on by default (see `tracking.enabled` in config.yaml) but
+can be turned off to fall back to plain per-frame detection with no
+persistent IDs and no occupancy database.
 
 Run:
     python main.py
@@ -33,6 +29,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from datetime import datetime
+from pathlib import Path
 import time
 
 import cv2
@@ -41,28 +40,20 @@ import os
 
 from cameras.camera import load_cameras
 from detection.detector import Detector
-from detection.draw import draw_detections, draw_fps, draw_counts, draw_zones
+from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
+from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
-from tracking.tracker import ObjectTracker
+from database.warehouse_db import WarehouseDB
+from tracking.line_counter import AppearanceCounter, LineCounter
+from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
-from tracking.zones import ZoneMonitor, load_zones
-from tracking.warehouse import WarehouseEventDetector
 
 
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def write_atomic(path: str, data: bytes) -> None:
-    """Write via a temp file + rename so readers (the MJPEG endpoint)
-    never see a half-written JPEG."""
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "wb") as f:
-        f.write(data)
-    os.replace(tmp_path, path)
 
 
 def main():
@@ -75,6 +66,12 @@ def main():
         action="store_true",
         help="Run detection without opening OpenCV windows.",
     )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=0,
+        help="Stop after N frames. 0 means keep running.",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -83,6 +80,17 @@ def main():
     # --- Cameras (FR-1) ---
     cameras = load_cameras(config["cameras"])
     if not cameras:
+        _write_detection_health(
+            "logs/detection_health.json",
+            {
+                "state": "error",
+                "error": "No cameras could be opened. Check config/config.yaml.",
+                "frames_read": 0,
+                "last_frame_at": None,
+                "last_detection_count": 0,
+                "model_loaded": False,
+            },
+        )
         print("No cameras could be opened. Check config/config.yaml. Exiting.")
         return
 
@@ -97,8 +105,27 @@ def main():
         confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
         device=det_cfg.get("device", "cpu"),
         classes=det_cfg.get("classes"),
+        class_prompts=det_cfg.get("class_prompts"),
+        image_size=det_cfg.get("image_size", 640),
+        class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
     )
-    print("Model loaded. Starting live detection... (press 'q' to quit)")
+    if detector.model is None:
+        print("Using deterministic dummy detector. Starting demo run...")
+    else:
+        print("Model loaded. Starting live detection... (press 'q' to quit)")
+
+    spatial_cfg = config.get("spatial_analysis", {})
+    spatial_analyzer = (
+        SpatialAnalyzer.from_config(spatial_cfg)
+        if spatial_cfg.get("enabled", False)
+        else None
+    )
+    if spatial_analyzer is not None:
+        print(
+            "Monocular 3D sizing enabled "
+            f"(camera height {spatial_analyzer.camera_height_m:.2f}m, "
+            f"horizontal FOV {spatial_analyzer.horizontal_fov_degrees:.1f}deg)."
+        )
 
     # --- Tracking (Phase 3) + occupancy (Phase 4) ---
     track_cfg = config.get("tracking", {})
@@ -107,13 +134,15 @@ def main():
     presence_tracker = None
     tracking_db = None
 
-    if tracking_enabled:
+    if tracking_enabled and detector.model is not None:
         object_tracker = ObjectTracker(
             model=detector.model,
             confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
             device=det_cfg.get("device", "cpu"),
             classes=track_cfg.get("classes", det_cfg.get("classes")),
             tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
+            image_size=det_cfg.get("image_size", 640),
+            class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
         )
         presence_tracker = PresenceTracker(
             grace_period_seconds=track_cfg.get("grace_period_seconds", 5.0)
@@ -124,38 +153,29 @@ def main():
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
         )
 
-    # --- Warehouse zones + event recognition (Phase 5) ---
-    wh_cfg = config.get("warehouse", {})
-    zone_monitor = None
-    warehouse_detector = None
-    zone_status_path = wh_cfg.get("status_file", "logs/zone_status.json")
-    last_status_write = 0.0
-
-    if tracking_enabled and wh_cfg.get("enabled", True):
-        default_camera = cameras[0].name
-        zones = load_zones(config.get("zones"), default_camera=default_camera)
-        if not zones:
-            # No zones configured: watch the whole frame of every camera.
-            zones = load_zones(
-                [{"name": f"{cam.name} area", "camera": cam.name} for cam in cameras]
+    # --- Warehouse stock counting MVP ---
+    warehouse_cfg = config.get("warehouse_counting", {})
+    warehouse_enabled = warehouse_cfg.get("enabled", False)
+    warehouse_db = None
+    warehouse_counters = {}
+    reviewed_unknown_ids: set[tuple[str, int]] = set()
+    if warehouse_enabled:
+        warehouse_db = WarehouseDB(db_path=warehouse_cfg.get("db_path", "database/warehouse.db"))
+        count_mode = warehouse_cfg.get("mode", "appearance")
+        line = warehouse_cfg.get(
+            "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
+        )
+        warehouse_counters = {
+            cam.name: (
+                LineCounter(line=line, camera_id=cam.name)
+                if count_mode == "line"
+                else AppearanceCounter(camera_id=cam.name)
             )
-        zone_monitor = ZoneMonitor(
-            zones,
-            min_frames=wh_cfg.get("min_frames", 3),
-            lost_after_seconds=track_cfg.get("grace_period_seconds", 5.0),
-        )
-        warehouse_detector = WarehouseEventDetector(
-            item_classes=wh_cfg.get("item_classes"),
-            person_class=wh_cfg.get("person_class", "person"),
-            working_hours=wh_cfg.get("working_hours"),
-            bulk_removal_count=wh_cfg.get("bulk_removal_count", 3),
-            bulk_removal_window_seconds=wh_cfg.get("bulk_removal_window_seconds", 60.0),
-            flag_unattended=wh_cfg.get("flag_unattended", True),
-        )
-        os.makedirs(os.path.dirname(zone_status_path) or ".", exist_ok=True)
+            for cam in cameras
+        }
         print(
-            f"Warehouse events enabled: zones={[z.name for z in zones]}, "
-            f"items={sorted(warehouse_detector.item_classes)}"
+            f"Warehouse counting enabled ({count_mode} mode). "
+            f"Stock DB: {warehouse_db.db_path}"
         )
 
     # --- Snapshots (FR-5) ---
@@ -171,7 +191,6 @@ def main():
     snapshots_dir = snap_cfg.get("save_dir", "snapshots")
     os.makedirs(snapshots_dir, exist_ok=True)
     live_feed_enabled = display_cfg.get("live_feed_enabled", True)
-    jpeg_quality = int(display_cfg.get("live_feed_jpeg_quality", 80))
 
     # --- Event log (FR-6) ---
     log_cfg = config.get("logging", {})
@@ -182,11 +201,20 @@ def main():
             log_file=log_cfg.get("log_file", "events.log"),
         )
 
+    display_cfg = config.get("display", {})
     box_thickness = display_cfg.get("box_thickness", 2)
     font_scale = display_cfg.get("font_scale", 0.6)
     window_prefix = display_cfg.get("window_prefix", "AI Vision -")
+    health_path = log_cfg.get("health_file", "logs/detection_health.json")
+    frames_read = 0
+    last_detection_count = 0
+    last_tracked_count = 0
+    last_frame_at = None
+    last_spatial_objects = []
 
     prev_time = time.time()
+    frame_number = 0
+    dummy_positions = {cam.name: 0 for cam in cameras}
 
     try:
         while True:
@@ -201,9 +229,12 @@ def main():
                 if frame is None:
                     continue
                 any_frame = True
+                frames_read += 1
+                last_frame_at = datetime.now().isoformat(timespec="seconds")
 
                 if object_tracker is not None:
                     detections = object_tracker.update(frame)
+                    last_tracked_count = len(detections)
                     check_ins = presence_tracker.update(cam.name, detections, now)
                     for event in check_ins:
                         tracking_db.record_check_in(
@@ -212,62 +243,55 @@ def main():
                         print(
                             f"[{cam.name}] Check-in: #{event.track_id} {event.class_name}"
                         )
+                elif detector.model is None:
+                    detections = _demo_tracked_objects(dummy_positions[cam.name])
+                    dummy_positions[cam.name] += 1
+                    last_tracked_count = len(detections)
                 else:
                     detections = detector.detect(frame)
+                    last_tracked_count = 0
 
-                # --- zone events (Phase 5) ---
-                if zone_monitor is not None:
-                    h, w = frame.shape[:2]
-                    zone_events = zone_monitor.update(
-                        cam.name, detections, now, frame_size=(w, h)
-                    )
-                    for wh_event in warehouse_detector.process(zone_events):
-                        tracking_db.record_zone_event(
-                            zone_name=wh_event.zone_name,
-                            camera_name=wh_event.camera_name,
-                            track_id=wh_event.track_id,
-                            class_name=wh_event.class_name,
-                            event_type=wh_event.event_type,
-                            suspicious=wh_event.suspicious,
-                            reasons=wh_event.reasons,
-                            persons_in_zone=wh_event.persons_in_zone,
-                        )
-                        flag = (
-                            f"  << SUSPICIOUS ({', '.join(wh_event.reasons)})"
-                            if wh_event.suspicious
-                            else ""
-                        )
-                        print(
-                            f"[{cam.name}] {wh_event.event_type}: #{wh_event.track_id} "
-                            f"{wh_event.class_name} in {wh_event.zone_name}{flag}"
-                        )
+                last_detection_count = len(detections)
+                if spatial_analyzer is not None:
+                    measurements = spatial_analyzer.enrich(frame, detections)
+                    last_spatial_objects = [
+                        {
+                            **measurement.__dict__,
+                            "quantity_grid": list(measurement.quantity_grid),
+                        }
+                        for measurement in measurements
+                    ]
 
                 draw_detections(frame, detections, box_thickness, font_scale)
-                if zone_monitor is not None:
-                    cam_zones = [z for z in zone_monitor.zones if z.camera_name == cam.name]
-                    draw_zones(frame, cam_zones, zone_monitor.counts())
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
                 draw_counts(frame, detections)
+
+                if warehouse_enabled and warehouse_db is not None:
+                    line = warehouse_cfg.get(
+                        "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
+                    )
+                    count_mode = warehouse_cfg.get("mode", "appearance")
+                    if count_mode == "line":
+                        draw_counting_line(frame, line)
+                    _process_warehouse_counting(
+                        camera_name=cam.name,
+                        detections=detections,
+                        warehouse_counter=warehouse_counters[cam.name],
+                        warehouse_db=warehouse_db,
+                        confidence_threshold=warehouse_cfg.get("confidence_threshold", 0.5),
+                        reviewed_unknown_ids=reviewed_unknown_ids,
+                        count_unknown=warehouse_cfg.get("count_low_confidence_as_unknown", True),
+                        count_mode=count_mode,
+                    )
 
                 if snapshot_saver is not None:
                     saved = snapshot_saver.maybe_save(cam.name, frame, detections)
                     for path in saved:
                         print(f"[{cam.name}] Snapshot saved: {path}")
 
-                # write latest frame for live feed (MJPEG)
                 if live_feed_enabled:
-                    try:
-                        ok, jpg = cv2.imencode(
-                            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
-                        )
-                        if ok:
-                            write_atomic(
-                                os.path.join(snapshots_dir, "latest.jpg"),
-                                jpg.tobytes(),
-                            )
-                    except Exception:
-                        pass
+                    _write_live_frame(snapshots_dir, cam, frame)
 
                 if event_logger is not None:
                     event_logger.log_detections(cam.name, detections)
@@ -291,48 +315,42 @@ def main():
                         f"{event.class_name} (dwell {duration_str})"
                     )
 
-            if zone_monitor is not None:
-                for wh_event in warehouse_detector.process(zone_monitor.expire(now)):
-                    tracking_db.record_zone_event(
-                        zone_name=wh_event.zone_name,
-                        camera_name=wh_event.camera_name,
-                        track_id=wh_event.track_id,
-                        class_name=wh_event.class_name,
-                        event_type=wh_event.event_type,
-                        suspicious=wh_event.suspicious,
-                        reasons=wh_event.reasons,
-                        persons_in_zone=wh_event.persons_in_zone,
-                    )
-                    flag = (
-                        f"  << SUSPICIOUS ({', '.join(wh_event.reasons)})"
-                        if wh_event.suspicious
-                        else ""
-                    )
-                    print(
-                        f"[{wh_event.camera_name}] {wh_event.event_type}: "
-                        f"#{wh_event.track_id} {wh_event.class_name} "
-                        f"in {wh_event.zone_name}{flag}"
-                    )
-
-                # publish live zone counts for the API/dashboard (~1x per second)
-                if now - last_status_write >= 1.0:
-                    last_status_write = now
-                    try:
-                        status = {
-                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                            "zones": zone_monitor.counts(),
-                        }
-                        write_atomic(
-                            zone_status_path,
-                            json.dumps(status, indent=2).encode("utf-8"),
-                        )
-                    except Exception:
-                        pass
-
             if not any_frame:
-                # The grabber threads hand out each frame only once; a short
-                # sleep is enough — a 1s sleep here would add visible lag.
-                time.sleep(0.005)
+                print("No frames available from any camera. Retrying...")
+                time.sleep(1)
+
+            _write_detection_health(
+                health_path,
+                {
+                    "state": "running",
+                    "error": None if any_frame else "No frames available from any camera.",
+                    "camera_count": len(cameras),
+                    "cameras": [
+                        {"name": cam.name, "slot_number": cam.slot_number}
+                        for cam in cameras
+                    ],
+                    "frames_read": frames_read,
+                    "last_frame_at": last_frame_at,
+                    "last_detection_count": last_detection_count,
+                    "last_tracked_count": last_tracked_count,
+                    "model_loaded": detector.model is not None,
+                    "tracking_enabled": object_tracker is not None or detector.model is None,
+                    "warehouse_counting_enabled": warehouse_enabled,
+                    "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
+                    if warehouse_enabled
+                    else None,
+                    "spatial_analysis_enabled": spatial_analyzer is not None,
+                    "last_spatial_objects": last_spatial_objects,
+                    "live_feed_enabled": live_feed_enabled,
+                    "event_logging_enabled": event_logger is not None,
+                    "snapshot_enabled": snapshot_saver is not None,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+
+            frame_number += 1
+            if args.max_frames and frame_number >= args.max_frames:
+                break
 
             if not args.no_display and cv2.waitKey(1) & 0xFF == ord("q"):
                 break
@@ -343,6 +361,105 @@ def main():
         if not args.no_display:
             cv2.destroyAllWindows()
         print("Stopped.")
+
+
+def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
+    y = min(520, 170 + frame_index * 5)
+    return [TrackedObject(track_id=1, class_name="box", confidence=0.95, box=(430, y, 530, y + 80))]
+
+
+def _write_detection_health(path: str, payload: dict) -> None:
+    health_path = Path(path)
+    health_path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload, indent=2)
+    tmp_path = health_path.with_name(f"{health_path.stem}.{os.getpid()}.tmp")
+
+    for _ in range(3):
+        try:
+            tmp_path.write_text(data, encoding="utf-8")
+            tmp_path.replace(health_path)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+
+    # Windows can briefly lock files read by the API process. A direct write
+    # is safer than crashing the detector; the API already tolerates short
+    # JSON read races.
+    health_path.write_text(data, encoding="utf-8")
+
+
+def _write_live_frame(snapshots_dir: str, cam, frame) -> None:
+    try:
+        ok, jpg = cv2.imencode(".jpg", frame)
+        if not ok:
+            return
+
+        data = jpg.tobytes()
+        latest_path = Path(snapshots_dir) / "latest.jpg"
+        latest_path.write_bytes(data)
+
+        if cam.slot_number is not None:
+            (Path(snapshots_dir) / f"latest_slot_{cam.slot_number}.jpg").write_bytes(data)
+
+        (Path(snapshots_dir) / f"latest_{_safe_live_feed_name(cam.name)}.jpg").write_bytes(data)
+    except Exception:
+        pass
+
+
+def _safe_live_feed_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in str(value)).strip("_") or "camera"
+
+
+def _process_warehouse_counting(
+    camera_name: str,
+    detections,
+    warehouse_counter,
+    warehouse_db: WarehouseDB,
+    confidence_threshold: float,
+    reviewed_unknown_ids: set[tuple[str, int]],
+    count_unknown: bool,
+    count_mode: str,
+) -> None:
+    tracked = [det for det in detections if hasattr(det, "track_id")]
+    if not tracked:
+        return
+
+    for det in tracked:
+        review_key = (camera_name, det.track_id)
+        if (
+            count_unknown
+            and det.confidence < confidence_threshold
+            and review_key not in reviewed_unknown_ids
+        ):
+            reviewed_unknown_ids.add(review_key)
+            warehouse_db.record_unknown_item(
+                tracking_id=det.track_id,
+                confidence=det.confidence,
+                screenshot_path=None,
+                camera_id=camera_name,
+            )
+
+    countable = [det for det in tracked if det.confidence >= confidence_threshold]
+    for event in warehouse_counter.update(countable):
+        stock = warehouse_db.record_movement(
+            product_name=event.product_name,
+            direction=event.direction,
+            camera_id=event.camera_id,
+            tracking_id=event.tracking_id,
+            confidence=event.confidence,
+            quantity=event.quantity,
+            object_type=event.object_type,
+            dimensions_m=event.dimensions_m,
+            distance_m=event.distance_m,
+            quantity_grid=event.quantity_grid,
+            measurement_method=event.measurement_method,
+        )
+        action = "recognized" if count_mode == "appearance" else f"crossed {event.direction}"
+        print(
+            f"[{event.camera_id}] {event.quantity}x {event.product_name} "
+            f"ID={event.tracking_id} "
+            f"{action} | stock {event.product_name} = {stock}"
+        )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,21 @@ const els = {
   btnRestartDetection: document.querySelector("#btnRestartDetection"),
   navButtons: Array.from(document.querySelectorAll(".nav-btn")),
   pages: Array.from(document.querySelectorAll(".page")),
+  cameraForm: document.querySelector("#cameraForm"),
+  cameraName: document.querySelector("#cameraName"),
+  cameraStreamUrl: document.querySelector("#cameraStreamUrl"),
+  cameraSlot: document.querySelector("#cameraSlot"),
+  cameraConnectionDetail: document.querySelector("#cameraConnectionDetail"),
+  btnTestCamera: document.querySelector("#btnTestCamera"),
+  btnConnectCamera: document.querySelector("#btnConnectCamera"),
+  btnRefreshCameras: document.querySelector("#btnRefreshCameras"),
+  btnSetActiveCamera: document.querySelector("#btnSetActiveCamera"),
+  btnClearCameraSlot: document.querySelector("#btnClearCameraSlot"),
+  activeSlotNumber: document.querySelector("#activeSlotNumber"),
+  slotCameraSelect: document.querySelector("#slotCameraSelect"),
+  activeSlotList: document.querySelector("#activeSlotList"),
+  savedCameraTable: document.querySelector("#savedCameraTable"),
+  cameraConnectionStatus: document.querySelector("#cameraConnectionStatus"),
   itemForm: document.querySelector("#itemForm"),
   itemId: document.querySelector("#itemId"),
   itemName: document.querySelector("#itemName"),
@@ -17,9 +32,13 @@ const els = {
   totalItems: document.querySelector("#totalItems"),
   itemTypes: document.querySelector("#itemTypes"),
   totalQuantity: document.querySelector("#totalQuantity"),
-  warehouseVideo: document.querySelector("#warehouseVideo"),
-  warehouseFallback: document.querySelector("#warehouseFallback"),
-  warehouseHint: document.querySelector("#warehouseHint"),
+  healthFrames: document.querySelector("#healthFrames"),
+  healthDetections: document.querySelector("#healthDetections"),
+  healthTracking: document.querySelector("#healthTracking"),
+  healthStockMode: document.querySelector("#healthStockMode"),
+  healthMessage: document.querySelector("#healthMessage"),
+  spatialEstimateTable: document.querySelector("#spatialEstimateTable"),
+  cameraLiveGrid: document.querySelector("#cameraLiveGrid"),
   checkItemId: document.querySelector("#checkItemId"),
   checkQuantity: document.querySelector("#checkQuantity"),
   checkNote: document.querySelector("#checkNote"),
@@ -37,23 +56,21 @@ const els = {
   recognitionEntryCount: document.querySelector("#recognitionEntryCount"),
   recognitionEntries: document.querySelector("#recognitionEntries"),
   recognitionCounts: document.querySelector("#recognitionCounts"),
+  visionCheckInTotal: document.querySelector("#visionCheckInTotal"),
+  visionCheckOutTotal: document.querySelector("#visionCheckOutTotal"),
+  visionCurrentStockTotal: document.querySelector("#visionCurrentStockTotal"),
+  visionMovementEntries: document.querySelector("#visionMovementEntries"),
+  visionStockTable: document.querySelector("#visionStockTable"),
   occupancyTotal: document.querySelector("#occupancyTotal"),
   occupancyClassCount: document.querySelector("#occupancyClassCount"),
   occupancyCounts: document.querySelector("#occupancyCounts"),
   occupancyCurrentTable: document.querySelector("#occupancyCurrentTable"),
   occupancyEventsTable: document.querySelector("#occupancyEventsTable"),
-  warehouseItemsNow: document.querySelector("#warehouseItemsNow"),
-  warehouseItemsIn: document.querySelector("#warehouseItemsIn"),
-  warehouseItemsOut: document.querySelector("#warehouseItemsOut"),
-  warehouseSuspicious: document.querySelector("#warehouseSuspicious"),
-  warehouseAlertsTable: document.querySelector("#warehouseAlertsTable"),
-  warehouseZoneCounts: document.querySelector("#warehouseZoneCounts"),
-  warehouseEventsTable: document.querySelector("#warehouseEventsTable"),
   toast: document.querySelector("#toast"),
 };
 
 // API base: use ?api=https://your-backend.example.com once to save it,
-// falls back to same-origin (when served by the FastAPI server itself).
+// falls back to same-origin when served directly by FastAPI.
 const API_BASE = (() => {
   const param = new URLSearchParams(window.location.search).get("api");
   if (param) {
@@ -90,6 +107,14 @@ const toast = (message) => {
   window.setTimeout(() => els.toast.classList.remove("show"), 2400);
 };
 
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+
 const setStatus = (running) => {
   els.statusPill.textContent = running ? "Detection running" : "Detection stopped";
   els.statusPill.dataset.state = running ? "running" : "stopped";
@@ -116,15 +141,189 @@ const setActiveTab = (tab) => {
   els.pageTitle.textContent =
     tab === "itemEntry"
       ? "Item Entry"
+      : tab === "cameraSettings"
+      ? "Camera Settings"
       : tab === "checkIn"
       ? "Check In"
       : tab === "recognitions"
       ? "Recognitions"
       : tab === "occupancy"
       ? "Occupancy"
-      : tab === "warehouse"
-      ? "Warehouse Events"
       : "Ready List";
+};
+
+const cameraState = {
+  cameras: [],
+  activeCamera: null,
+  activeCameras: [],
+};
+
+const setCameraConnectionStatus = (status, message) => {
+  const labels = {
+    connected: "Connected",
+    failed: "Failed",
+    loading: "Loading",
+    unknown: "Not tested",
+  };
+  const label = labels[status] || labels.unknown;
+  els.cameraConnectionStatus.textContent = label;
+  els.cameraConnectionStatus.dataset.state = status;
+  els.cameraConnectionDetail.textContent = message && message !== label ? message : "";
+};
+
+const loadCameras = async () => {
+  const data = await api("/api/cameras");
+  cameraState.cameras = data.cameras || [];
+  cameraState.activeCamera = data.active_camera || null;
+  cameraState.activeCameras = data.active_cameras || [];
+  renderCameras();
+  renderLiveScreens();
+};
+
+const renderCameras = () => {
+  const cameras = cameraState.cameras;
+  els.slotCameraSelect.innerHTML =
+    cameras
+      .map(
+        (camera) =>
+          `<option value="${camera.id}" ${camera.is_active ? "selected" : ""}>${escapeHtml(camera.name)} — ${escapeHtml(camera.status)}</option>`
+      )
+      .join("") || `<option value="">No saved cameras</option>`;
+
+  els.activeSlotList.innerHTML =
+    cameraState.activeCameras
+      .map(
+        (camera) =>
+          `<div class="slot-chip"><span>Slot ${escapeHtml(camera.slot_number || "-")}</span><strong>${escapeHtml(camera.name)}</strong><em>${escapeHtml(camera.status)}</em></div>`
+      )
+      .join("") || `<p class="panel-sub">No active camera slots yet.</p>`;
+
+  els.savedCameraTable.innerHTML =
+    cameras
+      .map(
+        (camera) =>
+          `<tr><td>${escapeHtml(camera.name)}</td><td>${escapeHtml(camera.slot_number || "-")}</td><td>${escapeHtml(camera.masked_stream_url)}</td><td>${escapeHtml(camera.status)}</td><td>${camera.is_active ? "Active" : "-"}</td></tr>`
+      )
+      .join("") || `<tr><td colspan="5">No saved cameras yet.</td></tr>`;
+};
+
+const handleTestCamera = async () => {
+  const streamUrl = els.cameraStreamUrl.value.trim();
+  if (!streamUrl) {
+    toast("Enter a camera stream URL first.");
+    return;
+  }
+
+  els.btnTestCamera.disabled = true;
+  setCameraConnectionStatus("loading", "Loading");
+  try {
+    const result = await api("/api/cameras/test", {
+      method: "POST",
+      body: JSON.stringify({ stream_url: streamUrl }),
+    });
+    const connected = result.status === "connected";
+    setCameraConnectionStatus(connected ? "connected" : "failed", result.message);
+    toast(result.message);
+  } catch (error) {
+    setCameraConnectionStatus("failed", error.message);
+    toast(error.message);
+  } finally {
+    els.btnTestCamera.disabled = false;
+  }
+};
+
+const handleConnectCamera = async (event) => {
+  event.preventDefault();
+  const name = els.cameraName.value.trim();
+  const streamUrl = els.cameraStreamUrl.value.trim();
+  const slotNumber = Number(els.cameraSlot.value || 1);
+  if (!name || !streamUrl) {
+    toast("Camera name and stream URL are required.");
+    return;
+  }
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
+    toast("Camera slot must be between 1 and 16.");
+    return;
+  }
+
+  els.btnConnectCamera.disabled = true;
+  setCameraConnectionStatus("loading", "Loading");
+  try {
+    const result = await api("/api/cameras", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        stream_url: streamUrl,
+        make_active: true,
+        test_connection: true,
+        slot_number: slotNumber,
+      }),
+    });
+    cameraState.cameras = result.cameras || [];
+    cameraState.activeCameras = result.active_cameras || [];
+    renderCameras();
+    renderLiveScreens();
+    const connected = result.test?.status === "connected";
+    setCameraConnectionStatus(connected ? "connected" : "failed", result.test?.message);
+    toast(connected ? "Camera connected and set active." : result.test?.message || "Camera saved but connection failed.");
+  } catch (error) {
+    setCameraConnectionStatus("failed", error.message);
+    toast(error.message);
+  } finally {
+    els.btnConnectCamera.disabled = false;
+  }
+};
+
+const handleSetActiveCamera = async () => {
+  const cameraId = els.slotCameraSelect.value;
+  const slotNumber = Number(els.activeSlotNumber.value || 1);
+  if (!cameraId) {
+    toast("Select a saved camera first.");
+    return;
+  }
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
+    toast("Slot must be between 1 and 16.");
+    return;
+  }
+
+  els.btnSetActiveCamera.disabled = true;
+  try {
+    const result = await api(`/api/cameras/${cameraId}/activate`, {
+      method: "POST",
+      body: JSON.stringify({ slot_number: slotNumber }),
+    });
+    cameraState.cameras = result.cameras || [];
+    cameraState.activeCameras = result.active_cameras || [];
+    renderCameras();
+    renderLiveScreens();
+    toast(result.restarted ? "Camera slot assigned and detection restarted." : "Camera slot assigned.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    els.btnSetActiveCamera.disabled = false;
+  }
+};
+
+const handleClearCameraSlot = async () => {
+  const slotNumber = Number(els.activeSlotNumber.value || 1);
+  if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 16) {
+    toast("Slot must be between 1 and 16.");
+    return;
+  }
+
+  els.btnClearCameraSlot.disabled = true;
+  try {
+    const result = await api(`/api/camera-slots/${slotNumber}`, { method: "DELETE" });
+    cameraState.cameras = result.cameras || [];
+    cameraState.activeCameras = result.active_cameras || [];
+    renderCameras();
+    renderLiveScreens();
+    toast(result.restarted ? "Camera slot cleared and detection restarted." : "Camera slot cleared.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    els.btnClearCameraSlot.disabled = false;
+  }
 };
 
 const loadInventory = async () => {
@@ -175,6 +374,9 @@ const loadRecognitions = async () => {
 const renderRecognitions = (data, running = false) => {
   const entries = data.entries || [];
   const counts = data.counts || [];
+  const movements = data.movements || [];
+  const movementCounts = data.movement_counts || {};
+  const stock = data.stock || [];
   const classCount = counts.length;
   const entryCount = entries.length;
 
@@ -215,6 +417,69 @@ const renderRecognitions = (data, running = false) => {
         (count) => `<tr><td>${count.class_name}</td><td>${count.count}</td></tr>`
       )
       .join("") || `<tr><td colspan="2">No recognized classes yet.</td></tr>`;
+
+  els.visionCheckInTotal.textContent = movementCounts.IN || 0;
+  els.visionCheckOutTotal.textContent = movementCounts.OUT || 0;
+  els.visionCurrentStockTotal.textContent = stock.length;
+
+  els.visionMovementEntries.innerHTML =
+    movements
+      .map((movement) => {
+        const confidence =
+          movement.confidence == null
+            ? "—"
+            : `${Math.round(Number(movement.confidence) * 100)}%`;
+        const quantity = movement.quantity_grid
+          ? `${movement.quantity} (${movement.quantity_grid})`
+          : movement.quantity || 1;
+        const size =
+          movement.estimated_width_m == null
+            ? "—"
+            : `~${Number(movement.estimated_width_m).toFixed(2)} x ${Number(movement.estimated_height_m).toFixed(2)} x ${Number(movement.estimated_depth_m).toFixed(2)} m`;
+        return `<tr><td>${movement.created_at}</td><td>${movement.direction}</td><td>${escapeHtml(movement.product_name)}</td><td>${quantity}</td><td>${escapeHtml(movement.object_type || "—")}</td><td>${size}</td><td>${escapeHtml(movement.camera_id || "—")}</td><td>#${movement.tracking_id}</td><td>${confidence}</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="9">No automatic camera check-ins yet.</td></tr>`;
+
+  els.visionStockTable.innerHTML =
+    stock
+      .map(
+        (item) =>
+          `<tr><td>${item.name}</td><td>${item.current_stock}</td><td>${item.created_at}</td></tr>`
+      )
+      .join("") || `<tr><td colspan="3">No camera-counted stock yet.</td></tr>`;
+};
+
+const renderFunctionHealth = (status) => {
+  const health = status.health || {};
+  const spatialObjects = health.last_spatial_objects || [];
+  els.healthFrames.textContent = health.frames_read ?? 0;
+  els.healthDetections.textContent = health.last_detection_count ?? 0;
+  els.healthTracking.textContent = health.last_tracked_count ?? 0;
+  els.healthStockMode.textContent =
+    health.warehouse_counting_enabled
+      ? health.warehouse_counting_mode || "on"
+      : "Off";
+
+  const parts = [];
+  parts.push(status.running ? "Detector process is running." : "Detector process is stopped.");
+  if (health.last_frame_at) parts.push(`Last frame: ${health.last_frame_at}.`);
+  if (health.error) parts.push(`Error: ${health.error}`);
+  if (!health.last_frame_at && status.running) {
+    parts.push("No processed frame has been reported yet.");
+  }
+  if (health.spatial_analysis_enabled) {
+    parts.push("Monocular 3D estimation is active.");
+  }
+  els.healthMessage.textContent = parts.join(" ");
+
+  els.spatialEstimateTable.innerHTML =
+    spatialObjects
+      .map((item) => {
+        const grid = (item.quantity_grid || [1, 1, 1]).join(" x ");
+        const size = `~${Number(item.width_m).toFixed(2)} x ${Number(item.height_m).toFixed(2)} x ${Number(item.depth_m).toFixed(2)} m`;
+        return `<tr><td>${escapeHtml(item.inventory_name)}</td><td>${escapeHtml(item.object_type)}</td><td>${item.quantity}</td><td>${grid}</td><td>${size}</td><td>~${Number(item.distance_m).toFixed(1)} m</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="6">No current 3D estimates.</td></tr>`;
 };
 
 const loadOccupancy = async () => {
@@ -258,68 +523,17 @@ const renderOccupancy = ({ occupancy, events }) => {
       .join("") || `<tr><td colspan="6">No occupancy events yet.</td></tr>`;
 };
 
-const renderWarehouse = (data) => {
-  const zones = data.zones || {};
-  const totals = data.totals || {};
-  const events = data.events || [];
-  const alerts = data.alerts || [];
-
-  let itemsNow = 0;
-  const zoneRows = [];
-  Object.entries(zones).forEach(([zoneName, counts]) => {
-    const entries = Object.entries(counts || {});
-    if (entries.length === 0) {
-      zoneRows.push(`<tr><td>${zoneName}</td><td colspan="2">empty</td></tr>`);
-      return;
-    }
-    entries.forEach(([className, count]) => {
-      itemsNow += count;
-      zoneRows.push(`<tr><td>${zoneName}</td><td>${className}</td><td>${count}</td></tr>`);
-    });
-  });
-
-  els.warehouseItemsNow.textContent = itemsNow;
-  els.warehouseItemsIn.textContent = totals.item_in ?? 0;
-  els.warehouseItemsOut.textContent = totals.item_out ?? 0;
-  els.warehouseSuspicious.textContent = totals.suspicious ?? 0;
-
-  els.warehouseZoneCounts.innerHTML =
-    zoneRows.join("") || `<tr><td colspan="3">No zone data yet — start detection.</td></tr>`;
-
-  els.warehouseAlertsTable.innerHTML =
-    alerts
-      .map(
-        (event) =>
-          `<tr class="alert-row"><td>${event.timestamp}</td><td>${event.zone_name}</td><td>${event.class_name}</td><td>#${event.track_id}</td><td>${(event.reasons || []).join(", ")}</td><td>${event.persons_in_zone}</td></tr>`
-      )
-      .join("") || `<tr><td colspan="6">No suspicious activity detected.</td></tr>`;
-
-  const eventLabel = {
-    item_in: "Item IN",
-    item_out: "Item OUT",
-    person_in: "Person IN",
-    person_out: "Person OUT",
-  };
-  els.warehouseEventsTable.innerHTML =
-    events
-      .map(
-        (event) =>
-          `<tr><td>${event.timestamp}</td><td>${eventLabel[event.event_type] || event.event_type}</td><td>${event.zone_name}</td><td>${event.class_name}</td><td>#${event.track_id}</td><td>${event.camera_name}</td><td>${event.suspicious ? "⚠ " + (event.reasons || []).join(", ") : "—"}</td></tr>`
-      )
-      .join("") || `<tr><td colspan="7">No zone events yet.</td></tr>`;
-};
-
 const refreshDashboard = async () => {
   try {
     await loadInventory();
+    await loadCameras();
     const status = await api("/api/status");
     setStatus(status.running);
+    renderFunctionHealth(status);
     const recognitions = await loadRecognitions();
     renderRecognitions(recognitions, status.running || recognitions.running);
     const occupancyData = await loadOccupancy();
     renderOccupancy(occupancyData);
-    const warehouseData = await api("/api/warehouse");
-    renderWarehouse(warehouseData);
   } catch (error) {
     toast(error.message);
   }
@@ -415,33 +629,59 @@ const handleDetectionAction = async (action, button) => {
   }
 };
 
-const startLiveFeed = async () => {
-  if (navigator.mediaDevices?.getUserMedia) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      els.warehouseVideo.srcObject = stream;
-      els.warehouseVideo.classList.remove("hidden");
-      els.warehouseFallback.classList.add("hidden");
-      els.warehouseHint.textContent = "Using browser webcam";
-      return;
-    } catch (err) {
-      console.warn("Browser camera unavailable", err);
-    }
+const renderLiveScreens = () => {
+  if (!els.cameraLiveGrid) return;
+
+  const activeCameras = cameraState.activeCameras || [];
+  if (!activeCameras.length) {
+    els.cameraLiveGrid.innerHTML =
+      `<div class="camera-screen empty"><div><strong>No active camera slots</strong><span>Assign saved cameras to slots in Camera Settings.</span></div></div>`;
+    return;
   }
 
-  els.warehouseVideo.classList.add("hidden");
-  els.warehouseFallback.classList.remove("hidden");
-  els.warehouseHint.textContent = "Using backend live feed";
-  // MJPEG is a continuous multipart stream: set src ONCE and let it run.
-  // (Re-setting src on a timer restarts the stream over and over, which
-  // is what made the live view stutter and lag.)
-  els.warehouseFallback.src = `${API_BASE}/api/live_mjpeg?t=` + Date.now();
-  els.warehouseFallback.addEventListener("error", () => {
-    // stream dropped (e.g. server restarted) — reconnect after a moment
-    window.setTimeout(() => {
-      els.warehouseFallback.src = `${API_BASE}/api/live_mjpeg?t=` + Date.now();
-    }, 2000);
+  els.cameraLiveGrid.innerHTML = activeCameras
+    .map((camera) => {
+      const slot = camera.slot_number || 1;
+      return `
+        <div class="camera-screen">
+          <div class="screen-head">
+            <span>Slot ${escapeHtml(slot)}</span>
+            <strong>${escapeHtml(camera.name)}</strong>
+            <em>${escapeHtml(camera.status)}</em>
+          </div>
+          <div class="screen-body">
+            <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} live view" />
+            <span class="screen-placeholder" data-live-placeholder>Waiting for frames</span>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+  refreshLiveScreens();
+};
+
+const refreshLiveScreens = () => {
+  document.querySelectorAll("[data-live-slot]").forEach((image) => {
+    if (!image.dataset.bound) {
+      image.dataset.bound = "true";
+      image.addEventListener("load", () => {
+        image.closest(".screen-body")?.classList.add("has-frame");
+      });
+      image.addEventListener("error", () => {
+        image.closest(".screen-body")?.classList.remove("has-frame");
+      });
+    }
+
+    if (!image.getAttribute("src")) {
+      image.src = `${API_BASE}/api/live_mjpeg?slot=${encodeURIComponent(image.dataset.liveSlot)}`;
+    }
   });
+};
+
+const startLiveFeed = async () => {
+  renderLiveScreens();
+  refreshLiveScreens();
+  window.setInterval(refreshLiveScreens, 800);
 };
 
 els.navButtons.forEach((button) => {
@@ -451,6 +691,10 @@ els.navButtons.forEach((button) => {
 });
 
 els.refreshBtn.addEventListener("click", refreshDashboard);
+els.btnRefreshCameras.addEventListener("click", loadCameras);
+els.btnTestCamera.addEventListener("click", handleTestCamera);
+els.btnSetActiveCamera.addEventListener("click", handleSetActiveCamera);
+els.btnClearCameraSlot.addEventListener("click", handleClearCameraSlot);
 els.btnStartDetection.addEventListener("click", () =>
   handleDetectionAction("start", els.btnStartDetection)
 );
@@ -460,6 +704,7 @@ els.btnStopDetection.addEventListener("click", () =>
 els.btnRestartDetection.addEventListener("click", () =>
   handleDetectionAction("restart", els.btnRestartDetection)
 );
+els.cameraForm.addEventListener("submit", handleConnectCamera);
 els.itemForm.addEventListener("submit", handleAddItem);
 els.btnCheckIn.addEventListener("click", () => handleCheckAction("checkin"));
 els.btnCheckOut.addEventListener("click", () => handleCheckAction("checkout"));

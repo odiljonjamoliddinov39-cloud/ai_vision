@@ -3,10 +3,39 @@ cameras:
   source: 0
 
 detection:
-  model_path: models/yolov8n.pt
-  confidence_threshold: 0.5
+  model_path: models/yolov8s-worldv2.pt
+  confidence_threshold: 0.08
+  image_size: 960
+  class_agnostic_nms: true
   device: cpu
   classes: null
+  class_prompts:
+  - stack of cardboard boxes
+  - cardboard box
+  - stack of sacks
+  - sack of flour
+  - large bag
+  - wrapped pallet
+  - wooden pallet
+  - warehouse package
+spatial_analysis:
+  enabled: true
+  horizontal_fov_degrees: 90.0
+  camera_height_m: 1.2
+  horizon_y_ratio: 0.28
+  min_distance_m: 0.5
+  max_distance_m: 50.0
+  estimate_depth_layers: false
+  max_units_per_detection: 200
+  unit_dimensions:
+    cardboard box:
+      width_m: 0.45
+      height_m: 0.35
+      depth_m: 0.35
+    sack:
+      width_m: 0.55
+      height_m: 0.18
+      depth_m: 0.25
 display:
   show_fps: true
   window_prefix: AI Vision -
@@ -15,34 +44,21 @@ display:
   live_feed_enabled: true
 tracking:
   enabled: true
-  tracker_config: bytetrack.yaml   # or botsort.yaml for appearance re-id
-  classes: null                    # null = track all detected classes
-  grace_period_seconds: 5.0        # how long a missing track is still "checked in"
+  tracker_config: config/warehouse_bytetrack.yaml
+  classes: null
+  grace_period_seconds: 5.0
   db_path: database/tracking.db
-zones:
-- name: Warehouse
-  camera: Camera 1
-  polygon: null   # null = whole frame, or normalized vertices like [[0.1, 0.2], [0.9, 0.2], [0.9, 0.95], [0.1, 0.95]]
-warehouse:
+warehouse_counting:
   enabled: true
-  # class names counted as warehouse items. Stock COCO YOLOv8 has no
-  # "box" class — suitcase/backpack/handbag are the closest built-ins.
-  # For real cardboard boxes, train/point detection.model_path at a
-  # custom model and list its class name here (e.g. "box").
-  item_classes:
-  - box
-  - suitcase
-  - backpack
-  - handbag
-  person_class: person
-  min_frames: 3                     # frames on the other side of a zone edge before enter/exit fires
-  working_hours:                    # item removals outside these hours are flagged
-    start: "08:00"
-    end: "18:00"
-  bulk_removal_count: 3             # >= N items out within the window => flagged
-  bulk_removal_window_seconds: 60
-  flag_unattended: true             # flag item_out when no person is in the zone
-  status_file: logs/zone_status.json
+  mode: appearance
+  db_path: database/warehouse.db
+  confidence_threshold: 0.08
+  count_low_confidence_as_unknown: true
+  counting_line:
+    x1: 100
+    y1: 300
+    x2: 900
+    y2: 300
 snapshots:
   enabled: true
   save_dir: snapshots

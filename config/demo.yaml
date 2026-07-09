@@ -1,0 +1,41 @@
+cameras:
+- name: Demo Camera
+  source: dummy
+
+detection:
+  model_path: dummy
+  confidence_threshold: 0.5
+  device: cpu
+  classes: null
+display:
+  show_fps: true
+  window_prefix: AI Vision -
+  box_thickness: 2
+  font_scale: 0.6
+  live_feed_enabled: false
+tracking:
+  enabled: true
+  tracker_config: bytetrack.yaml
+  classes: null
+  grace_period_seconds: 5.0
+  db_path: database/tracking.db
+warehouse_counting:
+  enabled: true
+  mode: appearance
+  db_path: database/demo_warehouse.db
+  confidence_threshold: 0.5
+  count_low_confidence_as_unknown: true
+  counting_line:
+    x1: 100
+    y1: 300
+    x2: 900
+    y2: 300
+snapshots:
+  enabled: false
+  save_dir: snapshots
+  trigger_classes: []
+  cooldown_seconds: 5
+logging:
+  enabled: false
+  log_dir: logs
+  log_file: events.log

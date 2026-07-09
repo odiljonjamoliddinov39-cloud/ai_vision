@@ -18,29 +18,6 @@ the Technical Design doc.
   when a trigger class (e.g. person, car) appears, with a cooldown.
 - **FR-6 Event Log** — `database/event_log.py`: appends detection
   events to `logs/events.log` in the format from the design doc.
-- **Low-latency video** — `cameras/camera.py` grabs frames on a
-  background thread and always hands over the *newest* frame, so slow
-  YOLO inference drops stale frames instead of queueing them (no more
-  growing live-view delay). `latest.jpg` is written atomically and the
-  MJPEG endpoint only pushes frames when a new one exists.
-- **Zone counting (Phase 5)** — `tracking/zones.py`: polygon zones per
-  camera (normalized coords, `null` = whole frame); counts objects
-  currently *inside the warehouse zone* using each object's
-  bottom-center point, with hysteresis so edge-straddling objects don't
-  flap. Live counts are drawn on the frame and published to
-  `logs/zone_status.json` for the dashboard.
-- **Warehouse event recognition + theft flags (Phase 5)** —
-  `tracking/warehouse.py`: zone enter/exit becomes `item_in` /
-  `item_out` / `person_in` / `person_out` events stored in SQLite.
-  Item removals are flagged as suspicious when they happen
-  **after hours**, **unattended** (no person in the zone), or as a
-  **bulk removal** (many items out within a short window). See the
-  "Warehouse Events" tab in the dashboard.
-
-  > Note: stock COCO YOLOv8 weights have no "cardboard box" class —
-  > suitcase/backpack/handbag are the closest built-ins. For real boxes,
-  > point `detection.model_path` at a custom-trained model and list its
-  > class name in `warehouse.item_classes`.
 
 ## Project structure
 
@@ -105,6 +82,16 @@ zipped/committed even before those phases are built.
 
    A window opens per camera showing live detections when display is available. Press **q** to quit.
 
+   To verify the warehouse stock-counting flow without a physical camera
+   or YOLO weights, run the deterministic demo:
+
+   ```bash
+   python main.py --config config/demo.yaml --no-display --max-frames 40
+   ```
+
+   This uses a synthetic tracked box crossing the counting line and writes
+   stock movements to `database/warehouse.db`.
+
 6. **Run the JavaScript control panel:**
 
    ```bash
@@ -123,15 +110,26 @@ zipped/committed even before those phases are built.
 | `detection`   | `confidence_threshold`  | Minimum confidence to keep a detection (0–1)          |
 | `detection`   | `device`                | `"cpu"` or `"cuda"`                                    |
 | `detection`   | `classes`                | `null` for all classes, or a list like `["person"]`   |
+| `spatial_analysis` | `camera_height_m`  | Camera lens height above the floor                     |
+| `spatial_analysis` | `horizon_y_ratio`  | Horizon row divided by frame height                    |
+| `spatial_analysis` | `horizontal_fov_degrees` | Camera horizontal field of view                  |
+| `spatial_analysis` | `unit_dimensions`  | Known unit dimensions used for stack quantity estimates |
 | `snapshots`   | `trigger_classes`        | Classes that trigger an auto-saved image              |
 | `snapshots`   | `cooldown_seconds`       | Minimum gap between snapshots of the same class       |
 | `logging`     | `log_file`                | Where detection events are appended                    |
-| `zones`       | `polygon`                | Normalized zone vertices, or `null` for the whole frame |
-| `warehouse`   | `item_classes`           | Class names counted as warehouse items                 |
-| `warehouse`   | `working_hours`          | `start`/`end` (HH:MM); removals outside are flagged    |
-| `warehouse`   | `bulk_removal_count`     | N items out within the window ⇒ flagged                |
-| `warehouse`   | `flag_unattended`        | Flag removals with no person in the zone               |
-| `display`     | `live_feed_jpeg_quality` | JPEG quality (0–100) of the live MJPEG feed            |
+
+### Monocular 3D estimates
+
+The live feed and recognition dashboard show estimated object type,
+distance, `W x H x D`, and stack quantity. Stack quantity is calculated
+from the calibrated view and the configured dimensions of one unit. The
+default keeps depth layers at one because a single CCTV image cannot see
+hidden layers reliably. Set `estimate_depth_layers: true` only after
+calibrating against known stacks.
+
+For accurate metric sizing, measure the lens height, tune the horizon to
+the camera view, and enter the real box or sack dimensions. Certified
+measurements require a stereo or depth camera.
 
 ## Troubleshooting
 
@@ -139,8 +137,8 @@ zipped/committed even before those phases are built.
   or `2` if `0` doesn't work (some systems have multiple video
   devices registered). For RTSP, double check the URL works in VLC
   first (`Media → Open Network Stream`).
-- **Low FPS on CPU**: use `yolov8n.pt` (already the default — the
-  smallest/fastest model), lower your camera resolution, or run on a
+- **Low FPS on CPU**: lower `detection.image_size`, use a smaller model,
+  lower your camera resolution, or run on a
   machine with a CUDA GPU and set `device: "cuda"`.
 - **RTSP keeps disconnecting**: this is normal for some CCTV/NVR
   setups; `cameras/camera.py` already retries automatically, but

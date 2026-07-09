@@ -27,6 +27,15 @@ class TrackedObject:
     class_name: str
     confidence: float
     box: tuple  # (x1, y1, x2, y2)
+    object_type: str | None = None
+    inventory_name: str | None = None
+    quantity: int = 1
+    quantity_grid: tuple[int, int, int] = (1, 1, 1)
+    width_m: float | None = None
+    height_m: float | None = None
+    depth_m: float | None = None
+    distance_m: float | None = None
+    method: str | None = None
 
 
 class ObjectTracker:
@@ -37,6 +46,8 @@ class ObjectTracker:
         device: str = "cpu",
         classes: list[str] | None = None,
         tracker_config: str = "bytetrack.yaml",
+        image_size: int = 640,
+        class_agnostic_nms: bool = False,
     ):
         """
         Args:
@@ -50,6 +61,8 @@ class ObjectTracker:
         self.device = device
         self.classes_filter = set(classes) if classes else None
         self.tracker_config = tracker_config
+        self.image_size = image_size
+        self.class_agnostic_nms = class_agnostic_nms
 
     def update(self, frame) -> list[TrackedObject]:
         """
@@ -62,6 +75,8 @@ class ObjectTracker:
             conf=self.confidence_threshold,
             device=self.device,
             tracker=self.tracker_config,
+            imgsz=self.image_size,
+            agnostic_nms=self.class_agnostic_nms,
             persist=True,
             verbose=False,
         )

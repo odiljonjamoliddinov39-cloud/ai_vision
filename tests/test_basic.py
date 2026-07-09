@@ -7,10 +7,11 @@ the YOLO model. Run with:
 
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from detection.detector import Detection
+from detection.detector import Detection, Detector
 from detection.snapshot import SnapshotSaver
 
 
@@ -41,3 +42,38 @@ def _fake_frame():
     import numpy as np
 
     return np.zeros((100, 100, 3), dtype="uint8")
+
+
+def test_open_vocabulary_detector_sets_prompts_and_image_size(monkeypatch):
+    class FakeModel:
+        def __init__(self):
+            self.prompts = None
+            self.predict_kwargs = None
+
+        def set_classes(self, prompts):
+            self.prompts = prompts
+
+        def predict(self, **kwargs):
+            self.predict_kwargs = kwargs
+            return [SimpleNamespace(names={}, boxes=[])]
+
+    model = FakeModel()
+    monkeypatch.setitem(
+        sys.modules,
+        "ultralytics",
+        SimpleNamespace(YOLO=lambda _path: model),
+    )
+
+    detector = Detector(
+        model_path="warehouse-world.pt",
+        confidence_threshold=0.08,
+        class_prompts=["cardboard box", "stack of sacks"],
+        image_size=960,
+        class_agnostic_nms=True,
+    )
+
+    assert detector.detect(object()) == []
+    assert model.prompts == ["cardboard box", "stack of sacks"]
+    assert model.predict_kwargs["conf"] == 0.08
+    assert model.predict_kwargs["imgsz"] == 960
+    assert model.predict_kwargs["agnostic_nms"] is True

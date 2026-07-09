@@ -3,8 +3,13 @@ venv/
 __pycache__/
 *.pyc
 models/*.pt
+*.pt
 logs/*.log
 logs/inventory.json
+logs/detection_health.json
+logs/detection_health*.tmp
+logs/detection.pid
+database/*.db
 snapshots/*.jpg
 snapshots/inventory/
 !.gitkeep

@@ -16,6 +16,7 @@
 
         <nav class="nav-menu" aria-label="Main navigation">
           <button class="nav-btn active" data-tab="itemEntry">Item Entry</button>
+          <button class="nav-btn" data-tab="cameraSettings">Camera Settings</button>
           <button class="nav-btn" data-tab="checkIn">Check In</button>
           <button class="nav-btn" data-tab="recognitions">Recognitions</button>
           <button class="nav-btn" data-tab="readyList">Ready List</button>
@@ -91,6 +92,68 @@
           </div>
         </section>
 
+        <section class="page hidden" id="cameraSettings">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Connect CCTV</h2>
+              <div class="status-pill" id="cameraConnectionStatus">Not tested</div>
+            </div>
+            <p class="connection-detail" id="cameraConnectionDetail"></p>
+            <form id="cameraForm" class="form-grid">
+              <label>
+                Camera Name
+                <input id="cameraName" type="text" required placeholder="Warehouse Camera 1" />
+              </label>
+              <label>
+                Camera IP / RTSP / HTTP URL
+                <input id="cameraStreamUrl" type="text" required placeholder="rtsp://username:password@192.168.1.64:554/stream1" />
+              </label>
+              <label>
+                Camera Slot
+                <input id="cameraSlot" type="number" min="1" max="16" value="1" required />
+              </label>
+              <div class="button-row full-width">
+                <button id="btnTestCamera" type="button">Test Connection</button>
+                <button class="primary" id="btnConnectCamera" type="submit">Connect Camera</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Saved Cameras</h2>
+              <button id="btnRefreshCameras" type="button">Refresh</button>
+            </div>
+            <div class="active-slots" id="activeSlotList"></div>
+            <div class="form-grid camera-active-form">
+              <label>
+                Slot
+                <input id="activeSlotNumber" type="number" min="1" max="16" value="1" />
+              </label>
+              <label>
+                Camera
+                <select id="slotCameraSelect"></select>
+              </label>
+              <button class="primary" id="btnSetActiveCamera" type="button">Assign Slot</button>
+              <button id="btnClearCameraSlot" type="button">Clear Slot</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Slot</th>
+                    <th>Stream</th>
+                    <th>Status</th>
+                    <th>Active</th>
+                  </tr>
+                </thead>
+                <tbody id="savedCameraTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
         <section class="page hidden" id="checkIn">
           <div class="metrics-row">
             <div class="metric-card">
@@ -107,16 +170,37 @@
             </div>
           </div>
 
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Function health</h2>
+            </div>
+            <div class="metric-card-grid">
+              <div class="metric-card">
+                <span>Camera frames</span>
+                <strong id="healthFrames">0</strong>
+              </div>
+              <div class="metric-card">
+                <span>Last detections</span>
+                <strong id="healthDetections">0</strong>
+              </div>
+              <div class="metric-card">
+                <span>Tracking IDs</span>
+                <strong id="healthTracking">0</strong>
+              </div>
+              <div class="metric-card">
+                <span>Stock mode</span>
+                <strong id="healthStockMode">Off</strong>
+              </div>
+            </div>
+            <p class="panel-sub" id="healthMessage">Waiting for detection health.</p>
+          </div>
+
           <div class="panel split-panel">
             <div>
               <div class="panel-head">
-                <h2>Warehouse live view</h2>
+                <h2>Camera live views</h2>
               </div>
-              <div class="video-frame">
-                <video id="warehouseVideo" autoplay playsinline muted></video>
-                <img id="warehouseFallback" alt="Live feed unavailable." class="hidden" />
-                <div class="video-hint" id="warehouseHint">Loading camera...</div>
-              </div>
+              <div class="camera-live-grid" id="cameraLiveGrid"></div>
             </div>
 
             <div>
@@ -191,6 +275,88 @@
                   </tr>
                 </thead>
                 <tbody id="videoRecognitionEntries"></tbody>
+              </table>
+            </div>
+          </div>
+
+        </section>
+
+        <section class="page hidden" id="recognitions">
+          <div class="metrics-row">
+            <div class="metric-card">
+              <span>Automatic check-ins</span>
+              <strong id="visionCheckInTotal">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Automatic check-outs</span>
+              <strong id="visionCheckOutTotal">0</strong>
+            </div>
+            <div class="metric-card">
+              <span>Stocked classes</span>
+              <strong id="visionCurrentStockTotal">0</strong>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Live 3D estimates</h2>
+            </div>
+            <p class="panel-sub">Estimated from the calibrated camera view. Exact metric sizing requires a depth or stereo camera.</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Inventory item</th>
+                    <th>Physical type</th>
+                    <th>Units</th>
+                    <th>Grid</th>
+                    <th>Estimated W x H x D</th>
+                    <th>Distance</th>
+                  </tr>
+                </thead>
+                <tbody id="spatialEstimateTable"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Vision check-in events</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Direction</th>
+                    <th>Item</th>
+                    <th>Quantity</th>
+                    <th>Physical type</th>
+                    <th>Estimated size</th>
+                    <th>Camera</th>
+                    <th>Track ID</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody id="visionMovementEntries"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Camera stock</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Current stock</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody id="visionStockTable"></tbody>
               </table>
             </div>
           </div>
@@ -444,6 +610,6 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/app.js" type="module"></script>
+    <script src="/assets/app.js?v=live-feed-stability" type="module"></script>
   </body>
 </html>
