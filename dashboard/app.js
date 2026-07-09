@@ -52,8 +52,18 @@ const els = {
   toast: document.querySelector("#toast"),
 };
 
+// API base: use ?api=https://your-backend.example.com once to save it,
+// falls back to same-origin (when served by the FastAPI server itself).
+const API_BASE = (() => {
+  const param = new URLSearchParams(window.location.search).get("api");
+  if (param) {
+    localStorage.setItem("api_base", param.replace(/\/+$/, ""));
+  }
+  return localStorage.getItem("api_base") || window.location.origin;
+})();
+
 const api = async (path, options = {}) => {
-  const url = `${window.location.origin}${path}`;
+  const url = `${API_BASE}${path}`;
   const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
   try {
     const response = await fetch(url, {
@@ -425,11 +435,11 @@ const startLiveFeed = async () => {
   // MJPEG is a continuous multipart stream: set src ONCE and let it run.
   // (Re-setting src on a timer restarts the stream over and over, which
   // is what made the live view stutter and lag.)
-  els.warehouseFallback.src = "/api/live_mjpeg?t=" + Date.now();
+  els.warehouseFallback.src = `${API_BASE}/api/live_mjpeg?t=` + Date.now();
   els.warehouseFallback.addEventListener("error", () => {
     // stream dropped (e.g. server restarted) — reconnect after a moment
     window.setTimeout(() => {
-      els.warehouseFallback.src = "/api/live_mjpeg?t=" + Date.now();
+      els.warehouseFallback.src = `${API_BASE}/api/live_mjpeg?t=` + Date.now();
     }, 2000);
   });
 };

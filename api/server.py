@@ -23,6 +23,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 import asyncio
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -39,6 +40,15 @@ TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 ZONE_STATUS_PATH = ROOT / "logs" / "zone_status.json"
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
+
+# Allow the dashboard to be hosted elsewhere (e.g. Vercel) while calling this API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _tracking_db: TrackingDB | None = None
 
