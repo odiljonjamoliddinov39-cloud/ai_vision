@@ -1,9 +1,9 @@
 cameras:
-- name: Camera 1
-  source: 0
-
+- name: Demo Camera
+  source: dummy
+  slot_number: 1
 detection:
-  model_path: models/yolov8s-worldv2.pt
+  model_path: dummy
   confidence_threshold: 0.08
   image_size: 960
   class_agnostic_nms: true

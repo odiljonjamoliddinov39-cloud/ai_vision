@@ -264,6 +264,9 @@ def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str,
     if validation_error:
         return {"status": "failed", "message": validation_error}
 
+    if stream_url.strip().lower() == "dummy":
+        return {"status": "connected", "message": "Demo camera source is available."}
+
     if endpoint is not None:
         endpoint_error = _check_camera_endpoint(endpoint)
         if endpoint_error:
