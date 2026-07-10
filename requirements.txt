@@ -1,11 +1,12 @@
 # Core (Phase 1 MVP)
 opencv-python-headless>=4.9.0
-ultralytics>=8.2.0
-git+https://github.com/ultralytics/CLIP.git
 PyYAML>=6.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
+
+# AI model runtime packages are optional for cloud dashboard/API deployments.
+# Install requirements-ai.txt on machines that will run real YOLO detection.
 
 # Phase 2+ (AI assistant / voice) - uncomment as you build these out
 # openai>=1.30.0
