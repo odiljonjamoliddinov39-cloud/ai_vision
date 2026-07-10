@@ -222,6 +222,16 @@
               </table>
             </div>
           </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Detected Camera Feeds</h2>
+            </div>
+            <p class="panel-sub">
+              One screen per active camera slot. These feeds show the latest AI-processed detection frames.
+            </p>
+            <div class="camera-live-grid" id="cameraLiveGrid"></div>
+          </div>
         </section>
 
         <section class="page hidden" id="checkIn">
@@ -265,37 +275,28 @@
             <p class="panel-sub" id="healthMessage">Waiting for detection health.</p>
           </div>
 
-          <div class="panel split-panel">
-            <div>
-              <div class="panel-head">
-                <h2>Camera live views</h2>
-              </div>
-              <div class="camera-live-grid" id="cameraLiveGrid"></div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Check in / out</h2>
             </div>
-
-            <div>
-              <div class="panel-head">
-                <h2>Check in / out</h2>
+            <form id="checkInForm" class="form-grid">
+              <label>
+                Item
+                <select id="checkItemId" required></select>
+              </label>
+              <label>
+                Quantity
+                <input id="checkQuantity" type="number" min="1" value="1" required />
+              </label>
+              <label class="full-width">
+                Note
+                <textarea id="checkNote" placeholder="Optional note"></textarea>
+              </label>
+              <div class="button-row">
+                <button class="primary" id="btnCheckIn" type="button">Check In</button>
+                <button id="btnCheckOut" type="button">Check Out</button>
               </div>
-              <form id="checkInForm" class="form-grid">
-                <label>
-                  Item
-                  <select id="checkItemId" required></select>
-                </label>
-                <label>
-                  Quantity
-                  <input id="checkQuantity" type="number" min="1" value="1" required />
-                </label>
-                <label class="full-width">
-                  Note
-                  <textarea id="checkNote" placeholder="Optional note"></textarea>
-                </label>
-                <div class="button-row">
-                  <button class="primary" id="btnCheckIn" type="button">Check In</button>
-                  <button id="btnCheckOut" type="button">Check Out</button>
-                </div>
-              </form>
-            </div>
+            </form>
           </div>
 
           <div class="panel">
@@ -365,6 +366,17 @@
               <span>Stocked classes</span>
               <strong id="visionCurrentStockTotal">0</strong>
             </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>AI 3D Recognition Brain</h2>
+            </div>
+            <p class="panel-sub">
+              The AI maps detected items into a lightweight 3D-style scene using estimated size,
+              distance, quantity, and object type to make recognition easier.
+            </p>
+            <div class="ai-3d-scene" id="ai3dScene"></div>
           </div>
 
           <div class="panel">

@@ -435,16 +435,17 @@ tr:nth-child(even) {
 
 .camera-live-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
 }
 
 .camera-screen {
   min-height: 220px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 14px;
   overflow: hidden;
   background: #0b1220;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.14);
 }
 
 .camera-screen.empty {
@@ -475,6 +476,23 @@ tr:nth-child(even) {
   background: #0b1220;
 }
 
+.screen-body::before {
+  content: "AI detection frames";
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 2;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #e2e8f0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 5px 9px;
+  text-transform: uppercase;
+}
+
 .camera-screen img {
   display: block;
   width: 100%;
@@ -495,6 +513,100 @@ tr:nth-child(even) {
 
 .screen-body.has-frame .screen-placeholder {
   display: none;
+}
+
+.ai-3d-scene {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  perspective: 900px;
+}
+
+.ai-3d-empty {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  min-height: 150px;
+  place-items: center;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  background: #f8fafc;
+  color: var(--muted);
+  text-align: center;
+}
+
+.ai-3d-object {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 16px;
+  align-items: center;
+  min-height: 150px;
+  border: 1px solid color-mix(in srgb, hsl(var(--hue) 82% 48%) 32%, var(--line));
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 20% 20%, hsla(var(--hue), 92%, 72%, 0.22), transparent 36%),
+    linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+  padding: 18px;
+  overflow: hidden;
+}
+
+.object-cube {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  margin: 12px auto;
+  transform: rotateX(58deg) rotateZ(42deg) scale(var(--scale));
+  transform-style: preserve-3d;
+}
+
+.cube-face {
+  position: absolute;
+  inset: 0;
+  border: 1px solid hsla(var(--hue), 90%, 24%, 0.25);
+  background: hsla(var(--hue), 82%, 52%, 0.72);
+  box-shadow: 0 16px 36px hsla(var(--hue), 72%, 42%, 0.22);
+}
+
+.cube-top {
+  transform: translateY(-29px) rotateX(90deg);
+  filter: brightness(1.18);
+}
+
+.cube-side {
+  transform: translateX(29px) rotateY(90deg);
+  filter: brightness(0.82);
+}
+
+.object-meta {
+  display: grid;
+  gap: 7px;
+}
+
+.object-meta strong {
+  font-size: 1rem;
+}
+
+.object-meta span,
+.object-meta em,
+.object-meta small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-style: normal;
+}
+
+.distance-track {
+  height: 7px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.distance-track span {
+  display: block;
+  width: var(--distance);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, hsl(var(--hue) 85% 50%), #0f172a);
 }
 
 @media (max-width: 950px) {

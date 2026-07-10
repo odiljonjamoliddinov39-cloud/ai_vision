@@ -52,6 +52,7 @@ const els = {
   healthTracking: document.querySelector("#healthTracking"),
   healthStockMode: document.querySelector("#healthStockMode"),
   healthMessage: document.querySelector("#healthMessage"),
+  ai3dScene: document.querySelector("#ai3dScene"),
   spatialEstimateTable: document.querySelector("#spatialEstimateTable"),
   cameraLiveGrid: document.querySelector("#cameraLiveGrid"),
   checkItemId: document.querySelector("#checkItemId"),
@@ -589,6 +590,57 @@ const renderRecognitions = (data, running = false) => {
       .join("") || `<tr><td colspan="3">No camera-counted stock yet.</td></tr>`;
 };
 
+const renderAi3dScene = (spatialObjects) => {
+  if (!els.ai3dScene) return;
+
+  if (!spatialObjects.length) {
+    els.ai3dScene.innerHTML = `
+      <div class="ai-3d-empty">
+        <strong>No current 3D objects</strong>
+        <span>Start detection and wait for camera frames to build the recognition scene.</span>
+      </div>
+    `;
+    return;
+  }
+
+  const maxDistance = Math.max(
+    1,
+    ...spatialObjects.map((item) => Number(item.distance_m || 0))
+  );
+
+  els.ai3dScene.innerHTML = spatialObjects
+    .map((item, index) => {
+      const width = Math.max(0.15, Number(item.width_m || 0.2));
+      const height = Math.max(0.15, Number(item.height_m || 0.2));
+      const depth = Math.max(0.15, Number(item.depth_m || 0.2));
+      const distance = Math.max(0, Number(item.distance_m || 0));
+      const distancePct = Math.min(100, Math.round((distance / maxDistance) * 100));
+      const scale = Math.max(0.7, Math.min(1.35, 1.3 - distance / Math.max(maxDistance * 1.4, 1)));
+      const grid = (item.quantity_grid || [1, 1, 1]).join(" x ");
+      const label = item.inventory_name || item.class_name || "Detected item";
+      const hue = (index * 54) % 360;
+      const sizeLabel = `${width.toFixed(2)} x ${height.toFixed(2)} x ${depth.toFixed(2)} m`;
+
+      return `
+        <article class="ai-3d-object" style="--hue:${hue}; --scale:${scale}; --distance:${distancePct}%;">
+          <div class="object-cube" aria-hidden="true">
+            <span class="cube-face cube-front"></span>
+            <span class="cube-face cube-top"></span>
+            <span class="cube-face cube-side"></span>
+          </div>
+          <div class="object-meta">
+            <strong>${escapeHtml(label)}</strong>
+            <span>${escapeHtml(item.object_type || "object")} · ${item.quantity || 1} unit(s)</span>
+            <em>Grid ${escapeHtml(grid)} · ~${sizeLabel}</em>
+            <div class="distance-track"><span></span></div>
+            <small>Distance ~${distance.toFixed(1)} m</small>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+};
+
 const renderFunctionHealth = (status) => {
   const health = status.health || {};
   const spatialObjects = health.last_spatial_objects || [];
@@ -620,6 +672,8 @@ const renderFunctionHealth = (status) => {
         return `<tr><td>${escapeHtml(item.inventory_name)}</td><td>${escapeHtml(item.object_type)}</td><td>${item.quantity}</td><td>${grid}</td><td>${size}</td><td>~${Number(item.distance_m).toFixed(1)} m</td></tr>`;
       })
       .join("") || `<tr><td colspan="6">No current 3D estimates.</td></tr>`;
+
+  renderAi3dScene(spatialObjects);
 };
 
 const loadOccupancy = async () => {
