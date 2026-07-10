@@ -159,6 +159,11 @@ class CameraDB:
                 (slot_number,),
             )
 
+    def delete_camera(self, camera_id: int) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM cameras WHERE id = ?", (camera_id,))
+            return cursor.rowcount > 0
+
     def ensure_default_camera(self, name: str, stream_url: str) -> None:
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS count FROM cameras").fetchone()

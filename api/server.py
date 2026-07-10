@@ -950,6 +950,28 @@ def test_saved_camera(camera_id: int) -> dict[str, Any]:
     return {"camera": updated, "test": result}
 
 
+@app.delete("/api/cameras/{camera_id}")
+def delete_saved_camera(camera_id: int) -> dict[str, Any]:
+    db = _get_camera_db()
+    deleted = db.delete_camera(camera_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+
+    _sync_config_active_cameras(db)
+    if _status()["running"]:
+        stop_detection()
+        start_detection(StartRequest())
+
+    cameras = db.list_cameras(include_secret=False)
+    active_cameras = [row for row in cameras if row["is_active"]]
+    return {
+        "deleted": True,
+        "cameras": cameras,
+        "active_cameras": active_cameras,
+        "active_camera": active_cameras[0] if active_cameras else None,
+    }
+
+
 @app.post("/api/cameras/{camera_id}/activate")
 def set_active_camera(
     camera_id: int, request: CameraSlotRequest | None = None

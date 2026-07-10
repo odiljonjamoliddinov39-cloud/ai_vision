@@ -54,3 +54,12 @@ def test_camera_db_assigns_multiple_camera_slots(tmp_path):
     assert [camera["name"] for camera in active] == ["Warehouse Camera 1", "Dock Camera"]
     assert [camera["slot_number"] for camera in active] == [1, 2]
     assert all(camera["is_active"] for camera in active)
+
+
+def test_camera_db_deletes_camera(tmp_path):
+    db = CameraDB(db_path=str(tmp_path / "cameras.db"))
+    camera = db.add_camera("Test Camera", "dummy", status="connected")
+
+    assert db.delete_camera(camera["id"]) is True
+    assert db.get_camera(camera["id"]) is None
+    assert db.delete_camera(camera["id"]) is False
