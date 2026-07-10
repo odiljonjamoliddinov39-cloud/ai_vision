@@ -8,6 +8,7 @@ Run:
 from __future__ import annotations
 
 import io
+import ipaddress
 import json
 import os
 import re
@@ -155,6 +156,7 @@ class CameraControllerCreate(BaseModel):
     make_active: bool = True
     test_controller: bool = True
     test_streams: bool = False
+    require_public: bool = True
 
 
 STREAM_DEFAULT_PORTS = {
@@ -254,6 +256,22 @@ def _normalize_controller_host(host: str) -> str:
         if parsed.hostname:
             return parsed.hostname
     return value.strip("/")
+
+
+def _private_controller_host_message(host: str) -> str | None:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+    if not address.is_global:
+        return (
+            f"Controller host {host} is not publicly reachable from the internet. "
+            "Use the controller/router public IP address or a DNS/DDNS hostname, and forward the "
+            "RTSP/HTTP stream port to the controller. Private LAN addresses like 192.168.x.x, "
+            "10.x.x.x, 172.16-31.x.x, and 127.x.x.x only work from the same local network."
+        )
+    return None
 
 
 def _controller_endpoint(controller: CameraControllerCreate) -> dict[str, Any]:
@@ -861,6 +879,10 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
     if not endpoint["host"]:
         raise HTTPException(status_code=400, detail="Controller IP/host is required.")
 
+    private_host_message = _private_controller_host_message(endpoint["host"])
+    if controller.require_public and private_host_message:
+        raise HTTPException(status_code=400, detail=private_host_message)
+
     controller_error = None
     if controller.test_controller:
         controller_error = _check_camera_endpoint(endpoint)
@@ -927,6 +949,8 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
             "port": endpoint["port"],
             "protocol": endpoint["scheme"],
             "reachable": controller_reachable,
+            "public_reachable_required": controller.require_public,
+            "public_reachability_warning": private_host_message,
             "message": controller_error
             or f"Controller endpoint {endpoint['host']}:{endpoint['port']} is reachable.",
         },

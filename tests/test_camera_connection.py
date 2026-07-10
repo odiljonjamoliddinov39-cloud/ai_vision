@@ -10,6 +10,7 @@ from api.server import (
     _controller_camera_name,
     _controller_endpoint,
     _controller_stream_url,
+    _private_controller_host_message,
     _live_feed_path,
     _live_feed_paths,
     _next_available_slot,
@@ -127,6 +128,22 @@ def test_controller_endpoint_accepts_host_with_scheme():
         "host": "192.168.1.10",
         "port": 80,
     }
+
+
+def test_private_controller_host_message_flags_lan_ip():
+    message = _private_controller_host_message("192.168.1.10")
+
+    assert message is not None
+    assert "not publicly reachable" in message
+    assert "192.168.x.x" in message
+
+
+def test_private_controller_host_message_allows_public_ip():
+    assert _private_controller_host_message("8.8.8.8") is None
+
+
+def test_private_controller_host_message_allows_dns_name():
+    assert _private_controller_host_message("warehouse-nvr.example.com") is None
 
 
 def test_controller_camera_name_template_can_use_slot_and_channel():

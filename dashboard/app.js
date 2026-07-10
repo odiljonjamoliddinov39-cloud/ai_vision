@@ -258,6 +258,17 @@ const numberFromInput = (input, fallback = null) => {
   return Number.isFinite(value) ? value : fallback;
 };
 
+const isPrivateControllerHost = (host) => {
+  const value = host.trim().replace(/^https?:\/\//, "").replace(/^rtsp:\/\//, "").split(/[/:]/)[0];
+  return (
+    value === "localhost" ||
+    value.startsWith("127.") ||
+    value.startsWith("10.") ||
+    value.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(value)
+  );
+};
+
 const handleTestCamera = async () => {
   const streamUrl = els.cameraStreamUrl.value.trim();
   if (!streamUrl) {
@@ -296,6 +307,13 @@ const handleConnectController = async (event) => {
     toast("Controller IP/host is required.");
     return;
   }
+  if (isPrivateControllerHost(els.controllerHost.value)) {
+    const message =
+      "Use a public IP or DNS/DDNS hostname. Private Wi-Fi/LAN IPs cannot be reached by the cloud backend.";
+    setControllerConnectionStatus("failed", message);
+    toast(message);
+    return;
+  }
   if (!Number.isInteger(channelCount) || channelCount < 1 || channelCount > MAX_CAMERA_SLOTS) {
     toast(`Number of cameras must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
@@ -329,6 +347,7 @@ const handleConnectController = async (event) => {
         make_active: true,
         test_controller: true,
         test_streams: false,
+        require_public: true,
       }),
     });
 

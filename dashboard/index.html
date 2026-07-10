@@ -125,7 +125,8 @@
               <div class="status-pill" id="controllerConnectionStatus">Not tested</div>
             </div>
             <p class="connection-detail" id="controllerConnectionDetail">
-              Use this when one controller/NVR IP contains all installed cameras.
+              Use the controller/router public IP or DNS/DDNS hostname. Private Wi-Fi/LAN IPs
+              such as 192.168.x.x or 10.x.x.x cannot be reached from the cloud backend.
             </p>
             <form id="controllerForm" class="form-grid">
               <label>
@@ -133,8 +134,8 @@
                 <input id="controllerName" type="text" value="Camera Controller" required />
               </label>
               <label>
-                Controller IP / Host
-                <input id="controllerHost" type="text" required placeholder="192.168.1.10" />
+                Public Controller IP / DNS
+                <input id="controllerHost" type="text" required placeholder="203.0.113.10 or warehouse-nvr.example.com" />
               </label>
               <label>
                 Protocol
@@ -177,6 +178,8 @@
                 <input id="controllerCameraNameTemplate" type="text" value="{controller} Camera {channel}" required />
               </label>
               <p class="panel-sub full-width">
+                The controller must expose its stream port on the internet, usually by router
+                port-forwarding RTSP 554 or the custom stream port to the controller/NVR.
                 Template examples: Hikvision <code>/Streaming/Channels/{channel}01</code>,
                 Dahua <code>/cam/realmonitor?channel={channel}&amp;subtype=0</code>.
               </p>
