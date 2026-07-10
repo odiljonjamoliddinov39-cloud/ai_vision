@@ -70,13 +70,21 @@ const els = {
 };
 
 // API base: use ?api=https://your-backend.example.com once to save it,
-// falls back to same-origin when served directly by FastAPI.
+// falls back to the deployed backend for static hosts and same-origin when
+// served directly by FastAPI.
 const API_BASE = (() => {
   const param = new URLSearchParams(window.location.search).get("api");
   if (param) {
     localStorage.setItem("api_base", param.replace(/\/+$/, ""));
   }
-  return localStorage.getItem("api_base") || window.location.origin;
+  const saved = localStorage.getItem("api_base");
+  if (saved) {
+    return saved;
+  }
+  if (window.location.hostname.endsWith("vercel.app")) {
+    return "https://ai-vision-backend-nasoe.ondigitalocean.app";
+  }
+  return window.location.origin;
 })();
 
 const api = async (path, options = {}) => {
