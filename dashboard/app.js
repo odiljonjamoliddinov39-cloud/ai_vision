@@ -12,6 +12,21 @@ const els = {
   cameraStreamUrl: document.querySelector("#cameraStreamUrl"),
   cameraSlot: document.querySelector("#cameraSlot"),
   cameraConnectionDetail: document.querySelector("#cameraConnectionDetail"),
+  controllerForm: document.querySelector("#controllerForm"),
+  controllerName: document.querySelector("#controllerName"),
+  controllerHost: document.querySelector("#controllerHost"),
+  controllerProtocol: document.querySelector("#controllerProtocol"),
+  controllerPort: document.querySelector("#controllerPort"),
+  controllerUsername: document.querySelector("#controllerUsername"),
+  controllerPassword: document.querySelector("#controllerPassword"),
+  controllerChannelCount: document.querySelector("#controllerChannelCount"),
+  controllerChannelStart: document.querySelector("#controllerChannelStart"),
+  controllerStartSlot: document.querySelector("#controllerStartSlot"),
+  controllerStreamTemplate: document.querySelector("#controllerStreamTemplate"),
+  controllerCameraNameTemplate: document.querySelector("#controllerCameraNameTemplate"),
+  controllerConnectionStatus: document.querySelector("#controllerConnectionStatus"),
+  controllerConnectionDetail: document.querySelector("#controllerConnectionDetail"),
+  btnConnectController: document.querySelector("#btnConnectController"),
   btnTestCamera: document.querySelector("#btnTestCamera"),
   btnConnectCamera: document.querySelector("#btnConnectCamera"),
   btnRefreshCameras: document.querySelector("#btnRefreshCameras"),
@@ -189,6 +204,19 @@ const setCameraConnectionStatus = (status, message) => {
   els.cameraConnectionDetail.textContent = message && message !== label ? message : "";
 };
 
+const setControllerConnectionStatus = (status, message) => {
+  const labels = {
+    connected: "Connected",
+    failed: "Failed",
+    loading: "Loading",
+    unknown: "Not tested",
+  };
+  const label = labels[status] || labels.unknown;
+  els.controllerConnectionStatus.textContent = label;
+  els.controllerConnectionStatus.dataset.state = status;
+  els.controllerConnectionDetail.textContent = message && message !== label ? message : "";
+};
+
 const loadCameras = async () => {
   const data = await api("/api/cameras");
   cameraState.cameras = data.cameras || [];
@@ -225,6 +253,11 @@ const renderCameras = () => {
       .join("") || `<tr><td colspan="5">No saved cameras yet.</td></tr>`;
 };
 
+const numberFromInput = (input, fallback = null) => {
+  const value = Number(input.value);
+  return Number.isFinite(value) ? value : fallback;
+};
+
 const handleTestCamera = async () => {
   const streamUrl = els.cameraStreamUrl.value.trim();
   if (!streamUrl) {
@@ -247,6 +280,76 @@ const handleTestCamera = async () => {
     toast(error.message);
   } finally {
     els.btnTestCamera.disabled = false;
+  }
+};
+
+const handleConnectController = async (event) => {
+  event.preventDefault();
+
+  const channelCount = numberFromInput(els.controllerChannelCount);
+  const channelStart = numberFromInput(els.controllerChannelStart);
+  const startSlot = numberFromInput(els.controllerStartSlot);
+  const port = numberFromInput(els.controllerPort, null);
+  const lastSlot = startSlot + channelCount - 1;
+
+  if (!els.controllerHost.value.trim()) {
+    toast("Controller IP/host is required.");
+    return;
+  }
+  if (!Number.isInteger(channelCount) || channelCount < 1 || channelCount > MAX_CAMERA_SLOTS) {
+    toast(`Number of cameras must be between 1 and ${MAX_CAMERA_SLOTS}.`);
+    return;
+  }
+  if (!Number.isInteger(channelStart) || channelStart < 1) {
+    toast("First controller channel must be 1 or higher.");
+    return;
+  }
+  if (!Number.isInteger(startSlot) || startSlot < 1 || lastSlot > MAX_CAMERA_SLOTS) {
+    toast(`Controller slots must fit between 1 and ${MAX_CAMERA_SLOTS}.`);
+    return;
+  }
+
+  els.btnConnectController.disabled = true;
+  setControllerConnectionStatus("loading", "Checking controller and creating camera slots...");
+  try {
+    const result = await api("/api/camera-controller", {
+      method: "POST",
+      body: JSON.stringify({
+        name: els.controllerName.value.trim() || "Camera Controller",
+        host: els.controllerHost.value.trim(),
+        protocol: els.controllerProtocol.value,
+        port,
+        username: els.controllerUsername.value.trim() || undefined,
+        password: els.controllerPassword.value || undefined,
+        channel_count: channelCount,
+        channel_start: channelStart,
+        start_slot: startSlot,
+        stream_path_template: els.controllerStreamTemplate.value.trim(),
+        camera_name_template: els.controllerCameraNameTemplate.value.trim(),
+        make_active: true,
+        test_controller: true,
+        test_streams: false,
+      }),
+    });
+
+    cameraState.cameras = result.cameras || [];
+    cameraState.activeCameras = result.active_cameras || [];
+    renderCameras();
+    renderLiveScreens();
+
+    const createdCount = (result.created || []).length;
+    const activeCount = (result.results || []).filter((row) => row.active).length;
+    const connected = result.controller?.reachable;
+    const message = connected
+      ? `Controller connected. Added ${createdCount} cameras and assigned ${activeCount} slots.`
+      : result.controller?.message || "Controller could not be reached.";
+    setControllerConnectionStatus(connected ? "connected" : "failed", message);
+    toast(message);
+  } catch (error) {
+    setControllerConnectionStatus("failed", error.message);
+    toast(error.message);
+  } finally {
+    els.btnConnectController.disabled = false;
   }
 };
 
@@ -723,6 +826,7 @@ els.btnRestartDetection.addEventListener("click", () =>
   handleDetectionAction("restart", els.btnRestartDetection)
 );
 els.cameraForm.addEventListener("submit", handleConnectCamera);
+els.controllerForm.addEventListener("submit", handleConnectController);
 els.itemForm.addEventListener("submit", handleAddItem);
 els.btnCheckIn.addEventListener("click", () => handleCheckAction("checkin"));
 els.btnCheckOut.addEventListener("click", () => handleCheckAction("checkout"));

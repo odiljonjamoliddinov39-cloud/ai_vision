@@ -121,6 +121,73 @@
 
           <div class="panel">
             <div class="panel-head">
+              <h2>Connect Camera Controller / NVR</h2>
+              <div class="status-pill" id="controllerConnectionStatus">Not tested</div>
+            </div>
+            <p class="connection-detail" id="controllerConnectionDetail">
+              Use this when one controller/NVR IP contains all installed cameras.
+            </p>
+            <form id="controllerForm" class="form-grid">
+              <label>
+                Controller Name
+                <input id="controllerName" type="text" value="Camera Controller" required />
+              </label>
+              <label>
+                Controller IP / Host
+                <input id="controllerHost" type="text" required placeholder="192.168.1.10" />
+              </label>
+              <label>
+                Protocol
+                <select id="controllerProtocol">
+                  <option value="rtsp" selected>RTSP</option>
+                  <option value="http">HTTP</option>
+                  <option value="https">HTTPS</option>
+                </select>
+              </label>
+              <label>
+                Port
+                <input id="controllerPort" type="number" min="1" max="65535" placeholder="554" />
+              </label>
+              <label>
+                Username
+                <input id="controllerUsername" type="text" placeholder="admin" />
+              </label>
+              <label>
+                Password
+                <input id="controllerPassword" type="password" placeholder="Optional" />
+              </label>
+              <label>
+                Number of Cameras
+                <input id="controllerChannelCount" type="number" min="1" max="50" value="4" required />
+              </label>
+              <label>
+                First Controller Channel
+                <input id="controllerChannelStart" type="number" min="1" value="1" required />
+              </label>
+              <label>
+                First Dashboard Slot
+                <input id="controllerStartSlot" type="number" min="1" max="50" value="1" required />
+              </label>
+              <label class="full-width">
+                Stream Path Template
+                <input id="controllerStreamTemplate" type="text" value="/Streaming/Channels/{channel}01" required />
+              </label>
+              <label class="full-width">
+                Camera Name Template
+                <input id="controllerCameraNameTemplate" type="text" value="{controller} Camera {channel}" required />
+              </label>
+              <p class="panel-sub full-width">
+                Template examples: Hikvision <code>/Streaming/Channels/{channel}01</code>,
+                Dahua <code>/cam/realmonitor?channel={channel}&amp;subtype=0</code>.
+              </p>
+              <div class="button-row full-width">
+                <button class="primary" id="btnConnectController" type="submit">Connect Controller Cameras</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
               <h2>Saved Cameras</h2>
               <button id="btnRefreshCameras" type="button">Refresh</button>
             </div>

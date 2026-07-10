@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -140,6 +140,23 @@ class CameraSlotRequest(BaseModel):
     slot_number: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
 
 
+class CameraControllerCreate(BaseModel):
+    name: str = Field(default="Camera Controller", min_length=1)
+    host: str = Field(min_length=1)
+    protocol: str = Field(default="rtsp", pattern="^(rtsp|http|https)$")
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = None
+    password: str | None = None
+    channel_count: int = Field(default=4, ge=1, le=MAX_CAMERA_SLOTS)
+    channel_start: int = Field(default=1, ge=1)
+    start_slot: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
+    stream_path_template: str = Field(default="/Streaming/Channels/{channel}01", min_length=1)
+    camera_name_template: str = Field(default="{controller} Camera {channel}", min_length=1)
+    make_active: bool = True
+    test_controller: bool = True
+    test_streams: bool = False
+
+
 STREAM_DEFAULT_PORTS = {
     "rtsp": 554,
     "http": 80,
@@ -227,6 +244,50 @@ def _check_camera_endpoint(endpoint: dict[str, Any], timeout_seconds: float = 2.
         f"Cannot reach {scheme} endpoint {host}:{port} ({reason}). "
         "The camera is reachable only when this stream port is open; enable the camera stream service "
         "or use the correct stream URL/port."
+    )
+
+
+def _normalize_controller_host(host: str) -> str:
+    value = host.strip()
+    if "://" in value:
+        parsed = urlsplit(value)
+        if parsed.hostname:
+            return parsed.hostname
+    return value.strip("/")
+
+
+def _controller_endpoint(controller: CameraControllerCreate) -> dict[str, Any]:
+    protocol = controller.protocol.lower()
+    return {
+        "scheme": protocol,
+        "host": _normalize_controller_host(controller.host),
+        "port": controller.port or STREAM_DEFAULT_PORTS[protocol],
+    }
+
+
+def _controller_stream_url(controller: CameraControllerCreate, channel: int) -> str:
+    protocol = controller.protocol.lower()
+    host = _normalize_controller_host(controller.host)
+    port = controller.port or STREAM_DEFAULT_PORTS[protocol]
+    path = controller.stream_path_template.format(channel=channel)
+    if not path.startswith("/"):
+        path = f"/{path}"
+
+    credentials = ""
+    if controller.username:
+        credentials = quote(controller.username, safe="")
+        if controller.password:
+            credentials += f":{quote(controller.password, safe='')}"
+        credentials += "@"
+
+    return f"{protocol}://{credentials}{host}:{port}{path}"
+
+
+def _controller_camera_name(controller: CameraControllerCreate, channel: int, slot: int) -> str:
+    return controller.camera_name_template.format(
+        controller=controller.name.strip(),
+        channel=channel,
+        slot=slot,
     )
 
 
@@ -783,6 +844,97 @@ def save_camera(camera: CameraCreate) -> dict[str, Any]:
         "active_cameras": active_cameras,
         "test": test_result,
         "cameras": cameras,
+    }
+
+
+@app.post("/api/camera-controller")
+def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]:
+    last_slot = controller.start_slot + controller.channel_count - 1
+    if last_slot > MAX_CAMERA_SLOTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Controller channels would exceed slot {MAX_CAMERA_SLOTS}. "
+            f"Use fewer channels or a lower start slot.",
+        )
+
+    endpoint = _controller_endpoint(controller)
+    if not endpoint["host"]:
+        raise HTTPException(status_code=400, detail="Controller IP/host is required.")
+
+    controller_error = None
+    if controller.test_controller:
+        controller_error = _check_camera_endpoint(endpoint)
+        if controller_error:
+            controller_error = _redact_sensitive_text(controller_error)
+
+    db = _get_camera_db()
+    saved_cameras = []
+    test_results = []
+    controller_reachable = controller_error is None
+
+    for index in range(controller.channel_count):
+        channel = controller.channel_start + index
+        slot = controller.start_slot + index
+        stream_url = _controller_stream_url(controller, channel)
+
+        if controller.test_streams and controller_reachable:
+            test_result = _test_camera_stream(stream_url)
+        elif controller_reachable:
+            test_result = {
+                "status": "connected",
+                "message": f"Controller endpoint {endpoint['host']}:{endpoint['port']} is reachable.",
+            }
+        else:
+            test_result = {
+                "status": "failed",
+                "message": controller_error or "Controller endpoint is not reachable.",
+            }
+
+        saved = db.add_camera(
+            name=_controller_camera_name(controller, channel, slot),
+            stream_url=stream_url,
+            status=test_result["status"],
+        )
+
+        active = None
+        if controller.make_active and test_result["status"] == "connected":
+            active = db.assign_slot(saved["id"], slot)
+
+        saved_cameras.append(db.get_camera(saved["id"], include_secret=False))
+        test_results.append(
+            {
+                "camera_id": saved["id"],
+                "slot_number": slot,
+                "channel": channel,
+                "status": test_result["status"],
+                "message": test_result["message"],
+                "active": active is not None,
+            }
+        )
+
+    if controller.make_active and any(result["active"] for result in test_results):
+        _sync_config_active_cameras(db)
+        if _status()["running"]:
+            stop_detection()
+            start_detection(StartRequest())
+
+    cameras = db.list_cameras(include_secret=False)
+    active_cameras = [row for row in cameras if row["is_active"]]
+    return {
+        "controller": {
+            "name": controller.name.strip(),
+            "host": endpoint["host"],
+            "port": endpoint["port"],
+            "protocol": endpoint["scheme"],
+            "reachable": controller_reachable,
+            "message": controller_error
+            or f"Controller endpoint {endpoint['host']}:{endpoint['port']} is reachable.",
+        },
+        "created": saved_cameras,
+        "results": test_results,
+        "cameras": cameras,
+        "active_cameras": active_cameras,
+        "active_camera": active_cameras[0] if active_cameras else None,
     }
 
 

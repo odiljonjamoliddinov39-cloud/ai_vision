@@ -6,6 +6,10 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from api.server import (
+    CameraControllerCreate,
+    _controller_camera_name,
+    _controller_endpoint,
+    _controller_stream_url,
     _live_feed_path,
     _live_feed_paths,
     _next_available_slot,
@@ -98,3 +102,38 @@ def test_local_webcam_source_still_uses_opencv():
     assert result["status"] == "connected"
     create_connection.assert_not_called()
     run.assert_called_once()
+
+
+def test_controller_stream_url_builds_channel_rtsp_url_with_credentials():
+    controller = CameraControllerCreate(
+        name="NVR",
+        host="192.168.1.10",
+        username="admin",
+        password="p@ss word",
+        channel_count=2,
+        stream_path_template="/Streaming/Channels/{channel}01",
+    )
+
+    assert _controller_stream_url(controller, 3) == (
+        "rtsp://admin:p%40ss%20word@192.168.1.10:554/Streaming/Channels/301"
+    )
+
+
+def test_controller_endpoint_accepts_host_with_scheme():
+    controller = CameraControllerCreate(host="http://192.168.1.10", protocol="http")
+
+    assert _controller_endpoint(controller) == {
+        "scheme": "http",
+        "host": "192.168.1.10",
+        "port": 80,
+    }
+
+
+def test_controller_camera_name_template_can_use_slot_and_channel():
+    controller = CameraControllerCreate(
+        name="Main NVR",
+        host="10.0.0.10",
+        camera_name_template="{controller} slot {slot} channel {channel}",
+    )
+
+    assert _controller_camera_name(controller, channel=4, slot=9) == "Main NVR slot 9 channel 4"
