@@ -78,11 +78,20 @@ const API_BASE = (() => {
     localStorage.setItem("api_base", param.replace(/\/+$/, ""));
   }
   const saved = localStorage.getItem("api_base");
+  if (window.location.hostname.endsWith("vercel.app")) {
+    const deployedBackend = "https://ai-vision-backend-nasoe.ondigitalocean.app";
+    const staleSavedBackend =
+      saved &&
+      (saved.includes("github.dev") ||
+        saved.includes("localhost") ||
+        saved.includes("127.0.0.1"));
+    if (!saved || staleSavedBackend) {
+      localStorage.setItem("api_base", deployedBackend);
+      return deployedBackend;
+    }
+  }
   if (saved) {
     return saved;
-  }
-  if (window.location.hostname.endsWith("vercel.app")) {
-    return "https://ai-vision-backend-nasoe.ondigitalocean.app";
   }
   return window.location.origin;
 })();
