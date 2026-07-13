@@ -12,6 +12,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -22,15 +23,16 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import asyncio
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from database.camera_db import CameraDB  # noqa: E402
+from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
 
@@ -44,25 +46,40 @@ DASHBOARD_DIR = ROOT / "dashboard"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
+SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
 DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
 MAX_CAMERA_SLOTS = 50
+DEFAULT_ALLOWED_ORIGINS = [
+    "https://ai-vision-dashboard-phi.vercel.app",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
 
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name, "")
+    values = [value.strip().rstrip("/") for value in raw.split(",") if value.strip()]
+    return values or default
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_env_list("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS),
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "X-API-Key", "X-Requested-With"],
 )
 
 _tracking_db: TrackingDB | None = None
 _warehouse_db: WarehouseDB | None = None
 _camera_db: CameraDB | None = None
+_security_audit_db: SecurityAuditDB | None = None
+_rate_limits: dict[tuple[str, str, int], int] = {}
 
 
 def _get_tracking_db() -> TrackingDB:
@@ -90,6 +107,112 @@ def _get_camera_db() -> CameraDB:
             stream_url=str(first_camera.get("source", 0)),
         )
     return _camera_db
+
+
+def _get_security_audit_db() -> SecurityAuditDB:
+    global _security_audit_db
+    if _security_audit_db is None:
+        _security_audit_db = SecurityAuditDB(db_path=str(SECURITY_AUDIT_DB_PATH))
+    return _security_audit_db
+
+
+def _admin_api_key() -> str:
+    return os.getenv("ADMIN_API_KEY", "").strip()
+
+
+def _security_enabled() -> bool:
+    return bool(_admin_api_key())
+
+
+def _request_actor(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _is_public_path(path: str) -> bool:
+    return (
+        path == "/"
+        or path == "/api/status"
+        or path.startswith("/assets/")
+        or path in {"/favicon.ico", "/robots.txt"}
+    )
+
+
+def _valid_api_key(request: Request) -> bool:
+    expected = _admin_api_key()
+    if not expected:
+        return True
+    provided = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
+    return secrets.compare_digest(provided, expected)
+
+
+def _rate_limit(request: Request) -> JSONResponse | None:
+    limit = int(os.getenv("SECURITY_RATE_LIMIT_PER_MINUTE", "120"))
+    if limit <= 0:
+        return None
+    actor = _request_actor(request)
+    window = int(time.time() // 60)
+    key = (actor, request.url.path, window)
+    _rate_limits[key] = _rate_limits.get(key, 0) + 1
+    if len(_rate_limits) > 5000:
+        stale_windows = {window - 2, window - 1, window}
+        for old_key in list(_rate_limits):
+            if old_key[2] not in stale_windows:
+                _rate_limits.pop(old_key, None)
+    if _rate_limits[key] > limit:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again shortly."},
+            headers={"X-RateLimit-Limit": str(limit), "X-RateLimit-Remaining": "0"},
+        )
+    return None
+
+
+def _audit(action: str, payload: dict[str, Any], actor: str = "system") -> None:
+    try:
+        _get_security_audit_db().append(actor=actor, action=action, payload=payload)
+    except Exception:
+        # Audit logging should never take the control API down.
+        pass
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") or path.startswith("/snapshots/"):
+        limited = _rate_limit(request)
+        if limited is not None:
+            return limited
+
+    if _security_enabled() and not _is_public_path(path):
+        if request.method != "OPTIONS" and (path.startswith("/api/") or path.startswith("/snapshots/")):
+            if not _valid_api_key(request):
+                actor = _request_actor(request)
+                _audit(
+                    "auth.denied",
+                    {"method": request.method, "path": path},
+                    actor=actor,
+                )
+                return JSONResponse(status_code=401, content={"detail": "Valid API key required."})
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+
+    if path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        actor = _request_actor(request)
+        _audit(
+            "api.mutation",
+            {"method": request.method, "path": path, "status_code": response.status_code},
+            actor=actor,
+        )
+    return response
 
 _process: subprocess.Popen | None = None
 _started_at: float | None = None
@@ -778,7 +901,21 @@ def dashboard() -> FileResponse:
 
 @app.get("/api/status")
 def status() -> dict[str, Any]:
-    return _status()
+    data = _status()
+    data["security"] = {
+        "api_key_required": _security_enabled(),
+        "allowed_origins": _env_list("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS),
+    }
+    return data
+
+
+@app.get("/api/security/audit")
+def security_audit(limit: int = 100) -> dict[str, Any]:
+    db = _get_security_audit_db()
+    return {
+        "chain": db.verify(),
+        "events": db.recent(limit=limit),
+    }
 
 
 @app.get("/api/config")

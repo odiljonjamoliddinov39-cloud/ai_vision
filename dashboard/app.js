@@ -112,9 +112,27 @@ const API_BASE = (() => {
   return window.location.origin;
 })();
 
+const API_KEY = (() => {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token") || params.get("api_key");
+  if (token) {
+    localStorage.setItem("admin_api_key", token);
+    params.delete("token");
+    params.delete("api_key");
+    const query = params.toString();
+    const cleanedUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", cleanedUrl);
+    return token;
+  }
+  return localStorage.getItem("admin_api_key") || "";
+})();
+
 const api = async (path, options = {}) => {
   const url = `${API_BASE}${path}`;
   const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
+  if (API_KEY) {
+    headers["X-API-Key"] = API_KEY;
+  }
   try {
     const response = await fetch(url, {
       headers,
@@ -124,6 +142,11 @@ const api = async (path, options = {}) => {
 
     if (!response.ok) {
       const message = await response.text();
+      if (response.status === 401) {
+        throw new Error(
+          "Backend requires an admin API key. Open the dashboard with ?token=YOUR_ADMIN_API_KEY once."
+        );
+      }
       throw new Error(message || response.statusText);
     }
 
@@ -867,7 +890,11 @@ const refreshLiveScreens = () => {
     }
 
     if (!image.getAttribute("src")) {
-      image.src = `${API_BASE}/api/live_mjpeg?slot=${encodeURIComponent(image.dataset.liveSlot)}`;
+      const params = new URLSearchParams({ slot: image.dataset.liveSlot });
+      if (API_KEY) {
+        params.set("api_key", API_KEY);
+      }
+      image.src = `${API_BASE}/api/live_mjpeg?${params.toString()}`;
     }
   });
 };
