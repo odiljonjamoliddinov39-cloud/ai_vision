@@ -1,93 +1,103 @@
-"""
-SQLite persistence for camera connection settings.
+"""Persistence for camera connection settings.
 
-Raw stream URLs stay server-side. API responses expose masked URLs so
-RTSP credentials are not shown again after saving.
+Uses PostgreSQL when DATABASE_URL is set, otherwise falls back to SQLite for
+local development/tests. Raw stream URLs stay server-side; API responses expose
+masked URLs so RTSP credentials are not shown again after saving.
 """
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+from database.db import AppDB, id_column_sql
 
 
 class CameraDB:
     def __init__(self, db_path: str = "database/cameras.db"):
         self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.db = AppDB(db_path)
         self._init_schema()
 
     @contextmanager
     def _connect(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
+        with self.db.connect() as conn:
             yield conn
-            conn.commit()
-        finally:
-            conn.close()
+
+    def _sql(self, query: str) -> str:
+        return self.db.sql(query)
 
     def _init_schema(self) -> None:
+        is_active_type = "BOOLEAN" if self.db.is_postgres else "INTEGER"
+        active_default = "FALSE" if self.db.is_postgres else "0"
+        timestamp_type = "TIMESTAMPTZ" if self.db.is_postgres else "DATETIME"
         with self._connect() as conn:
             conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS cameras (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_column_sql(self.db)},
                     name TEXT NOT NULL,
                     stream_url TEXT NOT NULL,
                     status TEXT DEFAULT 'unknown',
-                    is_active INTEGER DEFAULT 0,
+                    is_active {is_active_type} DEFAULT {active_default},
                     slot_number INTEGER,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+                    updated_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             self._ensure_slot_column(conn)
             self._backfill_active_slots(conn)
 
-    @staticmethod
-    def _ensure_slot_column(conn: sqlite3.Connection) -> None:
-        columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(cameras)").fetchall()
-        }
+    def _ensure_slot_column(self, conn) -> None:
+        columns = self.db.table_columns(conn, "cameras")
         if "slot_number" not in columns:
             conn.execute("ALTER TABLE cameras ADD COLUMN slot_number INTEGER")
 
-    @staticmethod
-    def _backfill_active_slots(conn: sqlite3.Connection) -> None:
+    def _backfill_active_slots(self, conn) -> None:
+        active_clause = "is_active = TRUE" if self.db.is_postgres else "is_active = 1"
         rows = conn.execute(
-            """
+            f"""
             SELECT id
             FROM cameras
-            WHERE is_active = 1 AND slot_number IS NULL
+            WHERE {active_clause} AND slot_number IS NULL
             ORDER BY id
             """
         ).fetchall()
         for slot_number, row in enumerate(rows, start=1):
             conn.execute(
-                "UPDATE cameras SET slot_number = ? WHERE id = ?",
+                self._sql("UPDATE cameras SET slot_number = ? WHERE id = ?"),
                 (slot_number, row["id"]),
             )
 
     def add_camera(self, name: str, stream_url: str, status: str = "unknown") -> dict:
         with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO cameras (name, stream_url, status, is_active)
-                VALUES (?, ?, ?, 0)
-                """,
-                (name, stream_url, status),
-            )
-            camera_id = cursor.lastrowid
+            if self.db.is_postgres:
+                row = conn.execute(
+                    """
+                    INSERT INTO cameras (name, stream_url, status, is_active)
+                    VALUES (%s, %s, %s, FALSE)
+                    RETURNING id
+                    """,
+                    (name, stream_url, status),
+                ).fetchone()
+                camera_id = row["id"]
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO cameras (name, stream_url, status, is_active)
+                    VALUES (?, ?, ?, 0)
+                    """,
+                    (name, stream_url, status),
+                )
+                camera_id = cursor.lastrowid
         return self.get_camera(camera_id, include_secret=False)
 
     def get_camera(self, camera_id: int, include_secret: bool = False) -> dict | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM cameras WHERE id = ?", (camera_id,)).fetchone()
+            row = conn.execute(
+                self._sql("SELECT * FROM cameras WHERE id = ?"), (camera_id,)
+            ).fetchone()
         return self._serialize(row, include_secret=include_secret) if row else None
 
     def list_cameras(self, include_secret: bool = False) -> list[dict]:
@@ -102,12 +112,13 @@ class CameraDB:
         return [self._serialize(row, include_secret=include_secret) for row in rows]
 
     def list_active_cameras(self, include_secret: bool = False) -> list[dict]:
+        active_clause = "is_active = TRUE" if self.db.is_postgres else "is_active = 1"
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM cameras
-                WHERE is_active = 1
+                WHERE {active_clause}
                 ORDER BY slot_number ASC, id ASC
                 """
             ).fetchall()
@@ -116,7 +127,9 @@ class CameraDB:
     def set_status(self, camera_id: int, status: str) -> dict | None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE cameras SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                self._sql(
+                    "UPDATE cameras SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                ),
                 (status, camera_id),
             )
         return self.get_camera(camera_id, include_secret=False)
@@ -131,37 +144,45 @@ class CameraDB:
 
         with self._connect() as conn:
             conn.execute(
-                """
-                UPDATE cameras
-                SET is_active = 0, slot_number = NULL, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? OR slot_number = ?
-                """,
-                (camera_id, slot_number),
+                self._sql(
+                    """
+                    UPDATE cameras
+                    SET is_active = ?, slot_number = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? OR slot_number = ?
+                    """
+                ),
+                (self.db.bool_value(False), camera_id, slot_number),
             )
             conn.execute(
-                """
-                UPDATE cameras
-                SET is_active = 1, slot_number = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (slot_number, camera_id),
+                self._sql(
+                    """
+                    UPDATE cameras
+                    SET is_active = ?, slot_number = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """
+                ),
+                (self.db.bool_value(True), slot_number, camera_id),
             )
         return self.get_camera(camera_id, include_secret=True)
 
     def clear_slot(self, slot_number: int) -> None:
         with self._connect() as conn:
             conn.execute(
-                """
-                UPDATE cameras
-                SET is_active = 0, slot_number = NULL, updated_at = CURRENT_TIMESTAMP
-                WHERE slot_number = ?
-                """,
-                (slot_number,),
+                self._sql(
+                    """
+                    UPDATE cameras
+                    SET is_active = ?, slot_number = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE slot_number = ?
+                    """
+                ),
+                (self.db.bool_value(False), slot_number),
             )
 
     def delete_camera(self, camera_id: int) -> bool:
         with self._connect() as conn:
-            cursor = conn.execute("DELETE FROM cameras WHERE id = ?", (camera_id,))
+            cursor = conn.execute(
+                self._sql("DELETE FROM cameras WHERE id = ?"), (camera_id,)
+            )
             return cursor.rowcount > 0
 
     def ensure_default_camera(self, name: str, stream_url: str) -> None:
@@ -171,15 +192,17 @@ class CameraDB:
                 return
 
             conn.execute(
-                """
-                INSERT INTO cameras (name, stream_url, status, is_active, slot_number)
-                VALUES (?, ?, 'unknown', 1, 1)
-                """,
-                (name, stream_url),
+                self._sql(
+                    """
+                    INSERT INTO cameras (name, stream_url, status, is_active, slot_number)
+                    VALUES (?, ?, 'unknown', ?, 1)
+                    """
+                ),
+                (name, stream_url, self.db.bool_value(True)),
             )
 
     @staticmethod
-    def _serialize(row: sqlite3.Row, include_secret: bool = False) -> dict:
+    def _serialize(row, include_secret: bool = False) -> dict:
         data = dict(row)
         data["is_active"] = bool(data["is_active"])
         if include_secret:

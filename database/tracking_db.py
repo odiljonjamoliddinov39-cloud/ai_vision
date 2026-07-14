@@ -1,38 +1,18 @@
 """
 database/tracking_db.py
 
-SQLite persistence for per-object tracking (check-in / check-out).
+Persistence for per-object tracking (check-in / check-out) and zone events.
 
-This is the Phase 3 counterpart to database/event_log.py: where the flat
-event log records "a person was seen at 14:21", this module records
-"track #17 (person) entered Camera 2 at 14:21 and left at 14:26 after
-5m12s" — i.e. it turns raw per-frame detections (with persistent track
-IDs from tracking/tracker.py) into occupancy sessions.
-
-Schema
-------
-occupancy_events:
-    id               INTEGER PRIMARY KEY
-    track_id         INTEGER   -- the tracker-assigned ID (ByteTrack)
-    camera_name      TEXT
-    class_name       TEXT
-    event_type       TEXT      -- 'check_in' | 'check_out'
-    timestamp        TEXT      -- ISO 8601, local time
-    duration_seconds REAL      -- only set on check_out rows
-
-No ORM/SQLAlchemy dependency is needed: sqlite3 is in the Python
-standard library, which keeps Phase 1's "no extra deps" requirements
-mostly intact while giving us real persistence and queryability
-(unlike the flat text log).
+Uses PostgreSQL when DATABASE_URL is set, otherwise SQLite for local
+development and tests.
 """
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+
+from database.db import AppDB, id_column_sql
 
 
 def _now_iso() -> str:
@@ -52,30 +32,25 @@ class OccupancyEvent:
 class TrackingDB:
     def __init__(self, db_path: str = "database/tracking.db"):
         self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.db = AppDB(db_path)
         self._init_schema()
 
-    @contextmanager
-    def _connect(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+    def _sql(self, query: str) -> str:
+        return self.db.sql(query)
 
     def _init_schema(self) -> None:
-        with self._connect() as conn:
+        timestamp_type = "TIMESTAMPTZ" if self.db.is_postgres else "TEXT"
+        suspicious_type = "BOOLEAN" if self.db.is_postgres else "INTEGER"
+        with self.db.connect() as conn:
             conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS occupancy_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_column_sql(self.db)},
                     track_id INTEGER NOT NULL,
                     camera_name TEXT NOT NULL,
                     class_name TEXT NOT NULL,
                     event_type TEXT NOT NULL CHECK (event_type IN ('check_in', 'check_out')),
-                    timestamp TEXT NOT NULL,
+                    timestamp {timestamp_type} NOT NULL,
                     duration_seconds REAL
                 )
                 """
@@ -93,19 +68,19 @@ class TrackingDB:
                 """
             )
             conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS zone_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_column_sql(self.db)},
                     zone_name TEXT NOT NULL,
                     camera_name TEXT NOT NULL,
                     track_id INTEGER NOT NULL,
                     class_name TEXT NOT NULL,
                     event_type TEXT NOT NULL
                         CHECK (event_type IN ('item_in', 'item_out', 'person_in', 'person_out')),
-                    suspicious INTEGER NOT NULL DEFAULT 0,
-                    reasons TEXT,          -- comma-separated rule names, e.g. 'after_hours,unattended'
+                    suspicious {suspicious_type} NOT NULL DEFAULT {'FALSE' if self.db.is_postgres else 0},
+                    reasons TEXT,
                     persons_in_zone INTEGER NOT NULL DEFAULT 0,
-                    timestamp TEXT NOT NULL
+                    timestamp {timestamp_type} NOT NULL
                 )
                 """
             )
@@ -116,10 +91,6 @@ class TrackingDB:
                 """
             )
 
-    # ------------------------------------------------------------------
-    # Writes
-    # ------------------------------------------------------------------
-
     def record_check_in(
         self,
         track_id: int,
@@ -128,13 +99,15 @@ class TrackingDB:
         timestamp: str | None = None,
     ) -> OccupancyEvent:
         ts = timestamp or _now_iso()
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             conn.execute(
-                """
-                INSERT INTO occupancy_events
-                    (track_id, camera_name, class_name, event_type, timestamp)
-                VALUES (?, ?, ?, 'check_in', ?)
-                """,
+                self._sql(
+                    """
+                    INSERT INTO occupancy_events
+                        (track_id, camera_name, class_name, event_type, timestamp)
+                    VALUES (?, ?, ?, 'check_in', ?)
+                    """
+                ),
                 (track_id, camera_name, class_name, ts),
             )
         return OccupancyEvent(track_id, camera_name, class_name, "check_in", ts)
@@ -149,29 +122,36 @@ class TrackingDB:
         ts = timestamp or _now_iso()
         duration: float | None = None
 
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             row = conn.execute(
-                """
-                SELECT timestamp FROM occupancy_events
-                WHERE track_id = ? AND camera_name = ? AND event_type = 'check_in'
-                ORDER BY id DESC LIMIT 1
-                """,
+                self._sql(
+                    """
+                    SELECT timestamp FROM occupancy_events
+                    WHERE track_id = ? AND camera_name = ? AND event_type = 'check_in'
+                    ORDER BY id DESC LIMIT 1
+                    """
+                ),
                 (track_id, camera_name),
             ).fetchone()
 
             if row is not None:
                 try:
-                    check_in_time = datetime.fromisoformat(row["timestamp"])
-                    duration = (datetime.fromisoformat(ts) - check_in_time).total_seconds()
-                except ValueError:
+                    check_in_time = row["timestamp"]
+                    if not isinstance(check_in_time, datetime):
+                        check_in_time = datetime.fromisoformat(str(check_in_time))
+                    check_out_time = datetime.fromisoformat(ts)
+                    duration = (check_out_time - check_in_time.replace(tzinfo=None)).total_seconds()
+                except (TypeError, ValueError):
                     duration = None
 
             conn.execute(
-                """
-                INSERT INTO occupancy_events
-                    (track_id, camera_name, class_name, event_type, timestamp, duration_seconds)
-                VALUES (?, ?, ?, 'check_out', ?, ?)
-                """,
+                self._sql(
+                    """
+                    INSERT INTO occupancy_events
+                        (track_id, camera_name, class_name, event_type, timestamp, duration_seconds)
+                    VALUES (?, ?, ?, 'check_out', ?, ?)
+                    """
+                ),
                 (track_id, camera_name, class_name, ts, duration),
             )
 
@@ -190,36 +170,30 @@ class TrackingDB:
         timestamp: str | None = None,
     ) -> None:
         ts = timestamp or _now_iso()
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             conn.execute(
-                """
-                INSERT INTO zone_events
-                    (zone_name, camera_name, track_id, class_name, event_type,
-                     suspicious, reasons, persons_in_zone, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                self._sql(
+                    """
+                    INSERT INTO zone_events
+                        (zone_name, camera_name, track_id, class_name, event_type,
+                         suspicious, reasons, persons_in_zone, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
                 (
                     zone_name,
                     camera_name,
                     track_id,
                     class_name,
                     event_type,
-                    1 if suspicious else 0,
+                    self.db.bool_value(suspicious),
                     ",".join(reasons) if reasons else None,
                     persons_in_zone,
                     ts,
                 ),
             )
 
-    # ------------------------------------------------------------------
-    # Reads
-    # ------------------------------------------------------------------
-
     def current_occupancy(self, camera_name: str | None = None) -> list[dict]:
-        """
-        Returns objects that are currently "checked in": their most recent
-        event (per track_id + camera) is a check_in with no later check_out.
-        """
         query = """
             SELECT e.track_id, e.camera_name, e.class_name, e.timestamp AS since
             FROM occupancy_events e
@@ -237,8 +211,8 @@ class TrackingDB:
             params = (camera_name,)
         query += " ORDER BY e.timestamp DESC"
 
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+        with self.db.connect() as conn:
+            rows = conn.execute(self._sql(query), params).fetchall()
         return [dict(row) for row in rows]
 
     def occupancy_counts(self, camera_name: str | None = None) -> dict[str, int]:
@@ -254,10 +228,10 @@ class TrackingDB:
             query += " WHERE camera_name = ?"
             params = (camera_name,)
         query += " ORDER BY id DESC LIMIT ?"
-        params = params + (limit,)
+        params = params + (max(1, min(limit, 500)),)
 
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+        with self.db.connect() as conn:
+            rows = conn.execute(self._sql(query), params).fetchall()
         return [dict(row) for row in rows]
 
     def recent_zone_events(
@@ -273,14 +247,15 @@ class TrackingDB:
             clauses.append("camera_name = ?")
             params += (camera_name,)
         if suspicious_only:
-            clauses.append("suspicious = 1")
+            clauses.append("suspicious = ?")
+            params += (self.db.bool_value(True),)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY id DESC LIMIT ?"
-        params += (limit,)
+        params += (max(1, min(limit, 500)),)
 
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+        with self.db.connect() as conn:
+            rows = conn.execute(self._sql(query), params).fetchall()
         events = [dict(row) for row in rows]
         for event in events:
             event["suspicious"] = bool(event["suspicious"])
@@ -288,8 +263,7 @@ class TrackingDB:
         return events
 
     def zone_event_totals(self) -> dict[str, int]:
-        """Lifetime totals: items in, items out, suspicious removals."""
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT event_type, suspicious, COUNT(*) AS n
@@ -300,6 +274,6 @@ class TrackingDB:
         for row in rows:
             if row["event_type"] in ("item_in", "item_out"):
                 totals[row["event_type"]] += row["n"]
-                if row["event_type"] == "item_out" and row["suspicious"]:
+                if row["event_type"] == "item_out" and bool(row["suspicious"]):
                     totals["suspicious"] += row["n"]
         return totals

@@ -1,51 +1,40 @@
-"""
-SQLite stock ledger for warehouse IN/OUT counting.
+"""Stock ledger for warehouse IN/OUT counting.
 
-This database is separate from the existing tracking occupancy database:
-occupancy answers "what is visible/present?", while this ledger answers
-"what crossed the warehouse line and how did stock change?"
+Uses PostgreSQL when DATABASE_URL is set, otherwise SQLite.
 """
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import contextmanager
-from pathlib import Path
+from database.db import AppDB, id_column_sql
 
 
 class WarehouseDB:
     def __init__(self, db_path: str = "database/warehouse.db"):
         self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.db = AppDB(db_path)
         self._init_schema()
 
-    @contextmanager
-    def _connect(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+    def _sql(self, query: str) -> str:
+        return self.db.sql(query)
 
     def _init_schema(self) -> None:
-        with self._connect() as conn:
+        timestamp_type = "TIMESTAMPTZ" if self.db.is_postgres else "DATETIME"
+        with self.db.connect() as conn:
             conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS products (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_column_sql(self.db)},
                     name TEXT NOT NULL UNIQUE,
                     category TEXT,
                     current_stock INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS movements (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_column_sql(self.db)},
                     product_name TEXT NOT NULL,
                     direction TEXT NOT NULL CHECK (direction IN ('IN', 'OUT')),
                     quantity INTEGER DEFAULT 1,
@@ -53,30 +42,27 @@ class WarehouseDB:
                     tracking_id INTEGER,
                     confidence REAL,
                     screenshot_path TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             self._ensure_movement_columns(conn)
             conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS unknown_items (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {id_column_sql(self.db)},
                     tracking_id INTEGER,
                     confidence REAL,
                     screenshot_path TEXT,
                     camera_id TEXT,
                     status TEXT DEFAULT 'NEEDS_REVIEW',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
 
-    @staticmethod
-    def _ensure_movement_columns(conn) -> None:
-        existing = {
-            row["name"] for row in conn.execute("PRAGMA table_info(movements)").fetchall()
-        }
+    def _ensure_movement_columns(self, conn) -> None:
+        existing = self.db.table_columns(conn, "movements")
         columns = {
             "object_type": "TEXT",
             "estimated_width_m": "REAL",
@@ -109,34 +95,46 @@ class WarehouseDB:
             raise ValueError("direction must be IN or OUT")
 
         delta = quantity if direction == "IN" else -quantity
-        with self._connect() as conn:
+        with self.db.connect() as conn:
+            if self.db.is_postgres:
+                conn.execute(
+                    """
+                    INSERT INTO products (name, current_stock)
+                    VALUES (%s, 0)
+                    ON CONFLICT (name) DO NOTHING
+                    """,
+                    (product_name,),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO products (name, current_stock) VALUES (?, 0)",
+                    (product_name,),
+                )
             conn.execute(
-                "INSERT OR IGNORE INTO products (name, current_stock) VALUES (?, 0)",
-                (product_name,),
-            )
-            conn.execute(
-                "UPDATE products SET current_stock = current_stock + ? WHERE name = ?",
+                self._sql("UPDATE products SET current_stock = current_stock + ? WHERE name = ?"),
                 (delta, product_name),
             )
             conn.execute(
-                """
-                INSERT INTO movements (
-                    product_name,
-                    direction,
-                    quantity,
-                    camera_id,
-                    tracking_id,
-                    confidence,
-                    screenshot_path,
-                    object_type,
-                    estimated_width_m,
-                    estimated_height_m,
-                    estimated_depth_m,
-                    estimated_distance_m,
-                    quantity_grid,
-                    measurement_method
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                self._sql(
+                    """
+                    INSERT INTO movements (
+                        product_name,
+                        direction,
+                        quantity,
+                        camera_id,
+                        tracking_id,
+                        confidence,
+                        screenshot_path,
+                        object_type,
+                        estimated_width_m,
+                        estimated_height_m,
+                        estimated_depth_m,
+                        estimated_distance_m,
+                        quantity_grid,
+                        measurement_method
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
                 (
                     product_name,
                     direction,
@@ -167,61 +165,65 @@ class WarehouseDB:
         camera_id: str,
         status: str = "NEEDS_REVIEW",
     ) -> None:
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             conn.execute(
-                """
-                INSERT INTO unknown_items (tracking_id, confidence, screenshot_path, camera_id, status)
-                VALUES (?, ?, ?, ?, ?)
-                """,
+                self._sql(
+                    """
+                    INSERT INTO unknown_items (tracking_id, confidence, screenshot_path, camera_id, status)
+                    VALUES (?, ?, ?, ?, ?)
+                    """
+                ),
                 (tracking_id, confidence, screenshot_path, camera_id, status),
             )
 
     def get_stock(self, product_name: str) -> int:
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             row = conn.execute(
-                "SELECT current_stock FROM products WHERE name = ?",
+                self._sql("SELECT current_stock FROM products WHERE name = ?"),
                 (product_name,),
             ).fetchone()
         return int(row["current_stock"]) if row else 0
 
     def get_all_stock(self) -> list[dict]:
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             rows = conn.execute(
                 "SELECT name, category, current_stock, created_at FROM products ORDER BY name"
             ).fetchall()
         return [dict(row) for row in rows]
 
     def recent_movements(self, limit: int = 50) -> list[dict]:
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             rows = conn.execute(
-                """
-                SELECT
-                    id,
-                    product_name,
-                    direction,
-                    quantity,
-                    camera_id,
-                    tracking_id,
-                    confidence,
-                    screenshot_path,
-                    object_type,
-                    estimated_width_m,
-                    estimated_height_m,
-                    estimated_depth_m,
-                    estimated_distance_m,
-                    quantity_grid,
-                    measurement_method,
-                    created_at
-                FROM movements
-                ORDER BY id DESC
-                LIMIT ?
-                """,
+                self._sql(
+                    """
+                    SELECT
+                        id,
+                        product_name,
+                        direction,
+                        quantity,
+                        camera_id,
+                        tracking_id,
+                        confidence,
+                        screenshot_path,
+                        object_type,
+                        estimated_width_m,
+                        estimated_height_m,
+                        estimated_depth_m,
+                        estimated_distance_m,
+                        quantity_grid,
+                        measurement_method,
+                        created_at
+                    FROM movements
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """
+                ),
                 (max(1, min(limit, 500)),),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def movement_counts(self) -> dict[str, int]:
-        with self._connect() as conn:
+        with self.db.connect() as conn:
             rows = conn.execute(
                 "SELECT direction, SUM(quantity) AS total FROM movements GROUP BY direction"
             ).fetchall()
