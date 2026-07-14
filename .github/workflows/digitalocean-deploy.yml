@@ -1,0 +1,33 @@
+name: Deploy backend to DigitalOcean
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: digitalocean-backend-production
+  cancel-in-progress: true
+
+env:
+  DIGITALOCEAN_APP_ID: 589d905d-7121-4474-8575-c7c557395062
+
+jobs:
+  deploy:
+    name: Deploy latest main to App Platform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Trigger DigitalOcean deployment
+        run: doctl apps create-deployment "$DIGITALOCEAN_APP_ID" --update-sources --wait
