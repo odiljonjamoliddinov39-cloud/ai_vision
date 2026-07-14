@@ -1597,6 +1597,30 @@ async def live_mjpeg(slot: int | None = None, camera: str | None = None):
     return StreamingResponse(frame_generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
 
 
+@app.get("/api/live_frame")
+async def live_frame(slot: int | None = None, camera: str | None = None):
+    """Return the latest processed JPEG frame for one camera.
+
+    The dashboard grid uses this polling endpoint instead of opening one
+    long-lived MJPEG connection per slot. Browsers often cap concurrent
+    connections per origin, so 10 simultaneous MJPEG streams can leave some
+    screens stuck on "Waiting for frames" even when the backend is healthy.
+    """
+
+    latest = next((path for path in _live_feed_paths(slot=slot, camera=camera) if path.exists()), None)
+    if latest is None:
+        raise HTTPException(status_code=404, detail="No live frame is available yet.")
+
+    return FileResponse(
+        latest,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
 def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
     if slot is not None:
         return SNAPSHOT_DIR / f"latest_slot_{slot}.jpg"

@@ -111,6 +111,7 @@ const API_BASE = (() => {
   }
   return window.location.origin;
 })();
+const LIVE_FRAME_REFRESH_MS = 1200;
 
 const API_KEY = (() => {
   const params = new URLSearchParams(window.location.search);
@@ -878,6 +879,7 @@ const renderLiveScreens = () => {
 };
 
 const refreshLiveScreens = () => {
+  const now = Date.now();
   document.querySelectorAll("[data-live-slot]").forEach((image) => {
     if (!image.dataset.bound) {
       image.dataset.bound = "true";
@@ -886,15 +888,21 @@ const refreshLiveScreens = () => {
       });
       image.addEventListener("error", () => {
         image.closest(".screen-body")?.classList.remove("has-frame");
+        image.dataset.lastRefresh = "0";
       });
     }
 
-    if (!image.getAttribute("src")) {
-      const params = new URLSearchParams({ slot: image.dataset.liveSlot });
+    const lastRefresh = Number(image.dataset.lastRefresh || 0);
+    if (now - lastRefresh >= LIVE_FRAME_REFRESH_MS) {
+      image.dataset.lastRefresh = String(now);
+      const params = new URLSearchParams({
+        slot: image.dataset.liveSlot,
+        t: String(now),
+      });
       if (API_KEY) {
         params.set("api_key", API_KEY);
       }
-      image.src = `${API_BASE}/api/live_mjpeg?${params.toString()}`;
+      image.src = `${API_BASE}/api/live_frame?${params.toString()}`;
     }
   });
 };
