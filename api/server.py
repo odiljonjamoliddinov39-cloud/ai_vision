@@ -995,6 +995,23 @@ def security_audit(limit: int = 100) -> dict[str, Any]:
     }
 
 
+@app.get("/api/diagnostics/opencv")
+def opencv_diagnostics() -> dict[str, Any]:
+    try:
+        import cv2
+
+        return {
+            "ok": True,
+            "version": getattr(cv2, "__version__", "unknown"),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": _redact_sensitive_text(str(exc)),
+            "error_type": type(exc).__name__,
+        }
+
+
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
     return _read_yaml(CONFIG_PATH)
