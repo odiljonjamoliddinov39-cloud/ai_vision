@@ -307,6 +307,8 @@ class ConfigPatch(BaseModel):
     classes: list[str] | None = None
     class_prompts: list[str] | None = None
     class_agnostic_nms: bool | None = None
+    tracking_enabled: bool | None = None
+    warehouse_counting_enabled: bool | None = None
     snapshots_enabled: bool | None = None
     snapshot_trigger_classes: list[str] | None = None
     snapshot_cooldown_seconds: int | None = Field(default=None, ge=0)
@@ -1023,6 +1025,8 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
     detection = data.setdefault("detection", {})
     snapshots = data.setdefault("snapshots", {})
     logging_cfg = data.setdefault("logging", {})
+    tracking = data.setdefault("tracking", {})
+    warehouse_counting = data.setdefault("warehouse_counting", {})
 
     values = patch.model_dump(exclude_unset=True)
     if "model_path" in values:
@@ -1039,6 +1043,10 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
         detection["class_prompts"] = values["class_prompts"] or None
     if "class_agnostic_nms" in values:
         detection["class_agnostic_nms"] = values["class_agnostic_nms"]
+    if "tracking_enabled" in values:
+        tracking["enabled"] = values["tracking_enabled"]
+    if "warehouse_counting_enabled" in values:
+        warehouse_counting["enabled"] = values["warehouse_counting_enabled"]
     if "snapshots_enabled" in values:
         snapshots["enabled"] = values["snapshots_enabled"]
     if "snapshot_trigger_classes" in values:

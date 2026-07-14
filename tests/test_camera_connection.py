@@ -218,6 +218,8 @@ def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_pa
                 "detection": {"model_path": "dummy", "confidence_threshold": 0.08},
                 "snapshots": {},
                 "logging": {},
+                "tracking": {"enabled": True},
+                "warehouse_counting": {"enabled": True},
             }
         ),
         encoding="utf-8",
@@ -232,6 +234,8 @@ def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_pa
             image_size=640,
             class_prompts=["cardboard box", "stack of cardboard boxes"],
             class_agnostic_nms=True,
+            tracking_enabled=False,
+            warehouse_counting_enabled=False,
         )
     )
 
@@ -243,6 +247,8 @@ def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_pa
         "stack of cardboard boxes",
     ]
     assert updated["detection"]["class_agnostic_nms"] is True
+    assert updated["tracking"]["enabled"] is False
+    assert updated["warehouse_counting"]["enabled"] is False
 
 
 def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tmp_path):
