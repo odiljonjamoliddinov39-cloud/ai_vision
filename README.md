@@ -1,5 +1,7 @@
 # AI Vision Assistant — Phase 1 MVP
 
+> Uzbek full product documentation: [AI_VISION_HUJJATLAR_UZ.md](AI_VISION_HUJJATLAR_UZ.md)
+
 Real-time camera object detection with bounding boxes, live counts,
 snapshots, and an event log. Built as the foundation for the full
 roadmap (tracking → memory → alerts → voice assistant) described in
