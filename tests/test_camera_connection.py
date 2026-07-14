@@ -243,3 +243,34 @@ def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_pa
         "stack of cardboard boxes",
     ]
     assert updated["detection"]["class_agnostic_nms"] is True
+
+
+def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tmp_path):
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "cameras": [{"name": "Demo Camera", "source": "dummy", "slot_number": 1}],
+                "detection": {"model_path": "dummy"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_camera_db", None)
+    monkeypatch.setenv("CAMERA_CONTROLLER_HOST", "203.0.113.10")
+    monkeypatch.setenv("CAMERA_CONTROLLER_USERNAME", "admin")
+    monkeypatch.setenv("CAMERA_CONTROLLER_PASSWORD", "secret")
+    monkeypatch.setenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "3")
+    monkeypatch.setenv("CAMERA_CONTROLLER_STREAM_TEMPLATE", "/Streaming/Channels/{channel}02")
+
+    db = server._get_camera_db()
+    active = db.list_active_cameras(include_secret=False)
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    assert [camera["slot_number"] for camera in active] == [1, 2, 3]
+    assert [camera["slot_number"] for camera in config["cameras"]] == [1, 2, 3]
+    assert config["cameras"][0]["source"].endswith("/Streaming/Channels/102")

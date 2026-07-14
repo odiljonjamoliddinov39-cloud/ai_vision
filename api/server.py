@@ -100,6 +100,7 @@ def _get_camera_db() -> CameraDB:
     global _camera_db
     if _camera_db is None:
         _camera_db = CameraDB(db_path=str(CAMERA_DB_PATH))
+        _seed_cameras_from_environment(_camera_db)
         config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
         first_camera = (config.get("cameras") or [{"name": "Camera 1", "source": 0}])[0]
         _camera_db.ensure_default_camera(
@@ -107,6 +108,78 @@ def _get_camera_db() -> CameraDB:
             stream_url=str(first_camera.get("source", 0)),
         )
     return _camera_db
+
+
+def _seed_cameras_from_environment(db: CameraDB) -> None:
+    """Optional boot-time camera seeding for stateless cloud deployments.
+
+    DigitalOcean App Platform files can reset on rebuild. These env vars let the
+    backend recreate controller channels on startup so the dashboard does not
+    fall back to only the checked-in demo camera.
+    """
+
+    host = os.getenv("CAMERA_CONTROLLER_HOST", "").strip()
+    if not host:
+        return
+
+    existing_active = db.list_active_cameras(include_secret=False)
+    if existing_active and not (
+        len(existing_active) == 1
+        and str(existing_active[0].get("masked_stream_url", "")).strip().lower() == "dummy"
+    ):
+        return
+
+    protocol = os.getenv("CAMERA_CONTROLLER_PROTOCOL", "rtsp").strip().lower()
+    if protocol not in STREAM_DEFAULT_PORTS:
+        protocol = "rtsp"
+
+    try:
+        port = int(os.getenv("CAMERA_CONTROLLER_PORT", str(STREAM_DEFAULT_PORTS[protocol])))
+        channel_count = int(os.getenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "10"))
+        channel_start = int(os.getenv("CAMERA_CONTROLLER_CHANNEL_START", "1"))
+        start_slot = int(os.getenv("CAMERA_CONTROLLER_START_SLOT", "1"))
+    except ValueError:
+        return
+
+    controller = CameraControllerCreate(
+        name=os.getenv("CAMERA_CONTROLLER_NAME", "Warehouse NVR Substream"),
+        host=host,
+        protocol=protocol,
+        port=port,
+        username=os.getenv("CAMERA_CONTROLLER_USERNAME") or None,
+        password=os.getenv("CAMERA_CONTROLLER_PASSWORD") or None,
+        channel_count=max(1, min(channel_count, MAX_CAMERA_SLOTS)),
+        channel_start=max(1, channel_start),
+        start_slot=max(1, min(start_slot, MAX_CAMERA_SLOTS)),
+        stream_path_template=os.getenv(
+            "CAMERA_CONTROLLER_STREAM_TEMPLATE",
+            "/Streaming/Channels/{channel}02",
+        ),
+        camera_name_template=os.getenv(
+            "CAMERA_CONTROLLER_CAMERA_NAME_TEMPLATE",
+            "{controller} Camera {channel}",
+        ),
+        make_active=True,
+        test_controller=False,
+        test_streams=False,
+        require_public=False,
+    )
+
+    last_slot = controller.start_slot + controller.channel_count - 1
+    if last_slot > MAX_CAMERA_SLOTS:
+        return
+
+    for index in range(controller.channel_count):
+        channel = controller.channel_start + index
+        slot = controller.start_slot + index
+        saved = db.add_camera(
+            name=_controller_camera_name(controller, channel, slot),
+            stream_url=_controller_stream_url(controller, channel),
+            status="connected",
+        )
+        db.assign_slot(saved["id"], slot)
+
+    _sync_config_active_cameras(db)
 
 
 def _get_security_audit_db() -> SecurityAuditDB:
