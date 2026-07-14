@@ -1,5 +1,4 @@
 # Core (Phase 1 MVP)
-opencv-python-headless>=4.9.0
 PyYAML>=6.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
@@ -9,6 +8,12 @@ python-multipart>=0.0.9
 # detection instead of the deterministic demo detector.
 ultralytics>=8.2.0
 git+https://github.com/ultralytics/CLIP.git
+
+# Keep this after ultralytics. Ultralytics depends on opencv-python, which
+# pulls GUI-linked libGL on Linux. Installing the headless wheel last keeps
+# DigitalOcean/App Platform camera tests and detection from failing with
+# "ImportError: libGL.so.1".
+opencv-python-headless>=4.9.0
 
 # Phase 2+ (AI assistant / voice) - uncomment as you build these out
 # openai>=1.30.0
