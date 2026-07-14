@@ -1193,6 +1193,11 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     request = request or StartRequest()
     if _detector_pid() is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
+    # Treat the camera database as the source of truth. This prevents a stale
+    # config/config.yaml (for example the demo camera checked into the repo) from
+    # making the detector process only slot 1 while the dashboard has many active
+    # NVR/controller channels saved in SQLite.
+    _sync_config_active_cameras(_get_camera_db())
     _validate_active_cameras_for_start()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)

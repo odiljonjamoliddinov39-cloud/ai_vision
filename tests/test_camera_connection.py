@@ -3,8 +3,11 @@ import subprocess
 import sys
 from unittest.mock import patch
 
+import yaml
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import api.server as server
 from api.server import (
     CameraControllerCreate,
     _controller_camera_name,
@@ -18,6 +21,7 @@ from api.server import (
     _test_camera_stream,
 )
 from cameras.camera import _mask_source
+from database.camera_db import CameraDB
 
 
 def test_camera_stream_closed_rtsp_port_fails_before_opencv():
@@ -154,3 +158,52 @@ def test_controller_camera_name_template_can_use_slot_and_channel():
     )
 
     assert _controller_camera_name(controller, channel=4, slot=9) == "Main NVR slot 9 channel 4"
+
+
+def test_start_detection_syncs_config_from_active_camera_slots(monkeypatch, tmp_path):
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "cameras": [{"name": "Demo Camera", "source": "dummy", "slot_number": 1}],
+                "detection": {"model_path": "dummy"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    db = CameraDB(db_path=str(camera_db_path))
+    first = db.add_camera(
+        "NVR Camera 1",
+        "rtsp://user:one@example.com/Streaming/Channels/101",
+        "connected",
+    )
+    second = db.add_camera(
+        "NVR Camera 2",
+        "rtsp://user:two@example.com/Streaming/Channels/201",
+        "connected",
+    )
+    db.assign_slot(first["id"], 1)
+    db.assign_slot(second["id"], 2)
+
+    class FakeProcess:
+        pid = 12345
+
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "DETECTION_STDOUT_PATH", tmp_path / "stdout.log")
+    monkeypatch.setattr(server, "DETECTION_STDERR_PATH", tmp_path / "stderr.log")
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", tmp_path / "health.json")
+    monkeypatch.setattr(server, "DETECTION_PID_PATH", tmp_path / "detection.pid")
+    monkeypatch.setattr(server, "_camera_db", None)
+    monkeypatch.setattr(server, "_process", None)
+    monkeypatch.setattr(server, "_detector_pid", lambda: None)
+    monkeypatch.setattr(server, "_validate_active_cameras_for_start", lambda: None)
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    server.start_detection()
+
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert [camera["name"] for camera in data["cameras"]] == ["NVR Camera 1", "NVR Camera 2"]
+    assert [camera["slot_number"] for camera in data["cameras"]] == [1, 2]
