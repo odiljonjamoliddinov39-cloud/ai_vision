@@ -227,9 +227,13 @@ class StartRequest(BaseModel):
 
 
 class ConfigPatch(BaseModel):
+    model_path: str | None = Field(default=None, min_length=1)
     confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    image_size: int | None = Field(default=None, ge=320, le=1920)
     device: str | None = None
     classes: list[str] | None = None
+    class_prompts: list[str] | None = None
+    class_agnostic_nms: bool | None = None
     snapshots_enabled: bool | None = None
     snapshot_trigger_classes: list[str] | None = None
     snapshot_cooldown_seconds: int | None = Field(default=None, ge=0)
@@ -931,12 +935,20 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
     logging_cfg = data.setdefault("logging", {})
 
     values = patch.model_dump(exclude_unset=True)
+    if "model_path" in values:
+        detection["model_path"] = values["model_path"]
     if "confidence_threshold" in values:
         detection["confidence_threshold"] = values["confidence_threshold"]
+    if "image_size" in values:
+        detection["image_size"] = values["image_size"]
     if "device" in values:
         detection["device"] = values["device"]
     if "classes" in values:
         detection["classes"] = values["classes"] or None
+    if "class_prompts" in values:
+        detection["class_prompts"] = values["class_prompts"] or None
+    if "class_agnostic_nms" in values:
+        detection["class_agnostic_nms"] = values["class_agnostic_nms"]
     if "snapshots_enabled" in values:
         snapshots["enabled"] = values["snapshots_enabled"]
     if "snapshot_trigger_classes" in values:

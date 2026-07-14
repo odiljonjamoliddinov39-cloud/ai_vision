@@ -207,3 +207,39 @@ def test_start_detection_syncs_config_from_active_camera_slots(monkeypatch, tmp_
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert [camera["name"] for camera in data["cameras"]] == ["NVR Camera 1", "NVR Camera 2"]
     assert [camera["slot_number"] for camera in data["cameras"]] == [1, 2]
+
+
+def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "cameras": [{"name": "Demo Camera", "source": "dummy"}],
+                "detection": {"model_path": "dummy", "confidence_threshold": 0.08},
+                "snapshots": {},
+                "logging": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+
+    updated = server.update_config(
+        server.ConfigPatch(
+            model_path="yolov8s-world.pt",
+            confidence_threshold=0.12,
+            image_size=640,
+            class_prompts=["cardboard box", "stack of cardboard boxes"],
+            class_agnostic_nms=True,
+        )
+    )
+
+    assert updated["detection"]["model_path"] == "yolov8s-world.pt"
+    assert updated["detection"]["confidence_threshold"] == 0.12
+    assert updated["detection"]["image_size"] == 640
+    assert updated["detection"]["class_prompts"] == [
+        "cardboard box",
+        "stack of cardboard boxes",
+    ]
+    assert updated["detection"]["class_agnostic_nms"] is True
