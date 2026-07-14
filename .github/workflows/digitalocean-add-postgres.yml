@@ -1,0 +1,106 @@
+name: Add PostgreSQL to DigitalOcean App
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  add-postgres:
+    runs-on: ubuntu-latest
+    env:
+      DIGITALOCEAN_APP_ID: 589d905d-7121-4474-8575-c7c557395062
+      DATABASE_COMPONENT_NAME: ai-vision-postgres
+    steps:
+      - name: Attach PostgreSQL database and DATABASE_URL
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          app_id = os.environ["DIGITALOCEAN_APP_ID"]
+          token = os.environ["DIGITALOCEAN_TOKEN"]
+          db_name = os.environ["DATABASE_COMPONENT_NAME"]
+          api = f"https://api.digitalocean.com/v2/apps/{app_id}"
+
+          def request(method, url, payload=None):
+              body = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(
+                  url,
+                  data=body,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      return response.status, json.loads(response.read().decode("utf-8"))
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode("utf-8", errors="replace")
+                  print(f"DigitalOcean API error {exc.code}: {detail}")
+                  raise
+
+          _, current = request("GET", api)
+          spec = current["app"]["spec"]
+
+          databases = spec.setdefault("databases", [])
+          existing = next((db for db in databases if db.get("name") == db_name), None)
+          if existing is None:
+              databases.append({"engine": "PG", "name": db_name, "version": "16"})
+              print(f"Added database component: {db_name}")
+          else:
+              existing.setdefault("engine", "PG")
+              existing.setdefault("version", "16")
+              print(f"Database component already exists: {db_name}")
+
+          bind_value = "${" + db_name + ".DATABASE_URL}"
+          touched_components = []
+          for section in ("services", "workers", "jobs"):
+              for component in spec.get(section, []) or []:
+                  envs = component.setdefault("envs", [])
+                  env = next((item for item in envs if item.get("key") == "DATABASE_URL"), None)
+                  if env is None:
+                      envs.append(
+                          {
+                              "key": "DATABASE_URL",
+                              "scope": "RUN_TIME",
+                              "value": bind_value,
+                          }
+                      )
+                  else:
+                      env["scope"] = "RUN_TIME"
+                      env["value"] = bind_value
+                      env.pop("type", None)
+                  touched_components.append(component.get("name", "<unnamed>"))
+
+          if not touched_components:
+              print("No runnable components found in app spec; refusing to update.")
+              sys.exit(1)
+
+          status, updated = request("PUT", api, {"spec": spec})
+          deployment_id = (
+              updated.get("deployment", {}).get("id")
+              or updated.get("app", {}).get("active_deployment", {}).get("id")
+              or "<pending>"
+          )
+          print(f"Updated app spec (HTTP {status}). Deployment: {deployment_id}")
+          print("Bound DATABASE_URL on components: " + ", ".join(touched_components))
+
+          for _ in range(30):
+              time.sleep(20)
+              _, app_response = request("GET", api)
+              deployment = app_response.get("app", {}).get("active_deployment") or {}
+              phase = deployment.get("phase") or "UNKNOWN"
+              print(f"Active deployment phase: {phase}")
+              if phase in {"ACTIVE", "SUPERSEDED", "ERROR", "CANCELED"}:
+                  break
+          PY
