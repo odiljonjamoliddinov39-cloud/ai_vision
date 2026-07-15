@@ -759,7 +759,7 @@ def recognitions(limit: int = 40) -> dict[str, Any]:
         {
             "product_name": product_name,
             "state": "check-in" if direction == "IN" else "check-out",
-            "quantity": quantity,
+            "quantity": stock_by_name.get(product_name, quantity) if direction == "IN" else quantity,
             "current_stock": stock_by_name.get(product_name, 0),
         }
         for (product_name, direction), quantity in sorted(
