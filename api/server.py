@@ -80,6 +80,16 @@ _warehouse_db: WarehouseDB | None = None
 _camera_db: CameraDB | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
+_watchdog_task: asyncio.Task | None = None
+_manual_stop_requested = False
+_watchdog_last_start_attempt = 0.0
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _get_tracking_db() -> TrackingDB:
@@ -973,6 +983,75 @@ def _status() -> dict[str, Any]:
     }
 
 
+def _should_autostart_detection() -> bool:
+    if not _env_bool("AUTO_START_DETECTION", True):
+        return False
+    try:
+        active = _get_camera_db().list_active_cameras(include_secret=False)
+    except Exception:
+        return False
+    return bool(active)
+
+
+def _clear_live_frames() -> None:
+    if not SNAPSHOT_DIR.exists():
+        return
+    for pattern in ("latest.jpg", "latest_slot_*.jpg", "latest_*.jpg"):
+        for path in SNAPSHOT_DIR.glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def _ensure_detection_running(reason: str = "watchdog") -> None:
+    global _watchdog_last_start_attempt
+    if _manual_stop_requested or not _should_autostart_detection():
+        return
+    if _detector_pid() is not None:
+        return
+
+    now = time.time()
+    cooldown_seconds = int(os.getenv("DETECTION_WATCHDOG_COOLDOWN_SECONDS", "45"))
+    if now - _watchdog_last_start_attempt < cooldown_seconds:
+        return
+
+    _watchdog_last_start_attempt = now
+    try:
+        start_detection(StartRequest())
+        _audit(
+            "detection_autostart",
+            {"reason": reason, "started": True},
+            actor="watchdog",
+        )
+    except HTTPException as exc:
+        _audit(
+            "detection_autostart_failed",
+            {"reason": reason, "status_code": exc.status_code, "detail": str(exc.detail)},
+            actor="watchdog",
+        )
+    except Exception as exc:
+        _audit(
+            "detection_autostart_failed",
+            {"reason": reason, "error": _redact_sensitive_text(str(exc))},
+            actor="watchdog",
+        )
+
+
+async def _detection_watchdog() -> None:
+    await asyncio.sleep(int(os.getenv("DETECTION_AUTOSTART_DELAY_SECONDS", "8")))
+    while _env_bool("DETECTION_WATCHDOG_ENABLED", True):
+        await asyncio.to_thread(_ensure_detection_running, "watchdog")
+        await asyncio.sleep(int(os.getenv("DETECTION_WATCHDOG_INTERVAL_SECONDS", "30")))
+
+
+@app.on_event("startup")
+async def start_detection_watchdog() -> None:
+    global _watchdog_task
+    if _watchdog_task is None or _watchdog_task.done():
+        _watchdog_task = asyncio.create_task(_detection_watchdog())
+
+
 @app.get("/")
 def dashboard() -> FileResponse:
     return FileResponse(DASHBOARD_DIR / "index.html")
@@ -1299,7 +1378,7 @@ def clear_camera_slot(slot_number: int) -> dict[str, Any]:
 
 @app.post("/api/start")
 def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
-    global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle
+    global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle, _manual_stop_requested
     request = request or StartRequest()
     if _detector_pid() is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
@@ -1309,6 +1388,8 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     # NVR/controller channels saved in SQLite.
     _sync_config_active_cameras(_get_camera_db())
     _validate_active_cameras_for_start()
+    _manual_stop_requested = False
+    _clear_live_frames()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _stdout_handle = DETECTION_STDOUT_PATH.open("w", encoding="utf-8", buffering=1)
@@ -1355,7 +1436,8 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
 
 @app.post("/api/stop")
 def stop_detection() -> dict[str, Any]:
-    global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle
+    global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle, _manual_stop_requested
+    _manual_stop_requested = True
     process = _process
     pid = _detector_pid()
     if pid is None:
@@ -1409,7 +1491,10 @@ def stop_detection() -> dict[str, Any]:
 
 @app.post("/api/restart")
 def restart_detection(request: StartRequest | None = None) -> dict[str, Any]:
+    global _manual_stop_requested
+    _manual_stop_requested = False
     stop_detection()
+    _manual_stop_requested = False
     return start_detection(request)
 
 
@@ -1631,11 +1716,7 @@ def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
 
 
 def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list[Path]:
-    paths = [_live_feed_path(slot=slot, camera=camera)]
-    fallback = SNAPSHOT_DIR / "latest.jpg"
-    if fallback not in paths:
-        paths.append(fallback)
-    return paths
+    return [_live_feed_path(slot=slot, camera=camera)]
 
 
 app.mount("/assets", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-assets")

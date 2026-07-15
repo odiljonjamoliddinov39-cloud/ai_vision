@@ -72,10 +72,10 @@ def test_live_feed_path_can_target_slot():
     assert _live_feed_path(slot=3).name == "latest_slot_3.jpg"
 
 
-def test_live_feed_paths_fall_back_to_global_latest():
+def test_live_feed_paths_do_not_fall_back_to_global_latest_for_slots():
     paths = _live_feed_paths(slot=3)
 
-    assert [path.name for path in paths] == ["latest_slot_3.jpg", "latest.jpg"]
+    assert [path.name for path in paths] == ["latest_slot_3.jpg"]
 
 
 def test_camera_stream_bare_ip_returns_actionable_message():
