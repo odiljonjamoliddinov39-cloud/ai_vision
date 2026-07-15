@@ -420,11 +420,17 @@ def _write_live_frame(
 
         data = jpg.tobytes()
         if cam.slot_number is not None:
-            (Path(snapshots_dir) / f"latest_slot_{cam.slot_number}.jpg").write_bytes(data)
+            _write_atomic_bytes(Path(snapshots_dir) / f"latest_slot_{cam.slot_number}.jpg", data)
 
-        (Path(snapshots_dir) / f"latest_{_safe_live_feed_name(cam.name)}.jpg").write_bytes(data)
+        _write_atomic_bytes(Path(snapshots_dir) / f"latest_{_safe_live_feed_name(cam.name)}.jpg", data)
     except Exception:
         pass
+
+
+def _write_atomic_bytes(path: Path, data: bytes) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
 
 
 def _safe_live_feed_name(value: str) -> str:
