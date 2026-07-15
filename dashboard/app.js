@@ -113,6 +113,9 @@ const API_BASE = (() => {
 })();
 const LIVE_FRAME_REFRESH_MS = 120;
 const LIVE_FRAME_RETRY_MS = 750;
+const liveState = {
+  detectionRunning: false,
+};
 
 const API_KEY = (() => {
   const params = new URLSearchParams(window.location.search);
@@ -174,11 +177,13 @@ const escapeHtml = (value) =>
     .replaceAll("'", "&#039;");
 
 const setStatus = (running) => {
+  liveState.detectionRunning = Boolean(running);
   els.statusPill.textContent = running ? "Detection running" : "Detection stopped";
   els.statusPill.dataset.state = running ? "running" : "stopped";
   els.btnStartDetection.disabled = running;
   els.btnStopDetection.disabled = !running;
   els.btnRestartDetection.disabled = !running;
+  updateLivePlaceholders();
 };
 
 const inventoryState = {
@@ -891,12 +896,22 @@ const refreshLiveScreens = () => {
       image.dataset.bound = "true";
       image.addEventListener("load", () => {
         image.dataset.loading = "false";
+        image.dataset.failures = "0";
+        setLivePlaceholder(image, "Live detection frames");
         image.closest(".screen-body")?.classList.add("has-frame");
         window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_REFRESH_MS);
       });
       image.addEventListener("error", () => {
         image.dataset.loading = "false";
+        const failures = Number(image.dataset.failures || 0) + 1;
+        image.dataset.failures = String(failures);
         image.closest(".screen-body")?.classList.remove("has-frame");
+        setLivePlaceholder(
+          image,
+          liveState.detectionRunning
+            ? "No frame from this slot yet. Camera stream may be unreachable."
+            : "Detection is stopped. Start detection after camera streams are reachable."
+        );
         window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_RETRY_MS);
       });
     }
@@ -921,6 +936,27 @@ const refreshLiveImage = (image) => {
     params.set("api_key", API_KEY);
   }
   image.src = `${API_BASE}/api/live_frame?${params.toString()}`;
+};
+
+const setLivePlaceholder = (image, message) => {
+  const placeholder = image?.closest(".screen-body")?.querySelector("[data-live-placeholder]");
+  if (placeholder) {
+    placeholder.textContent = message;
+  }
+};
+
+const updateLivePlaceholders = () => {
+  document.querySelectorAll("[data-live-slot]").forEach((image) => {
+    if (image.closest(".screen-body")?.classList.contains("has-frame")) {
+      return;
+    }
+    setLivePlaceholder(
+      image,
+      liveState.detectionRunning
+        ? "Waiting for the first processed frame..."
+        : "Detection is stopped. Start detection after camera streams are reachable."
+    );
+  });
 };
 
 const startLiveFeed = async () => {
