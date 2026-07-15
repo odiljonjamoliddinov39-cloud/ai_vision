@@ -1,10 +1,12 @@
 import os
 import sys
+import asyncio
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from api.server import _redact_config, _security_enabled, _valid_api_key, status  # noqa: E402
+import api.server as server  # noqa: E402
+from api.server import _redact_config, _security_enabled, _valid_api_key, live_frame, status  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 
 
@@ -63,3 +65,16 @@ def test_config_redaction_masks_camera_sources():
     assert "secret" not in redacted["cameras"][0]["source"]
     assert "rtsp://admin:****@203.0.113.10:554/Streaming/Channels/101" == redacted["cameras"][0]["source"]
     assert config["cameras"][0]["source"].startswith("rtsp://admin:secret@")
+
+
+def test_live_frame_returns_stable_jpeg_bytes(tmp_path, monkeypatch):
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    jpeg = b"\xff\xd8stable-frame\xff\xd9"
+    (snapshot_dir / "latest_slot_6.jpg").write_bytes(jpeg)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+
+    response = asyncio.run(live_frame(slot=6))
+
+    assert response.body == jpeg
+    assert response.media_type == "image/jpeg"

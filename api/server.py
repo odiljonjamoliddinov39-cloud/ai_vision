@@ -25,7 +25,7 @@ from urllib.parse import quote, urlsplit
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import asyncio
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -1737,14 +1737,20 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
     if latest is None:
         raise HTTPException(status_code=404, detail="No live frame is available yet.")
 
-    return FileResponse(
-        latest,
-        media_type="image/jpeg",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-        },
-    )
+    for _ in range(5):
+        data = latest.read_bytes()
+        if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
+            return Response(
+                content=data,
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                },
+            )
+        await asyncio.sleep(0.03)
+
+    raise HTTPException(status_code=503, detail="Latest live frame is being written; retry.")
 
 
 def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
