@@ -123,7 +123,7 @@ class ProductRecognizer:
         provider = None
         if provider_name == "gemini":
             provider = GeminiClient(
-                model=config.get("model", "gemini-2.5-flash"),
+                model=config.get("model", "gemini-3.1-flash-lite"),
                 timeout=int(config.get("timeout", 30)),
                 retries=int(config.get("retries", 2)),
             )
