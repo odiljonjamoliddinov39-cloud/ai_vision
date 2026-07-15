@@ -20,6 +20,7 @@ jobs:
   deploy:
     name: Deploy latest main to App Platform
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,9 +32,37 @@ jobs:
 
       - name: Trigger DigitalOcean deployment
         run: |
-          doctl apps create-deployment "$DIGITALOCEAN_APP_ID" --force-rebuild
-          for i in $(seq 1 20); do
-            echo "DigitalOcean deployment status check $i/20"
-            doctl apps list-deployments "$DIGITALOCEAN_APP_ID" --format ID,Cause,Progress,Phase,CreatedAt,UpdatedAt --no-header | head -5
+          set -euo pipefail
+
+          deployment_id="$(
+            doctl apps create-deployment "$DIGITALOCEAN_APP_ID" --force-rebuild --format ID --no-header \
+              | grep -Eo '[0-9a-f-]{36}' \
+              | head -1
+          )"
+
+          if [ -z "$deployment_id" ]; then
+            echo "DigitalOcean did not return a deployment id."
+            exit 1
+          fi
+
+          echo "DigitalOcean deployment: $deployment_id"
+          for i in $(seq 1 70); do
+            echo "DigitalOcean deployment status check $i/70"
+            doctl apps get-deployment "$DIGITALOCEAN_APP_ID" "$deployment_id" --format ID,Progress,Phase,UpdatedAt --no-header
+            phase="$(doctl apps get-deployment "$DIGITALOCEAN_APP_ID" "$deployment_id" --format Phase --no-header | tr -d '[:space:]')"
+
+            if [ "$phase" = "ACTIVE" ]; then
+              echo "DigitalOcean deployment is ACTIVE."
+              exit 0
+            fi
+
+            if [ "$phase" = "ERROR" ] || [ "$phase" = "CANCELED" ] || [ "$phase" = "SUPERSEDED" ]; then
+              echo "DigitalOcean deployment ended with phase: $phase"
+              exit 1
+            fi
+
             sleep 30
           done
+
+          echo "Timed out waiting for DigitalOcean deployment to become ACTIVE."
+          exit 1
