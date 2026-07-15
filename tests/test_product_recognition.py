@@ -7,7 +7,12 @@ import numpy as np
 from knowledge.product_database import ProductDatabase
 from knowledge.similarity import cosine_similarity
 from recognition.embedding import image_embedding, image_hash
-from recognition.product_recognizer import ProductRecognition, ProductRecognizer, crop_image
+from recognition.product_recognizer import (
+    ProductRecognition,
+    ProductRecognizer,
+    _normalize_gemini_model,
+    crop_image,
+)
 
 
 class FakeProvider:
@@ -107,6 +112,12 @@ def test_provider_failure_returns_unknown_without_crashing(tmp_path):
 
     assert result.name == "Unknown Product"
     assert result.source == "error"
+
+
+def test_unavailable_gemini_models_are_normalized():
+    assert _normalize_gemini_model("gemini-1.5-flash") == "gemini-3.1-flash-lite"
+    assert _normalize_gemini_model("models/gemini-2.5-flash") == "gemini-3.1-flash-lite"
+    assert _normalize_gemini_model("models/gemini-3.1-flash-lite") == "gemini-3.1-flash-lite"
 
 
 def test_async_annotate_does_not_block_and_sets_inventory_name(tmp_path):

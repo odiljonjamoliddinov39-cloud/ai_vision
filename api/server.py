@@ -323,6 +323,7 @@ class ConfigPatch(BaseModel):
     snapshot_trigger_classes: list[str] | None = None
     snapshot_cooldown_seconds: int | None = Field(default=None, ge=0)
     logging_enabled: bool | None = None
+    recognition_model: str | None = Field(default=None, min_length=1)
 
 
 class ItemCreate(BaseModel):
@@ -1123,7 +1124,7 @@ def opencv_diagnostics() -> dict[str, Any]:
 
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
-    return _read_yaml(CONFIG_PATH)
+    return _redact_config(_read_yaml(CONFIG_PATH))
 
 
 @app.patch("/api/config")
@@ -1134,6 +1135,7 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
     logging_cfg = data.setdefault("logging", {})
     tracking = data.setdefault("tracking", {})
     warehouse_counting = data.setdefault("warehouse_counting", {})
+    recognition = data.setdefault("recognition", {})
 
     values = patch.model_dump(exclude_unset=True)
     if "model_path" in values:
@@ -1162,9 +1164,20 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
         snapshots["cooldown_seconds"] = values["snapshot_cooldown_seconds"]
     if "logging_enabled" in values:
         logging_cfg["enabled"] = values["logging_enabled"]
+    if "recognition_model" in values:
+        recognition["model"] = values["recognition_model"]
 
     _write_yaml(CONFIG_PATH, data)
-    return data
+    return _redact_config(data)
+
+
+def _redact_config(data: dict[str, Any]) -> dict[str, Any]:
+    redacted = json.loads(json.dumps(data))
+    for camera in redacted.get("cameras", []) or []:
+        source = camera.get("source")
+        if source is not None:
+            camera["source"] = _redact_sensitive_text(str(source))
+    return redacted
 
 
 @app.get("/api/cameras")

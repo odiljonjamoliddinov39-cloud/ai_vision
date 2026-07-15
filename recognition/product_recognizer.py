@@ -122,8 +122,9 @@ class ProductRecognizer:
         provider_name = config.get("provider", "gemini")
         provider = None
         if provider_name == "gemini":
+            model = _normalize_gemini_model(config.get("model", "gemini-3.1-flash-lite"))
             provider = GeminiClient(
-                model=config.get("model", "gemini-3.1-flash-lite"),
+                model=model,
                 timeout=int(config.get("timeout", 30)),
                 retries=int(config.get("retries", 2)),
             )
@@ -313,3 +314,16 @@ def _safe_confidence(value) -> float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _normalize_gemini_model(model: str) -> str:
+    name = str(model).removeprefix("models/").strip()
+    unavailable = {
+        "gemini-1.5-flash",
+        "models/gemini-1.5-flash",
+        "gemini-2.5-flash",
+        "models/gemini-2.5-flash",
+    }
+    if name in unavailable:
+        return "gemini-3.1-flash-lite"
+    return name or "gemini-3.1-flash-lite"

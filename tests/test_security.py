@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from api.server import _security_enabled, _valid_api_key, status  # noqa: E402
+from api.server import _redact_config, _security_enabled, _valid_api_key, status  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 
 
@@ -46,3 +46,20 @@ def test_security_audit_chain_detects_valid_log(tmp_path):
     assert result["verified"] is True
     assert result["event_count"] == 2
     assert len(events) == 2
+
+
+def test_config_redaction_masks_camera_sources():
+    config = {
+        "cameras": [
+            {
+                "name": "NVR Slot 1",
+                "source": "rtsp://admin:secret@203.0.113.10:554/Streaming/Channels/101",
+            }
+        ]
+    }
+
+    redacted = _redact_config(config)
+
+    assert "secret" not in redacted["cameras"][0]["source"]
+    assert "rtsp://admin:****@203.0.113.10:554/Streaming/Channels/101" == redacted["cameras"][0]["source"]
+    assert config["cameras"][0]["source"].startswith("rtsp://admin:secret@")
