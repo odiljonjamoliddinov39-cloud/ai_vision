@@ -750,8 +750,9 @@ def recognitions(limit: int = 40) -> dict[str, Any]:
     stock = warehouse_db.get_all_stock()
     movement_counts = warehouse_db.movement_counts()
     stock_by_name = {item["name"]: int(item.get("current_stock") or 0) for item in stock}
+    all_movements = warehouse_db.recent_movements(500)
     movement_totals: dict[tuple[str, str], int] = {}
-    for movement in movements:
+    for movement in all_movements:
         key = (movement["product_name"], movement["direction"])
         movement_totals[key] = movement_totals.get(key, 0) + int(movement.get("quantity") or 1)
     vision_items = [

@@ -111,7 +111,8 @@ const API_BASE = (() => {
   }
   return window.location.origin;
 })();
-const LIVE_FRAME_REFRESH_MS = 500;
+const LIVE_FRAME_REFRESH_MS = 120;
+const LIVE_FRAME_RETRY_MS = 750;
 
 const API_KEY = (() => {
   const params = new URLSearchParams(window.location.search);
@@ -885,38 +886,47 @@ const renderLiveScreens = () => {
 };
 
 const refreshLiveScreens = () => {
-  const now = Date.now();
   document.querySelectorAll("[data-live-slot]").forEach((image) => {
     if (!image.dataset.bound) {
       image.dataset.bound = "true";
       image.addEventListener("load", () => {
+        image.dataset.loading = "false";
         image.closest(".screen-body")?.classList.add("has-frame");
+        window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_REFRESH_MS);
       });
       image.addEventListener("error", () => {
+        image.dataset.loading = "false";
         image.closest(".screen-body")?.classList.remove("has-frame");
-        image.dataset.lastRefresh = "0";
+        window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_RETRY_MS);
       });
     }
 
-    const lastRefresh = Number(image.dataset.lastRefresh || 0);
-    if (now - lastRefresh >= LIVE_FRAME_REFRESH_MS) {
-      image.dataset.lastRefresh = String(now);
-      const params = new URLSearchParams({
-        slot: image.dataset.liveSlot,
-        t: String(now),
-      });
-      if (API_KEY) {
-        params.set("api_key", API_KEY);
-      }
-      image.src = `${API_BASE}/api/live_frame?${params.toString()}`;
+    if (!image.getAttribute("src") && image.dataset.loading !== "true") {
+      refreshLiveImage(image);
     }
   });
+};
+
+const refreshLiveImage = (image) => {
+  if (!image?.dataset?.liveSlot || image.dataset.loading === "true") {
+    return;
+  }
+  const now = Date.now();
+  image.dataset.loading = "true";
+  const params = new URLSearchParams({
+    slot: image.dataset.liveSlot,
+    t: String(now),
+  });
+  if (API_KEY) {
+    params.set("api_key", API_KEY);
+  }
+  image.src = `${API_BASE}/api/live_frame?${params.toString()}`;
 };
 
 const startLiveFeed = async () => {
   renderLiveScreens();
   refreshLiveScreens();
-  window.setInterval(refreshLiveScreens, 800);
+  window.setInterval(refreshLiveScreens, 2500);
 };
 
 els.navButtons.forEach((button) => {

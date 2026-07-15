@@ -398,8 +398,8 @@ def _write_live_frame(
     snapshots_dir: str,
     cam,
     frame,
-    width: int = 480,
-    jpeg_quality: int = 42,
+    width: int = 320,
+    jpeg_quality: int = 28,
 ) -> None:
     try:
         output = frame
