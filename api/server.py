@@ -585,6 +585,12 @@ source = int(raw) if raw.isdigit() else raw
 try:
     if isinstance(source, int) and os.name == "nt":
         cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    elif isinstance(source, str) and source.lower().startswith("rtsp://"):
+        os.environ.setdefault(
+            "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+            "rtsp_transport;tcp|stimeout;8000000|max_delay;500000|buffer_size;102400",
+        )
+        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
     else:
         cap = cv2.VideoCapture(source)
 

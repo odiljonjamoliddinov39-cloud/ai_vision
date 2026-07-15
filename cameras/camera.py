@@ -57,6 +57,7 @@ class Camera:
         if self._dummy:
             return
 
+        _configure_network_video_options(self.source)
         backend_name, backend = self._backends[self._backend_index]
         if backend is None:
             self.cap = cv2.VideoCapture(self.source)
@@ -183,6 +184,11 @@ class Camera:
                 ("MSMF", cv2.CAP_MSMF),
                 ("Auto", None),
             ]
+        if isinstance(source, str) and source.lower().startswith("rtsp://"):
+            return [
+                ("FFMPEG", cv2.CAP_FFMPEG),
+                ("Auto", None),
+            ]
         return [("Auto", None)]
 
 
@@ -205,6 +211,17 @@ def load_cameras(camera_configs: list[dict]) -> list[Camera]:
         except ConnectionError as e:
             print(f"WARNING: {e}")
     return cameras
+
+
+def _configure_network_video_options(source) -> None:
+    if not isinstance(source, str) or not source.lower().startswith("rtsp://"):
+        return
+    # Prefer TCP for NVRs behind routers/NAT. UDP often reaches the host but
+    # fails to establish a usable media stream from cloud runtimes.
+    os.environ.setdefault(
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+        "rtsp_transport;tcp|stimeout;8000000|max_delay;500000|buffer_size;102400",
+    )
 
 
 _SECRET_URL_RE = re.compile(r"\b(?P<scheme>rtsp|https?)://(?P<username>[^:/\s]+):(?P<password>[^@\s]+)@")
