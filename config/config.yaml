@@ -42,6 +42,8 @@ display:
   box_thickness: 2
   font_scale: 0.6
   live_feed_enabled: true
+  live_frame_width: 480
+  live_frame_jpeg_quality: 42
 tracking:
   enabled: true
   tracker_config: config/warehouse_bytetrack.yaml

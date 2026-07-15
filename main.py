@@ -291,7 +291,13 @@ def main():
                         print(f"[{cam.name}] Snapshot saved: {path}")
 
                 if live_feed_enabled:
-                    _write_live_frame(snapshots_dir, cam, frame)
+                    _write_live_frame(
+                        snapshots_dir,
+                        cam,
+                        frame,
+                        width=int(display_cfg.get("live_frame_width", 480)),
+                        jpeg_quality=int(display_cfg.get("live_frame_jpeg_quality", 42)),
+                    )
 
                 if event_logger is not None:
                     event_logger.log_detections(cam.name, detections)
@@ -388,16 +394,31 @@ def _write_detection_health(path: str, payload: dict) -> None:
     health_path.write_text(data, encoding="utf-8")
 
 
-def _write_live_frame(snapshots_dir: str, cam, frame) -> None:
+def _write_live_frame(
+    snapshots_dir: str,
+    cam,
+    frame,
+    width: int = 480,
+    jpeg_quality: int = 42,
+) -> None:
     try:
-        ok, jpg = cv2.imencode(".jpg", frame)
+        output = frame
+        width = max(240, min(int(width), 960))
+        jpeg_quality = max(20, min(int(jpeg_quality), 85))
+        frame_height, frame_width = frame.shape[:2]
+        if frame_width > width:
+            height = max(1, int(frame_height * (width / frame_width)))
+            output = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+
+        ok, jpg = cv2.imencode(
+            ".jpg",
+            output,
+            [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality],
+        )
         if not ok:
             return
 
         data = jpg.tobytes()
-        latest_path = Path(snapshots_dir) / "latest.jpg"
-        latest_path.write_bytes(data)
-
         if cam.slot_number is not None:
             (Path(snapshots_dir) / f"latest_slot_{cam.slot_number}.jpg").write_bytes(data)
 

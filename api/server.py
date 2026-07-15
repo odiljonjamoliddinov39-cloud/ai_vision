@@ -746,14 +746,35 @@ def recognitions(limit: int = 40) -> dict[str, Any]:
         for class_name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
     warehouse_db = _get_warehouse_db()
+    movements = warehouse_db.recent_movements(limit)
+    stock = warehouse_db.get_all_stock()
+    movement_counts = warehouse_db.movement_counts()
+    stock_by_name = {item["name"]: int(item.get("current_stock") or 0) for item in stock}
+    movement_totals: dict[tuple[str, str], int] = {}
+    for movement in movements:
+        key = (movement["product_name"], movement["direction"])
+        movement_totals[key] = movement_totals.get(key, 0) + int(movement.get("quantity") or 1)
+    vision_items = [
+        {
+            "product_name": product_name,
+            "state": "check-in" if direction == "IN" else "check-out",
+            "quantity": quantity,
+            "current_stock": stock_by_name.get(product_name, 0),
+        }
+        for (product_name, direction), quantity in sorted(
+            movement_totals.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )
+    ]
     status = _status()
     return {
         "running": status["running"],
         "entries": entries,
         "counts": distinct,
-        "movements": warehouse_db.recent_movements(limit),
-        "movement_counts": warehouse_db.movement_counts(),
-        "stock": warehouse_db.get_all_stock(),
+        "vision_items": vision_items,
+        "movements": movements,
+        "movement_counts": movement_counts,
+        "stock": stock,
     }
 
 

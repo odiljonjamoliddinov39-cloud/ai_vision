@@ -111,7 +111,7 @@ const API_BASE = (() => {
   }
   return window.location.origin;
 })();
-const LIVE_FRAME_REFRESH_MS = 1200;
+const LIVE_FRAME_REFRESH_MS = 500;
 
 const API_KEY = (() => {
   const params = new URLSearchParams(window.location.search);
@@ -539,6 +539,7 @@ const loadRecognitions = async () => {
 const renderRecognitions = (data, running = false) => {
   const entries = data.entries || [];
   const counts = data.counts || [];
+  const visionItems = data.vision_items || [];
   const movements = data.movements || [];
   const movementCounts = data.movement_counts || {};
   const stock = data.stock || [];
@@ -577,11 +578,16 @@ const renderRecognitions = (data, running = false) => {
       .join("") || `<tr><td colspan="4">No recent detections.</td></tr>`;
 
   els.recognitionCounts.innerHTML =
+    visionItems
+      .map((item) => {
+        const stateLabel = item.state === "check-out" ? "Check-out" : "Check-in";
+        return `<tr><td>${escapeHtml(item.product_name)}</td><td>${stateLabel}</td><td>${item.quantity}</td><td>${item.current_stock}</td></tr>`;
+      })
+      .join("") ||
     counts
-      .map(
-        (count) => `<tr><td>${count.class_name}</td><td>${count.count}</td></tr>`
-      )
-      .join("") || `<tr><td colspan="2">No recognized classes yet.</td></tr>`;
+      .map((count) => `<tr><td>${escapeHtml(count.class_name)}</td><td>Detected</td><td>${count.count}</td><td>—</td></tr>`)
+      .join("") ||
+    `<tr><td colspan="4">No recognized boxes yet.</td></tr>`;
 
   els.visionCheckInTotal.textContent = movementCounts.IN || 0;
   els.visionCheckOutTotal.textContent = movementCounts.OUT || 0;
