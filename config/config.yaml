@@ -61,6 +61,18 @@ warehouse_counting:
     y1: 300
     x2: 900
     y2: 300
+recognition:
+  enabled: true
+  provider: gemini
+  model: gemini-1.5-flash
+  db_path: database/products.db
+  confidence_threshold: 0.9
+  similarity_threshold: 0.92
+  cache_enabled: true
+  cache_expiration: 1800
+  timeout: 30
+  retries: 2
+  max_workers: 2
 snapshots:
   enabled: true
   save_dir: snapshots

@@ -36,7 +36,6 @@ import time
 
 import cv2
 import yaml
-import os
 
 from cameras.camera import load_cameras
 from detection.detector import Detector
@@ -49,6 +48,7 @@ from database.warehouse_db import WarehouseDB
 from tracking.line_counter import AppearanceCounter, LineCounter
 from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
+from recognition.product_recognizer import ProductRecognizer
 
 
 def load_config(path: str) -> dict:
@@ -178,6 +178,23 @@ def main():
             f"Stock DB: {warehouse_db.db_path}"
         )
 
+    # --- Product recognition knowledge engine ---
+    recognition_cfg = config.get("recognition", {})
+    product_recognizer = None
+    if recognition_cfg.get("enabled", False):
+        try:
+            product_recognizer = ProductRecognizer.from_config(recognition_cfg)
+            print(
+                "Product recognition enabled "
+                f"({recognition_cfg.get('provider', 'gemini')} provider, "
+                f"local DB: {recognition_cfg.get('db_path', 'database/products.db')})."
+            )
+        except Exception as exc:
+            # Recognition is intentionally non-critical. Detection and live video
+            # must continue even if the provider/key/config is wrong.
+            print(f"Product recognition disabled due to configuration error: {exc}")
+            product_recognizer = None
+
     # --- Snapshots (FR-5) ---
     snap_cfg = config.get("snapshots", {})
     snapshot_saver = None
@@ -262,6 +279,9 @@ def main():
                         for measurement in measurements
                     ]
 
+                if product_recognizer is not None:
+                    product_recognizer.annotate(cam.name, frame, detections)
+
                 draw_detections(frame, detections, box_thickness, font_scale)
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
@@ -345,6 +365,10 @@ def main():
                     "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
                     if warehouse_enabled
                     else None,
+                    "product_recognition_enabled": product_recognizer is not None,
+                    "product_recognition_provider": recognition_cfg.get("provider")
+                    if product_recognizer is not None
+                    else None,
                     "spatial_analysis_enabled": spatial_analyzer is not None,
                     "last_spatial_objects": last_spatial_objects,
                     "live_feed_enabled": live_feed_enabled,
@@ -364,6 +388,8 @@ def main():
     finally:
         for cam in cameras:
             cam.release()
+        if product_recognizer is not None:
+            product_recognizer.close()
         if not args.no_display:
             cv2.destroyAllWindows()
         print("Stopped.")
