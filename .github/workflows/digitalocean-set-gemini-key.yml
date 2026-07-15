@@ -1,0 +1,100 @@
+name: Set Gemini key on DigitalOcean App
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  set-gemini-key:
+    runs-on: ubuntu-latest
+    env:
+      DIGITALOCEAN_APP_ID: 589d905d-7121-4474-8575-c7c557395062
+    steps:
+      - name: Set GEMINI_API_KEY runtime secret
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          app_id = os.environ["DIGITALOCEAN_APP_ID"]
+          do_token = os.environ["DIGITALOCEAN_TOKEN"]
+          gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+          if not gemini_key:
+              print("GEMINI_API_KEY GitHub secret is missing.")
+              sys.exit(1)
+
+          api = f"https://api.digitalocean.com/v2/apps/{app_id}"
+
+          def request(method, url, payload=None):
+              body = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(
+                  url,
+                  data=body,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {do_token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      return response.status, json.loads(response.read().decode("utf-8"))
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode("utf-8", errors="replace")
+                  print(f"DigitalOcean API error {exc.code}: {detail}")
+                  raise
+
+          _, current = request("GET", api)
+          spec = current["app"]["spec"]
+
+          touched = []
+          for section in ("services", "workers", "jobs"):
+              for component in spec.get(section, []) or []:
+                  envs = component.setdefault("envs", [])
+                  env = next((item for item in envs if item.get("key") == "GEMINI_API_KEY"), None)
+                  if env is None:
+                      envs.append(
+                          {
+                              "key": "GEMINI_API_KEY",
+                              "scope": "RUN_TIME",
+                              "type": "SECRET",
+                              "value": gemini_key,
+                          }
+                      )
+                  else:
+                      env["scope"] = "RUN_TIME"
+                      env["type"] = "SECRET"
+                      env["value"] = gemini_key
+                  touched.append(component.get("name", "<unnamed>"))
+
+          if not touched:
+              print("No runnable components found; refusing to update.")
+              sys.exit(1)
+
+          status, updated = request("PUT", api, {"spec": spec})
+          deployment_id = (
+              updated.get("deployment", {}).get("id")
+              or updated.get("app", {}).get("active_deployment", {}).get("id")
+              or "<pending>"
+          )
+          print(f"Updated app spec (HTTP {status}). Deployment: {deployment_id}")
+          print("Bound GEMINI_API_KEY on components: " + ", ".join(touched))
+
+          for i in range(30):
+              time.sleep(20)
+              _, app_response = request("GET", api)
+              deployment = app_response.get("app", {}).get("active_deployment") or {}
+              phase = deployment.get("phase") or "UNKNOWN"
+              print(f"Active deployment phase {i + 1}/30: {phase}")
+              if phase in {"ACTIVE", "SUPERSEDED", "ERROR", "CANCELED"}:
+                  break
+          PY
