@@ -30,4 +30,4 @@ jobs:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Trigger DigitalOcean deployment
-        run: doctl apps create-deployment "$DIGITALOCEAN_APP_ID" --force-rebuild --wait
+        run: doctl apps create-deployment "$DIGITALOCEAN_APP_ID" --force-rebuild
