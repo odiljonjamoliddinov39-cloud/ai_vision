@@ -48,3 +48,38 @@ def test_user_scope_assignment_is_resolved(tmp_path):
     dashboard = db.resolve_dashboard(user_id=user["id"])
 
     assert dashboard["scope"]["camera_ids"] == ["12", "13"]
+
+
+def test_user_password_is_hashed_and_authenticates(tmp_path):
+    db = AccessControlDB(str(tmp_path / "access.db"))
+    user = db.create_user("Secure User", "secure@example.com")
+
+    updated = db.set_user_password(user["id"], "StrongPass123")
+    assert updated["has_password"] is True
+
+    with db.db.connect() as conn:
+        row = conn.execute(db._sql("SELECT password_hash FROM ac_users WHERE id = ?"), (user["id"],)).fetchone()
+    assert row["password_hash"] != "StrongPass123"
+    assert db.authenticate_user("secure@example.com", "StrongPass123")["email"] == "secure@example.com"
+    assert db.authenticate_user("secure@example.com", "wrong") is None
+
+
+def test_session_token_resolves_user(tmp_path):
+    db = AccessControlDB(str(tmp_path / "access.db"))
+    user = db.create_user("Session User", "session@example.com")
+    db.set_user_password(user["id"], "StrongPass123")
+
+    authenticated = db.authenticate_user("session@example.com", "StrongPass123")
+    token = db.create_session(authenticated["id"])
+
+    assert db.get_user_by_session_token(token["token"])["email"] == "session@example.com"
+    assert db.get_user_by_session_token("bad-token") is None
+
+
+def test_auth_preference_can_be_selected(tmp_path):
+    db = AccessControlDB(str(tmp_path / "access.db"))
+    user = db.create_user("Biometric User", "bio@example.com")
+
+    updated = db.set_user_auth_preference(user["id"], "password_and_biometric")
+
+    assert updated["preferred_auth_method"] == "password_and_biometric"

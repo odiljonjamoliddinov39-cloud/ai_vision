@@ -7,6 +7,26 @@
     <link rel="stylesheet" href="/app-v2/assets/styles.css" />
   </head>
   <body>
+    <section id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-card">
+        <span class="eyebrow">Secure access</span>
+        <h1>Sign in to AI Vision</h1>
+        <p>Use Fingerprint, Face ID, or your device passkey first. Password is available for initial setup and backup.</p>
+        <label>Email
+          <input id="loginEmail" required type="email" autocomplete="username" placeholder="you@example.com" />
+        </label>
+        <button id="biometricLoginBtn" class="primary" type="button">Use Fingerprint / Face ID</button>
+        <details>
+          <summary>Use password instead</summary>
+          <label>Password
+            <input id="loginPassword" type="password" autocomplete="current-password" minlength="8" />
+          </label>
+          <button type="submit">Login with password</button>
+          <button id="setupPasswordBtn" type="button">Set first password</button>
+        </details>
+        <small id="loginHint">Ask your administrator to create the account, set password, and register biometrics.</small>
+      </form>
+    </section>
     <main class="shell">
       <aside class="sidebar">
         <div class="brand">
@@ -15,14 +35,18 @@
           <small id="userLine">Loading...</small>
         </div>
         <nav id="moduleNav"></nav>
-        <a href="/admin-v2" class="admin-link">Head Admin</a>
+        <section class="operator-card" aria-label="Workspace status">
+          <span>Workspace</span>
+          <strong>Operational view</strong>
+          <small>Only assigned modules are shown here.</small>
+        </section>
       </aside>
       <section class="main">
         <header class="hero">
           <div>
             <p class="eyebrow">Assigned workspace</p>
             <h1 id="pageTitle">User Dashboard</h1>
-            <p id="scopeLine">Modules and data are controlled by Head Admin.</p>
+            <p id="scopeLine">Secure workspace loading...</p>
           </div>
           <button id="refreshBtn" type="button">Refresh</button>
         </header>

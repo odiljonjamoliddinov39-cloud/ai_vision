@@ -7,6 +7,26 @@
     <link rel="stylesheet" href="/admin-v2/assets/styles.css" />
   </head>
   <body>
+    <section id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-card">
+        <span class="eyebrow">Head Admin secure access</span>
+        <h1>Verify administrator</h1>
+        <p>Use Fingerprint, Face ID, or your device passkey first. Password is available for setup and recovery.</p>
+        <label>Email
+          <input id="loginEmail" required type="email" autocomplete="username" value="admin@ai-vision.local" />
+        </label>
+        <button id="biometricLoginBtn" class="primary" type="button">Use Fingerprint / Face ID</button>
+        <details>
+          <summary>Use password instead</summary>
+          <label>Password
+            <input id="loginPassword" type="password" autocomplete="current-password" minlength="8" />
+          </label>
+          <button type="submit">Login with password</button>
+          <button id="setupPasswordBtn" type="button">Set first password</button>
+        </details>
+        <small id="loginHint">Set the admin password first, then register this device as your biometric passkey.</small>
+      </form>
+    </section>
     <main class="shell">
       <aside class="sidebar">
         <div class="brand">
@@ -73,6 +93,16 @@
             <label>User<select id="selectedUser"></select></label>
             <label>Role<select id="roleSelect"></select></label>
             <button id="assignRoleBtn" class="primary" type="button">Assign role</button>
+            <label>Set login password<input id="passwordInput" type="password" minlength="8" placeholder="At least 8 characters" /></label>
+            <button id="setPasswordBtn" type="button">Set / reset password</button>
+            <fieldset class="auth-choice">
+              <legend>Preferred login option</legend>
+              <label><input type="radio" name="authPreference" value="biometric_first" checked /> Fingerprint / Face ID first</label>
+              <label><input type="radio" name="authPreference" value="password_first" /> Password first</label>
+              <label><input type="radio" name="authPreference" value="password_and_biometric" /> Password + biometric required</label>
+            </fieldset>
+            <button id="saveAuthPreferenceBtn" type="button">Save login preference</button>
+            <button id="registerPasskeyBtn" class="primary" type="button">Register Fingerprint / Face ID</button>
             <label>Module<select id="moduleSelect"></select></label>
             <div class="row">
               <button id="allowModuleBtn" type="button">Allow module</button>

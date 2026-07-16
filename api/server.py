@@ -29,6 +29,21 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 import asyncio
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from webauthn import (
+    generate_authentication_options,
+    generate_registration_options,
+    options_to_json,
+    verify_authentication_response,
+    verify_registration_response,
+)
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
+from webauthn.helpers.structs import (
+    AuthenticatorAttachment,
+    AuthenticatorSelectionCriteria,
+    PublicKeyCredentialDescriptor,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from database.access_control_db import AccessControlDB  # noqa: E402
@@ -77,7 +92,7 @@ app.add_middleware(
     allow_origins=_env_list("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS),
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["Content-Type", "X-API-Key", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-AI-User-Email", "X-Requested-With"],
 )
 
 _tracking_db: TrackingDB | None = None
@@ -364,6 +379,9 @@ def _request_actor(request: Request) -> str:
 
 
 def _v2_user_email(request: Request) -> str:
+    user = _v2_session_user(request)
+    if user:
+        return str(user["email"]).strip().lower()
     return (
         request.query_params.get("user_email")
         or request.headers.get("x-ai-user-email")
@@ -371,8 +389,61 @@ def _v2_user_email(request: Request) -> str:
     ).strip().lower()
 
 
+def _v2_bearer_token(request: Request) -> str:
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+    return ""
+
+
+def _v2_session_user(request: Request) -> dict[str, Any] | None:
+    token = _v2_bearer_token(request)
+    if not token:
+        return None
+    return _get_access_control_db().get_user_by_session_token(token)
+
+
+def _v2_rp_id(request: Request) -> str:
+    origin = request.headers.get("origin", "")
+    if origin:
+        host = urlsplit(origin).hostname
+        if host:
+            return host
+    return request.url.hostname or "localhost"
+
+
+def _v2_expected_origins(request: Request) -> list[str]:
+    current = f"{request.url.scheme}://{request.url.netloc}"
+    browser_origin = request.headers.get("origin", "").rstrip("/")
+    configured = _env_list("WEBAUTHN_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
+    origins = {current, browser_origin, *configured, "http://localhost:8000", "http://127.0.0.1:8000"}
+    return sorted(origin.rstrip("/") for origin in origins if origin)
+
+
+def _v2_public_key_options(options: Any) -> dict[str, Any]:
+    return json.loads(options_to_json(options))
+
+
 def _v2_dashboard(request: Request) -> dict[str, Any]:
-    return _get_access_control_db().resolve_dashboard(email=_v2_user_email(request))
+    ac = _get_access_control_db()
+    session_user = _v2_session_user(request)
+    if session_user:
+        return ac.resolve_dashboard(user_id=int(session_user["id"]))
+    email = (
+        request.query_params.get("user_email")
+        or request.headers.get("x-ai-user-email")
+        or "admin@ai-vision.local"
+    ).strip().lower()
+    user = ac.get_user_by_email(email)
+    if user and user.get("has_password"):
+        raise HTTPException(status_code=401, detail="Login required for this account.")
+    return ac.resolve_dashboard(email=email)
+
+
+def _v2_auth_response(user: dict[str, Any], token: dict[str, Any]) -> dict[str, Any]:
+    dashboard = _get_access_control_db().resolve_dashboard(user_id=int(user["id"]))
+    return {"user": dashboard["user"], "modules": dashboard["modules"], **token}
+
 
 
 def _v2_require_permission(request: Request, permission: str) -> dict[str, Any]:
@@ -603,6 +674,39 @@ class CameraControllerCreate(BaseModel):
 
 class V2UserCreate(BaseModel):
     name: str = Field(min_length=1)
+    email: str = Field(min_length=3)
+
+
+class V2LoginRequest(BaseModel):
+    email: str = Field(min_length=3)
+    password: str = Field(min_length=1)
+
+
+class V2PasswordSet(BaseModel):
+    password: str = Field(min_length=8)
+
+
+class V2AuthPreferenceSet(BaseModel):
+    preferred_auth_method: str = Field(pattern="^(biometric_first|password_first|password_and_biometric)$")
+
+
+class V2PasskeyRegisterStart(BaseModel):
+    name: str | None = None
+
+
+class V2PasskeyRegisterFinish(BaseModel):
+    challenge_id: int
+    credential: dict[str, Any]
+    name: str | None = None
+
+
+class V2PasskeyLoginFinish(BaseModel):
+    email: str = Field(min_length=3)
+    challenge_id: int
+    credential: dict[str, Any]
+
+
+class V2PasskeyLoginStart(BaseModel):
     email: str = Field(min_length=3)
 
 
@@ -1361,6 +1465,176 @@ def app_v2() -> FileResponse:
     return FileResponse(APP_V2_DIR / "index.html")
 
 
+@app.post("/api/v2/auth/login")
+def v2_auth_login(payload: V2LoginRequest, request: Request) -> dict[str, Any]:
+    ac = _get_access_control_db()
+    user = ac.authenticate_user(payload.email, payload.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    passkeys = ac.list_passkeys(int(user["id"]))
+    if passkeys:
+        options = generate_authentication_options(
+            rp_id=_v2_rp_id(request),
+            allow_credentials=[
+                PublicKeyCredentialDescriptor(id=base64url_to_bytes(passkey["credential_id"]))
+                for passkey in passkeys
+            ],
+            user_verification=UserVerificationRequirement.REQUIRED,
+        )
+        challenge_id = ac.create_challenge(int(user["id"]), bytes_to_base64url(options.challenge), "login")
+        return {
+            "requires_passkey": True,
+            "challenge_id": challenge_id,
+            "publicKey": _v2_public_key_options(options),
+            "user": {"id": user["id"], "name": user["name"], "email": user["email"]},
+        }
+    token = ac.create_session(int(user["id"]))
+    _audit("v2.auth.login", {"user_id": user["id"], "method": "password"}, actor=user["email"])
+    return _v2_auth_response(user, token)
+
+
+@app.post("/api/v2/auth/setup-password")
+def v2_auth_setup_password(payload: V2LoginRequest, request: Request) -> dict[str, Any]:
+    ac = _get_access_control_db()
+    user = ac.get_user_by_email(payload.email.strip().lower())
+    if not user:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    if user.get("has_password"):
+        raise HTTPException(status_code=409, detail="Password is already set for this account.")
+    if user.get("status") != "active":
+        raise HTTPException(status_code=403, detail="Account is disabled.")
+    try:
+        user = ac.set_user_password(int(user["id"]), payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    token = ac.create_session(int(user["id"]))
+    _audit("v2.auth.initial_password_set", {"user_id": user["id"]}, actor=user["email"])
+    return _v2_auth_response(user, token)
+
+
+@app.post("/api/v2/auth/login/passkey/options")
+def v2_auth_login_passkey_options(payload: V2PasskeyLoginStart, request: Request) -> dict[str, Any]:
+    ac = _get_access_control_db()
+    user = ac.get_user_by_email(payload.email.strip().lower())
+    if not user or user.get("status") != "active":
+        raise HTTPException(status_code=401, detail="Account not found or disabled.")
+    passkeys = ac.list_passkeys(int(user["id"]))
+    if not passkeys:
+        raise HTTPException(status_code=404, detail="No fingerprint, Face ID, or passkey is registered for this account yet.")
+    options = generate_authentication_options(
+        rp_id=_v2_rp_id(request),
+        allow_credentials=[
+            PublicKeyCredentialDescriptor(id=base64url_to_bytes(passkey["credential_id"]))
+            for passkey in passkeys
+        ],
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    challenge_id = ac.create_challenge(int(user["id"]), bytes_to_base64url(options.challenge), "login")
+    return {
+        "requires_passkey": True,
+        "challenge_id": challenge_id,
+        "publicKey": _v2_public_key_options(options),
+        "user": {"id": user["id"], "name": user["name"], "email": user["email"]},
+    }
+
+
+@app.post("/api/v2/auth/login/passkey")
+def v2_auth_login_passkey(payload: V2PasskeyLoginFinish, request: Request) -> dict[str, Any]:
+    ac = _get_access_control_db()
+    user = ac.get_user_by_email(payload.email.strip().lower())
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid login.")
+    credential_id = str(payload.credential.get("id") or payload.credential.get("rawId") or "")
+    passkey = ac.get_passkey(credential_id)
+    if not passkey or int(passkey["user_id"]) != int(user["id"]):
+        raise HTTPException(status_code=401, detail="Unknown passkey.")
+    challenge = ac.consume_challenge(int(user["id"]), payload.challenge_id, "login")
+    if not challenge:
+        raise HTTPException(status_code=401, detail="Passkey challenge expired.")
+    try:
+        verified = verify_authentication_response(
+            credential=payload.credential,
+            expected_challenge=base64url_to_bytes(challenge),
+            expected_rp_id=_v2_rp_id(request),
+            expected_origin=_v2_expected_origins(request),
+            credential_public_key=base64url_to_bytes(passkey["public_key"]),
+            credential_current_sign_count=int(passkey["sign_count"] or 0),
+            require_user_verification=True,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Passkey verification failed: {exc}") from exc
+    ac.update_passkey_sign_count(credential_id, int(verified.new_sign_count))
+    token = ac.create_session(int(user["id"]))
+    _audit("v2.auth.login", {"user_id": user["id"], "method": "password+passkey"}, actor=user["email"])
+    return _v2_auth_response(user, token)
+
+
+@app.get("/api/v2/auth/me")
+def v2_auth_me(request: Request) -> dict[str, Any]:
+    user = _v2_session_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required.")
+    dashboard = _get_access_control_db().resolve_dashboard(user_id=int(user["id"]))
+    return {"user": dashboard["user"], "modules": dashboard["modules"]}
+
+
+@app.post("/api/v2/auth/passkeys/register/options")
+def v2_passkey_register_options(payload: V2PasskeyRegisterStart, request: Request) -> dict[str, Any]:
+    user = _v2_session_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required.")
+    ac = _get_access_control_db()
+    existing = ac.list_passkeys(int(user["id"]))
+    options = generate_registration_options(
+        rp_id=_v2_rp_id(request),
+        rp_name=os.getenv("WEBAUTHN_RP_NAME", "AI Vision"),
+        user_id=str(user["id"]).encode("utf-8"),
+        user_name=user["email"],
+        user_display_name=user["name"],
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            authenticator_attachment=AuthenticatorAttachment.PLATFORM,
+            resident_key=ResidentKeyRequirement.REQUIRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        ),
+        exclude_credentials=[
+            PublicKeyCredentialDescriptor(id=base64url_to_bytes(passkey["credential_id"]))
+            for passkey in existing
+        ],
+    )
+    challenge_id = ac.create_challenge(int(user["id"]), bytes_to_base64url(options.challenge), "register")
+    return {"challenge_id": challenge_id, "publicKey": _v2_public_key_options(options)}
+
+
+@app.post("/api/v2/auth/passkeys/register/verify")
+def v2_passkey_register_verify(payload: V2PasskeyRegisterFinish, request: Request) -> dict[str, Any]:
+    user = _v2_session_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required.")
+    ac = _get_access_control_db()
+    challenge = ac.consume_challenge(int(user["id"]), payload.challenge_id, "register")
+    if not challenge:
+        raise HTTPException(status_code=401, detail="Passkey challenge expired.")
+    try:
+        verified = verify_registration_response(
+            credential=payload.credential,
+            expected_challenge=base64url_to_bytes(challenge),
+            expected_rp_id=_v2_rp_id(request),
+            expected_origin=_v2_expected_origins(request),
+            require_user_verification=True,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Passkey registration failed: {exc}") from exc
+    passkey = ac.add_passkey(
+        int(user["id"]),
+        bytes_to_base64url(verified.credential_id),
+        bytes_to_base64url(verified.credential_public_key),
+        int(verified.sign_count),
+        payload.name or "Fingerprint / passkey",
+    )
+    _audit("v2.auth.passkey_registered", {"user_id": user["id"], "credential_id": passkey["credential_id"]}, actor=user["email"])
+    return {"ok": True, "passkey": {"name": passkey["name"]}}
+
+
 @app.get("/api/v2/me/dashboard")
 def v2_me_dashboard(request: Request) -> dict[str, Any]:
     return _v2_dashboard(request)
@@ -1435,6 +1709,32 @@ def v2_admin_create_user(payload: V2UserCreate, request: Request) -> dict[str, A
     _v2_require_permission(request, "user.create")
     user = _get_access_control_db().create_user(payload.name, payload.email.strip().lower())
     _audit("v2.user.created", {"user": user}, actor=_v2_user_email(request))
+    return user
+
+
+@app.post("/api/v2/admin/users/{user_id}/password")
+def v2_admin_set_user_password(user_id: int, payload: V2PasswordSet, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.edit")
+    try:
+        user = _get_access_control_db().set_user_password(user_id, payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _audit("v2.user.password_set", {"user_id": user_id}, actor=_v2_user_email(request))
+    return user
+
+
+@app.post("/api/v2/admin/users/{user_id}/auth-preference")
+def v2_admin_set_user_auth_preference(user_id: int, payload: V2AuthPreferenceSet, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.edit")
+    try:
+        user = _get_access_control_db().set_user_auth_preference(user_id, payload.preferred_auth_method)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _audit("v2.user.auth_preference_set", {"user_id": user_id, "preferred_auth_method": payload.preferred_auth_method}, actor=_v2_user_email(request))
     return user
 
 

@@ -4,6 +4,7 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 psycopg[binary]>=3.2.0
+webauthn>=3.0.0
 
 # AI model runtime. Required when the cloud backend runs real warehouse
 # detection instead of the deterministic demo detector.

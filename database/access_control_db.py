@@ -7,7 +7,10 @@ refer to those existing resources by id.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 from typing import Any
 
 from database.db import AppDB, id_column_sql
@@ -372,8 +375,57 @@ class AccessControlDB:
                     name TEXT NOT NULL,
                     email TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL DEFAULT 'active',
+                    preferred_auth_method TEXT NOT NULL DEFAULT 'biometric_first',
+                    password_hash TEXT,
+                    password_updated_at {timestamp_type},
+                    last_login_at {timestamp_type},
                     created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
                     updated_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            columns = self.db.table_columns(conn, "ac_users")
+            if "password_hash" not in columns:
+                conn.execute("ALTER TABLE ac_users ADD COLUMN password_hash TEXT")
+            if "preferred_auth_method" not in columns:
+                conn.execute("ALTER TABLE ac_users ADD COLUMN preferred_auth_method TEXT NOT NULL DEFAULT 'biometric_first'")
+            if "password_updated_at" not in columns:
+                conn.execute(f"ALTER TABLE ac_users ADD COLUMN password_updated_at {timestamp_type}")
+            if "last_login_at" not in columns:
+                conn.execute(f"ALTER TABLE ac_users ADD COLUMN last_login_at {timestamp_type}")
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS ac_sessions (
+                    id {id_column_sql(self.db)},
+                    user_id INTEGER NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS ac_auth_challenges (
+                    id {id_column_sql(self.db)},
+                    user_id INTEGER NOT NULL,
+                    challenge TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS ac_webauthn_credentials (
+                    id {id_column_sql(self.db)},
+                    user_id INTEGER NOT NULL,
+                    credential_id TEXT NOT NULL UNIQUE,
+                    public_key TEXT NOT NULL,
+                    sign_count INTEGER NOT NULL DEFAULT 0,
+                    name TEXT,
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at {timestamp_type}
                 )
                 """
             )
@@ -644,7 +696,34 @@ class AccessControlDB:
         for key in ("is_active",):
             if key in data:
                 data[key] = bool(data[key])
+        if "password_hash" in data:
+            data["has_password"] = bool(data.get("password_hash"))
+            data.pop("password_hash", None)
         return data
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        iterations = 260_000
+        salt = secrets.token_hex(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations).hex()
+        return f"pbkdf2_sha256${iterations}${salt}${digest}"
+
+    @staticmethod
+    def _verify_password_hash(password: str, password_hash: str | None) -> bool:
+        if not password_hash:
+            return False
+        try:
+            scheme, iterations_raw, salt, expected = password_hash.split("$", 3)
+            if scheme != "pbkdf2_sha256":
+                return False
+            digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), int(iterations_raw)).hex()
+            return hmac.compare_digest(digest, expected)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _hash_session_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     def list_users(self) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
@@ -664,6 +743,11 @@ class AccessControlDB:
                     (user["id"],),
                 ).fetchall()
                 user["roles"] = [row["code"] for row in role_rows]
+                count_row = conn.execute(
+                    self._sql("SELECT COUNT(*) AS count FROM ac_webauthn_credentials WHERE user_id = ?"),
+                    (user["id"],),
+                ).fetchone()
+                user["passkey_count"] = int(count_row["count"] or 0)
         return users
 
     def create_user(self, name: str, email: str) -> dict[str, Any]:
@@ -680,6 +764,155 @@ class AccessControlDB:
         with self.db.connect() as conn:
             row = conn.execute(self._sql("SELECT * FROM ac_users WHERE email = ?"), (email,)).fetchone()
         return self._row(row) if row else None
+
+    def set_user_password(self, user_id: int, password: str) -> dict[str, Any] | None:
+        if len(password) < 8:
+            raise ValueError("Password must be at least 8 characters.")
+        password_hash = self._hash_password(password)
+        with self.db.connect() as conn:
+            conn.execute(
+                self._sql("UPDATE ac_users SET password_hash = ?, password_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"),
+                (password_hash, user_id),
+            )
+            conn.execute(self._sql("DELETE FROM ac_sessions WHERE user_id = ?"), (user_id,))
+        return self.get_user(user_id)
+
+    def set_user_auth_preference(self, user_id: int, preferred_auth_method: str) -> dict[str, Any] | None:
+        allowed = {"biometric_first", "password_first", "password_and_biometric"}
+        if preferred_auth_method not in allowed:
+            raise ValueError(f"Preferred auth method must be one of: {', '.join(sorted(allowed))}.")
+        with self.db.connect() as conn:
+            conn.execute(
+                self._sql("UPDATE ac_users SET preferred_auth_method = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"),
+                (preferred_auth_method, user_id),
+            )
+        return self.get_user(user_id)
+
+    def authenticate_user(self, email: str, password: str) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            row = conn.execute(self._sql("SELECT * FROM ac_users WHERE email = ?"), (email.strip().lower(),)).fetchone()
+            if not row:
+                return None
+            raw_user = dict(row)
+            if raw_user.get("status") != "active":
+                return None
+            if not self._verify_password_hash(password, raw_user.get("password_hash")):
+                return None
+            conn.execute(self._sql("UPDATE ac_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?"), (raw_user["id"],))
+            return self._row(raw_user)
+
+    def create_session(self, user_id: int) -> dict[str, Any]:
+        token = secrets.token_urlsafe(32)
+        token_hash = self._hash_session_token(token)
+        with self.db.connect() as conn:
+            self._insert_returning_id(
+                conn,
+                "INSERT INTO ac_sessions (user_id, token_hash) VALUES (?, ?)",
+                "INSERT INTO ac_sessions (user_id, token_hash) VALUES (%s, %s) RETURNING id",
+                (user_id, token_hash),
+            )
+        return {"token": token, "token_type": "bearer"}
+
+    def get_user_by_session_token(self, token: str) -> dict[str, Any] | None:
+        if not token:
+            return None
+        token_hash = self._hash_session_token(token)
+        with self.db.connect() as conn:
+            row = conn.execute(
+                self._sql(
+                    """
+                    SELECT u.*
+                    FROM ac_sessions s
+                    INNER JOIN ac_users u ON u.id = s.user_id
+                    WHERE s.token_hash = ?
+                    """
+                ),
+                (token_hash,),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(self._sql("UPDATE ac_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?"), (token_hash,))
+        user = self._row(row)
+        return user if user.get("status") == "active" else None
+
+    def create_challenge(self, user_id: int, challenge: str, purpose: str) -> int:
+        with self.db.connect() as conn:
+            conn.execute(self._sql("DELETE FROM ac_auth_challenges WHERE user_id = ? AND purpose = ?"), (user_id, purpose))
+            return self._insert_returning_id(
+                conn,
+                "INSERT INTO ac_auth_challenges (user_id, challenge, purpose) VALUES (?, ?, ?)",
+                "INSERT INTO ac_auth_challenges (user_id, challenge, purpose) VALUES (%s, %s, %s) RETURNING id",
+                (user_id, challenge, purpose),
+            )
+
+    def consume_challenge(self, user_id: int, challenge_id: int, purpose: str) -> str | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                self._sql("SELECT challenge FROM ac_auth_challenges WHERE id = ? AND user_id = ? AND purpose = ?"),
+                (challenge_id, user_id, purpose),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(self._sql("DELETE FROM ac_auth_challenges WHERE id = ?"), (challenge_id,))
+        return str(row["challenge"])
+
+    def add_passkey(self, user_id: int, credential_id: str, public_key: str, sign_count: int, name: str | None = None) -> dict[str, Any]:
+        with self.db.connect() as conn:
+            if self.db.is_postgres:
+                conn.execute(
+                    """
+                    INSERT INTO ac_webauthn_credentials (user_id, credential_id, public_key, sign_count, name)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (credential_id) DO UPDATE SET
+                        public_key = EXCLUDED.public_key,
+                        sign_count = EXCLUDED.sign_count,
+                        name = EXCLUDED.name
+                    """,
+                    (user_id, credential_id, public_key, sign_count, name),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO ac_webauthn_credentials (user_id, credential_id, public_key, sign_count, name)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(credential_id) DO UPDATE SET
+                        public_key = excluded.public_key,
+                        sign_count = excluded.sign_count,
+                        name = excluded.name
+                    """,
+                    (user_id, credential_id, public_key, sign_count, name),
+                )
+        return {"credential_id": credential_id, "name": name or "Passkey", "sign_count": sign_count}
+
+    def list_passkeys(self, user_id: int) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                self._sql(
+                    """
+                    SELECT id, user_id, credential_id, public_key, sign_count, name, created_at, last_used_at
+                    FROM ac_webauthn_credentials
+                    WHERE user_id = ?
+                    ORDER BY id DESC
+                    """
+                ),
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_passkey(self, credential_id: str) -> dict[str, Any] | None:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                self._sql("SELECT * FROM ac_webauthn_credentials WHERE credential_id = ?"),
+                (credential_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_passkey_sign_count(self, credential_id: str, sign_count: int) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                self._sql("UPDATE ac_webauthn_credentials SET sign_count = ?, last_used_at = CURRENT_TIMESTAMP WHERE credential_id = ?"),
+                (sign_count, credential_id),
+            )
 
     def set_user_status(self, user_id: int, status: str) -> dict[str, Any] | None:
         with self.db.connect() as conn:
