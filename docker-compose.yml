@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-vision-backend:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: "8080"
+      AUTO_START_DETECTION: "${AUTO_START_DETECTION:-true}"
+      DETECTION_WATCHDOG_ENABLED: "${DETECTION_WATCHDOG_ENABLED:-true}"
+    ports:
+      - "${AI_VISION_PORT:-8080}:8080"
+    volumes:
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./snapshots:/app/snapshots
+      - ./database:/app/database
+      - ./config:/app/config
+
+  # Optional: enable with `docker compose --profile worker up -d --build ai-worker`
+  # only if you want a separate detector process instead of backend autostart.
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-vision-backend:local
+    restart: unless-stopped
+    profiles:
+      - worker
+    env_file:
+      - .env
+    command: ["python", "main.py", "--config", "config/config.yaml", "--no-display"]
+    volumes:
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./snapshots:/app/snapshots
+      - ./database:/app/database
+      - ./config:/app/config
+

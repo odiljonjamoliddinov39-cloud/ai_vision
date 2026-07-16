@@ -1,9 +1,6 @@
 name: Deploy backend to DigitalOcean
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -30,12 +27,12 @@ jobs:
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
-      - name: Trigger DigitalOcean deployment
+      - name: Trigger DigitalOcean App Platform deployment
         run: |
           set -euo pipefail
 
           deployment_id="$(
-            doctl apps create-deployment "$DIGITALOCEAN_APP_ID" --force-rebuild --format ID --no-header \
+            doctl apps create-deployment "$DIGITALOCEAN_APP_ID" --format ID --no-header \
               | grep -Eo '[0-9a-f-]{36}' \
               | head -1
           )"

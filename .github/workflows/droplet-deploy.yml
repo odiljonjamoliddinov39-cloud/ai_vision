@@ -1,0 +1,50 @@
+name: Deploy to DigitalOcean Droplet
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: SSH deploy with Docker cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Droplet deploy skipped: set DO_HOST, DO_USER, and DO_SSH_KEY repository secrets."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            if [ ! -d /opt/ai_vision/.git ]; then
+              echo "/opt/ai_vision is not initialized. Clone the repo on the Droplet once first."
+              exit 1
+            fi
+            chmod +x /opt/ai_vision/scripts/deploy.sh
+            /opt/ai_vision/scripts/deploy.sh
