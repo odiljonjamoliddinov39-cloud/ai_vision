@@ -7,6 +7,7 @@ const els = {
   registerFromLoginBtn: document.querySelector("#registerFromLoginBtn"),
   setupPasswordBtn: document.querySelector("#setupPasswordBtn"),
   loginHint: document.querySelector("#loginHint"),
+  menuBtn: document.querySelector("#menuBtn"),
   userLine: document.querySelector("#userLine"),
   moduleNav: document.querySelector("#moduleNav"),
   pageTitle: document.querySelector("#pageTitle"),
@@ -111,6 +112,7 @@ async function loginWithPassword(event) {
   }
   saveAuth(result);
   await load();
+  await promptForDeviceRegistration(result);
   toast("Logged in");
 }
 async function loginWithBiometric() {
@@ -207,6 +209,8 @@ els.moduleNav.addEventListener("click", async (event) => {
   if (!button) return;
   activeModule = button.dataset.module;
   await renderModule(activeModule);
+  document.body.classList.remove("sidebar-open");
+  els.menuBtn?.setAttribute("aria-expanded", "false");
 });
 els.refreshBtn.addEventListener("click", () => load().then(() => toast("Refreshed")).catch((e) => toast(e.message)));
 els.loginForm.addEventListener("submit", (event) => loginWithPassword(event).catch((e) => {
@@ -229,6 +233,7 @@ async function setupFirstPassword() {
   const result = await apiPost("/api/v2/auth/setup-password", { email: els.loginEmail.value, password: els.loginPassword.value });
   saveAuth(result);
   await load();
+  await promptForDeviceRegistration(result);
   toast("First password set");
 }
 els.loginEmail.value = USER_EMAIL;
@@ -266,4 +271,29 @@ async function loginAndRegisterDevice() {
   await registerPasskey();
   await load();
   toast("Device registered");
+}
+els.menuBtn?.addEventListener("click", () => {
+  const open = !document.body.classList.contains("sidebar-open");
+  document.body.classList.toggle("sidebar-open", open);
+  els.menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    document.body.classList.remove("sidebar-open");
+    els.menuBtn?.setAttribute("aria-expanded", "false");
+  }
+});
+async function promptForDeviceRegistration(result) {
+  const needsPasskey = Number(result?.user?.passkey_count || 0) === 0;
+  if (!needsPasskey) return;
+  if (!window.PublicKeyCredential || !window.isSecureContext) {
+    els.loginHint.textContent = biometricMessage("Register this device from an HTTPS dashboard page.");
+    return;
+  }
+  els.loginHint.textContent = "Device verification is opening now. Approve Fingerprint, Face ID, or your device passkey.";
+  try {
+    await registerPasskey();
+  } catch (error) {
+    els.loginHint.textContent = `Device registration was not completed: ${error.message}`;
+  }
 }

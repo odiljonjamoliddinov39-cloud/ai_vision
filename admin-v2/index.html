@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI Vision Head Admin V2</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/admin-v2/assets/styles.css" />
   </head>
   <body>
@@ -38,14 +39,14 @@
             <small>Enterprise control center</small>
           </div>
         </div>
-        <nav>
-          <a href="#overview">Overview</a>
-          <a href="#users">Users</a>
-          <a href="#roles">Roles</a>
-          <a href="#modules">Modules</a>
-          <a href="#builder">Dashboard Builder</a>
-          <a href="#scopes">Scopes</a>
-          <a href="#audit">Audit</a>
+        <nav aria-label="Head admin pages">
+          <a href="#overview" data-page-link="overview">Overview</a>
+          <a href="#users" data-page-link="users">Users</a>
+          <a href="#roles" data-page-link="roles">Roles</a>
+          <a href="#modules" data-page-link="modules">Modules</a>
+          <a href="#builder" data-page-link="builder">Dashboard Builder</a>
+          <a href="#scopes" data-page-link="scopes">Scopes</a>
+          <a href="#audit" data-page-link="audit">Audit</a>
         </nav>
         <div class="sidebar-card">
           <span>Secure workspace</span>
@@ -59,19 +60,20 @@
         <header class="hero">
           <div>
             <p class="eyebrow">Enterprise control plane</p>
-            <h1>Head Admin Dashboard</h1>
-            <p>Build exactly what each user sees. New users start blank until you assign a role or modules.</p>
+            <h1 id="pageTitle">Head Admin Dashboard</h1>
+            <p id="pageSubtitle">Build exactly what each user sees. New users start blank until you assign a role or modules.</p>
           </div>
           <div class="hero-actions">
+            <button id="menuBtn" class="ghost menu-button" type="button" aria-expanded="false">Menu</button>
             <span class="status-pill">Production ready</span>
             <button id="refreshBtn" type="button">Refresh</button>
           </div>
         </header>
 
-        <section id="overview" class="stats"></section>
+        <section id="overview" class="stats dashboard-page" data-page="overview"></section>
 
         <section class="grid">
-          <article id="users" class="panel wide">
+          <article id="users" class="panel wide dashboard-page" data-page="users">
             <div class="panel-head">
               <div>
                 <p class="section-kicker">Accounts</p>
@@ -99,7 +101,7 @@
             </div>
           </article>
 
-          <article id="builder" class="panel">
+          <article id="builder" class="panel dashboard-page" data-page="builder">
             <div class="panel-head">
               <div>
                 <p class="section-kicker">Access</p>
@@ -132,7 +134,7 @@
             </div>
           </article>
 
-          <article id="scopes" class="panel">
+          <article id="scopes" class="panel dashboard-page" data-page="scopes">
             <div class="panel-head">
               <div>
                 <p class="section-kicker">Scope</p>
@@ -154,7 +156,7 @@
             <button id="assignScopeBtn" class="primary" type="button">Assign scope</button>
           </article>
 
-          <article id="roles" class="panel">
+          <article id="roles" class="panel dashboard-page" data-page="roles">
             <div class="panel-head">
               <div>
                 <p class="section-kicker">Profiles</p>
@@ -165,7 +167,7 @@
             <ul id="rolesList" class="pill-list"></ul>
           </article>
 
-          <article id="modules" class="panel">
+          <article id="modules" class="panel dashboard-page" data-page="modules">
             <div class="panel-head">
               <div>
                 <p class="section-kicker">Navigation</p>
@@ -176,7 +178,7 @@
             <ul id="modulesList" class="module-list"></ul>
           </article>
 
-          <article id="audit" class="panel wide">
+          <article id="audit" class="panel wide dashboard-page" data-page="audit">
             <div class="panel-head">
               <div>
                 <p class="section-kicker">Security</p>

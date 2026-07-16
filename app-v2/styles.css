@@ -868,3 +868,155 @@ nav button small {
     grid-template-columns: 1fr;
   }
 }
+
+/* Production responsive shell override */
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.shell {
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+  grid-template-columns: 248px minmax(0, 1fr);
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.main {
+  height: 100vh;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 28px;
+}
+
+.hero {
+  display: flex;
+  gap: 18px;
+  min-height: auto;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hero h1 {
+  font-size: clamp(1.8rem, 3vw, 3rem);
+  line-height: 1.04;
+}
+
+.hero-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.menu-button {
+  display: none;
+}
+
+#moduleNav button {
+  cursor: pointer;
+}
+
+#moduleView {
+  overflow: hidden;
+}
+
+.panel.hidden,
+.empty.hidden {
+  display: none !important;
+}
+
+@media (max-width: 1180px) {
+  .shell {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .shell {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(84vw, 300px);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+    box-shadow: 18px 0 42px rgba(15, 23, 42, 0.24);
+  }
+
+  body.sidebar-open .sidebar {
+    transform: translateX(0);
+  }
+
+  body.sidebar-open::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: rgba(15, 23, 42, 0.42);
+  }
+
+  .main {
+    height: 100vh;
+    padding: 16px;
+  }
+
+  .hero {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 18px;
+  }
+
+  .hero-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .menu-button {
+    display: inline-flex;
+  }
+
+  .welcome-panel,
+  .donut-card {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .line-chart {
+    height: 160px;
+  }
+}
+
+@media (max-width: 560px) {
+  .main {
+    padding: 12px;
+  }
+
+  .hero h1 {
+    font-size: 2rem;
+  }
+
+  .panel,
+  .empty,
+  .metric-card,
+  .chart-card,
+  .welcome-panel {
+    border-radius: 14px;
+    padding: 14px;
+  }
+}

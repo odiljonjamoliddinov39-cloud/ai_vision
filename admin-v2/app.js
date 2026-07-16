@@ -7,6 +7,12 @@ const els = {
   registerFromLoginBtn: document.querySelector("#registerFromLoginBtn"),
   setupPasswordBtn: document.querySelector("#setupPasswordBtn"),
   loginHint: document.querySelector("#loginHint"),
+  menuBtn: document.querySelector("#menuBtn"),
+  pageTitle: document.querySelector("#pageTitle"),
+  pageSubtitle: document.querySelector("#pageSubtitle"),
+  navLinks: document.querySelectorAll("[data-page-link]"),
+  dashboardPages: document.querySelectorAll("[data-page]"),
+  grid: document.querySelector(".grid"),
   refreshBtn: document.querySelector("#refreshBtn"),
   stats: document.querySelector("#overview"),
   userForm: document.querySelector("#userForm"),
@@ -43,6 +49,56 @@ const API_BASE = (() => {
 let ADMIN_EMAIL = localStorage.getItem("ai_v2_admin_email") || "admin@ai-vision.local";
 let AUTH_TOKEN = localStorage.getItem("ai_v2_admin_token") || "";
 let state = { users: [], roles: [], permissions: [], modules: [], overview: null };
+const pages = {
+  overview: {
+    title: "Head Admin Dashboard",
+    subtitle: "Executive overview of companies, sites, cameras, AI status, and platform readiness.",
+  },
+  users: {
+    title: "Users",
+    subtitle: "Create accounts, verify status, open each assigned workspace, and manage activation.",
+  },
+  roles: {
+    title: "Roles",
+    subtitle: "Production role profiles used to control access across the platform.",
+  },
+  modules: {
+    title: "Modules",
+    subtitle: "Dashboard modules that can be allowed or hidden per user and role.",
+  },
+  builder: {
+    title: "Dashboard Builder",
+    subtitle: "Assign roles, modules, permissions, passwords, scopes, and biometric login rules.",
+  },
+  scopes: {
+    title: "Scopes",
+    subtitle: "Limit access by company, factory, warehouse, production line, zone, or camera.",
+  },
+  audit: {
+    title: "Audit Logs",
+    subtitle: "Review the latest sensitive changes and security events.",
+  },
+};
+
+function setPage(page = "overview", pushHash = true) {
+  const nextPage = pages[page] ? page : "overview";
+  els.pageTitle.textContent = pages[nextPage].title;
+  els.pageSubtitle.textContent = pages[nextPage].subtitle;
+  els.navLinks.forEach((link) => {
+    const active = link.dataset.pageLink === nextPage;
+    link.classList.toggle("active", active);
+    link.setAttribute("aria-current", active ? "page" : "false");
+  });
+  els.dashboardPages.forEach((panel) => {
+    const active = panel.dataset.page === nextPage;
+    panel.hidden = !active;
+    panel.classList.toggle("active-page", active);
+  });
+  els.grid.hidden = nextPage === "overview";
+  document.body.classList.remove("sidebar-open");
+  els.menuBtn?.setAttribute("aria-expanded", "false");
+  if (pushHash && location.hash.replace("#", "") !== nextPage) history.replaceState(null, "", `#${nextPage}`);
+}
 
 const esc = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 const toast = (message) => {
@@ -101,9 +157,33 @@ async function load() {
 
 function render() {
   const totals = state.overview?.totals || {};
-  els.stats.innerHTML = Object.entries(totals)
+  const kpis = Object.entries(totals)
     .map(([key, value]) => `<article class="stat-card"><span>${esc(key.replaceAll("_", " "))}</span><strong>${esc(value)}</strong><small>Current platform metric</small></article>`)
     .join("");
+  const recent = (state.overview?.recent_activity || []).slice(0, 4);
+  els.stats.innerHTML = `${kpis}
+    <article class="overview-panel">
+      <div>
+        <span>Platform health</span>
+        <strong>Operational</strong>
+        <small>RBAC, passkeys, modules, scopes, and audit APIs are available.</small>
+      </div>
+      <div class="health-bars">
+        <i style="--value:92%"><b>API</b></i>
+        <i style="--value:84%"><b>Security</b></i>
+        <i style="--value:78%"><b>AI</b></i>
+      </div>
+    </article>
+    <article class="overview-panel">
+      <div>
+        <span>Recent security activity</span>
+        <strong>${esc(recent.length || 0)} events</strong>
+        <small>Latest protected admin actions.</small>
+      </div>
+      <ul class="mini-activity">
+        ${recent.map((item) => `<li>${esc(item.action || item.event || "Activity")}<small>${esc(item.actor_email || item.user_email || "system")}</small></li>`).join("") || "<li>No audit events yet<small>System ready</small></li>"}
+      </ul>
+    </article>`;
   els.usersTable.innerHTML = state.users
     .map((user) => `<tr>
       <td><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></td>
@@ -133,6 +213,25 @@ function render() {
     .join("");
   els.auditLog.textContent = JSON.stringify(state.overview?.recent_activity || [], null, 2);
 }
+
+els.navLinks.forEach((link) => {
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    setPage(link.dataset.pageLink);
+  });
+});
+window.addEventListener("hashchange", () => setPage(location.hash.replace("#", ""), false));
+els.menuBtn?.addEventListener("click", () => {
+  const open = !document.body.classList.contains("sidebar-open");
+  document.body.classList.toggle("sidebar-open", open);
+  els.menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    document.body.classList.remove("sidebar-open");
+    els.menuBtn?.setAttribute("aria-expanded", "false");
+  }
+});
 
 const selectedUserId = () => Number(els.selectedUser.value);
 const selectedUser = () => state.users.find((user) => Number(user.id) === selectedUserId());
@@ -216,6 +315,7 @@ async function loginWithPassword(event) {
   }
   saveAuth(result);
   await load();
+  await promptForDeviceRegistration(result);
   toast("Logged in");
 }
 async function loginWithBiometric() {
@@ -255,9 +355,11 @@ async function setupFirstPassword() {
   const result = await api("/api/v2/auth/setup-password", { method: "POST", body: JSON.stringify({ email: els.loginEmail.value, password: els.loginPassword.value }) });
   saveAuth(result);
   await load();
+  await promptForDeviceRegistration(result);
   toast("First password set");
 }
 els.loginEmail.value = ADMIN_EMAIL;
+setPage(location.hash.replace("#", "") || "overview", false);
 if (AUTH_TOKEN) {
   els.loginScreen.classList.add("hidden");
   load().catch((e) => {
@@ -283,4 +385,18 @@ async function loginAndRegisterDevice() {
   await registerPasskey();
   await load();
   toast("Device registered");
+}
+async function promptForDeviceRegistration(result) {
+  const needsPasskey = Number(result?.user?.passkey_count || 0) === 0;
+  if (!needsPasskey) return;
+  if (!window.PublicKeyCredential || !window.isSecureContext) {
+    els.loginHint.textContent = biometricMessage("Register this device from an HTTPS dashboard page.");
+    return;
+  }
+  els.loginHint.textContent = "Device verification is opening now. Approve Fingerprint, Face ID, or your device passkey.";
+  try {
+    await registerPasskey();
+  } catch (error) {
+    els.loginHint.textContent = `Device registration was not completed: ${error.message}`;
+  }
 }
