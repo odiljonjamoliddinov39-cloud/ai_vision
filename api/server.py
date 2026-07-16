@@ -43,6 +43,7 @@ SNAPSHOT_DIR = ROOT / "snapshots"
 INVENTORY_PATH = ROOT / "logs" / "inventory.json"
 INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
 DASHBOARD_DIR = ROOT / "dashboard"
+DASHBOARD_V2_DIR = ROOT / "dashboard-v2"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
@@ -83,6 +84,142 @@ _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
 _manual_stop_requested = False
 _watchdog_last_start_attempt = 0.0
+
+ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "super_admin": {
+        "view_dashboard",
+        "view_organizations",
+        "manage_organizations",
+        "view_users",
+        "manage_users",
+        "view_permissions",
+        "manage_permissions",
+        "view_controllers",
+        "configure_cameras",
+        "view_cameras",
+        "view_live_monitoring",
+        "view_products",
+        "manage_products",
+        "configure_ai",
+        "view_counts",
+        "correct_counts",
+        "view_alerts",
+        "manage_alerts",
+        "view_analytics",
+        "view_reports",
+        "export_reports",
+        "view_system_health",
+        "configure_system",
+        "view_audit_logs",
+        "manage_integrations",
+        "view_settings",
+    },
+    "company_admin": {
+        "view_dashboard",
+        "view_users",
+        "manage_users",
+        "view_permissions",
+        "view_controllers",
+        "configure_cameras",
+        "view_cameras",
+        "view_live_monitoring",
+        "view_products",
+        "manage_products",
+        "view_counts",
+        "correct_counts",
+        "view_alerts",
+        "manage_alerts",
+        "view_analytics",
+        "view_reports",
+        "export_reports",
+        "view_system_health",
+        "view_audit_logs",
+        "view_settings",
+    },
+    "factory_manager": {
+        "view_dashboard",
+        "view_cameras",
+        "view_live_monitoring",
+        "view_products",
+        "view_counts",
+        "correct_counts",
+        "view_alerts",
+        "view_analytics",
+        "view_reports",
+        "export_reports",
+        "view_system_health",
+    },
+    "warehouse_manager": {
+        "view_dashboard",
+        "view_cameras",
+        "view_live_monitoring",
+        "view_products",
+        "view_counts",
+        "correct_counts",
+        "view_alerts",
+        "view_reports",
+        "export_reports",
+    },
+    "operator": {
+        "view_dashboard",
+        "view_cameras",
+        "view_live_monitoring",
+        "view_counts",
+        "correct_counts",
+        "view_alerts",
+        "view_reports",
+    },
+    "viewer": {
+        "view_dashboard",
+        "view_cameras",
+        "view_live_monitoring",
+        "view_counts",
+        "view_alerts",
+        "view_reports",
+    },
+    "technician": {
+        "view_dashboard",
+        "view_controllers",
+        "configure_cameras",
+        "view_cameras",
+        "view_live_monitoring",
+        "view_system_health",
+        "view_settings",
+    },
+}
+
+DASHBOARD_V2_MODULES: dict[str, list[dict[str, str]]] = {
+    "head": [
+        {"id": "overview", "label": "Dashboard Overview", "permission": "view_dashboard"},
+        {"id": "organizations", "label": "Organizations", "permission": "view_organizations"},
+        {"id": "users", "label": "Users & Roles", "permission": "view_users"},
+        {"id": "permissions", "label": "Permissions", "permission": "view_permissions"},
+        {"id": "controllers", "label": "Controllers / NVR", "permission": "view_controllers"},
+        {"id": "cameras", "label": "Cameras", "permission": "view_cameras"},
+        {"id": "live", "label": "Live Monitoring", "permission": "view_live_monitoring"},
+        {"id": "products", "label": "Products", "permission": "view_products"},
+        {"id": "ai", "label": "AI Management", "permission": "configure_ai"},
+        {"id": "counting", "label": "Counting Management", "permission": "view_counts"},
+        {"id": "alerts", "label": "Alerts Center", "permission": "view_alerts"},
+        {"id": "analytics", "label": "Analytics", "permission": "view_analytics"},
+        {"id": "reports", "label": "Reports", "permission": "view_reports"},
+        {"id": "health", "label": "System Health", "permission": "view_system_health"},
+        {"id": "audit", "label": "Audit Logs", "permission": "view_audit_logs"},
+        {"id": "integrations", "label": "Integrations", "permission": "manage_integrations"},
+        {"id": "settings", "label": "Settings", "permission": "view_settings"},
+    ],
+    "user": [
+        {"id": "home", "label": "Home", "permission": "view_dashboard"},
+        {"id": "live", "label": "Live Monitoring", "permission": "view_live_monitoring"},
+        {"id": "counting", "label": "Counting", "permission": "view_counts"},
+        {"id": "shift", "label": "Current Shift", "permission": "view_counts"},
+        {"id": "verification", "label": "Verification Tasks", "permission": "correct_counts"},
+        {"id": "alerts", "label": "Alerts", "permission": "view_alerts"},
+        {"id": "reports", "label": "Reports", "permission": "view_reports"},
+        {"id": "activity", "label": "Activity History", "permission": "view_reports"},
+        {"id": "profile", "label": "Profile", "permission": "view_dashboard"},
+    ],
+}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -229,6 +366,57 @@ def _valid_api_key(request: Request) -> bool:
         return True
     provided = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
     return secrets.compare_digest(provided, expected)
+
+
+def _normalize_role(role: str | None) -> str:
+    value = (role or "super_admin").strip().lower().replace(" ", "_").replace("-", "_")
+    return value if value in ROLE_PERMISSIONS else "viewer"
+
+
+def _parse_csv_header(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def _rbac_context(request: Request) -> dict[str, Any]:
+    role = _normalize_role(request.headers.get("x-ai-role"))
+    base_permissions = set(ROLE_PERMISSIONS.get(role, set()))
+    explicit_permissions = _parse_csv_header(request.headers.get("x-ai-permissions"))
+    denied_permissions = _parse_csv_header(request.headers.get("x-ai-deny-permissions"))
+    permissions = sorted((base_permissions | explicit_permissions) - denied_permissions)
+    return {
+        "user": {
+            "id": request.headers.get("x-ai-user-id", "demo-super-admin"),
+            "name": request.headers.get("x-ai-user-name", "Demo Super Admin"),
+            "email": request.headers.get("x-ai-user-email", "admin@ai-vision.local"),
+        },
+        "role": role,
+        "role_label": role.replace("_", " ").title(),
+        "scope": {
+            "company": request.headers.get("x-ai-company", "All Companies"),
+            "factory": request.headers.get("x-ai-factory", "All Factories"),
+            "warehouse": request.headers.get("x-ai-warehouse", "All Warehouses"),
+            "production_line": request.headers.get("x-ai-production-line", "All Lines"),
+            "camera": request.headers.get("x-ai-camera", "All Cameras"),
+        },
+        "permissions": permissions,
+    }
+
+
+def _authorized_modules(surface: str, permissions: set[str]) -> list[dict[str, str]]:
+    modules = DASHBOARD_V2_MODULES.get(surface, [])
+    return [module for module in modules if module["permission"] in permissions]
+
+
+def _require_permission(request: Request, permission: str) -> dict[str, Any]:
+    context = _rbac_context(request)
+    if permission not in set(context["permissions"]):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission required: {permission}",
+        )
+    return context
 
 
 def _rate_limit(request: Request) -> JSONResponse | None:
@@ -1086,6 +1274,104 @@ def dashboard() -> FileResponse:
     return FileResponse(DASHBOARD_DIR / "index.html")
 
 
+@app.get("/dashboard-v2")
+def dashboard_v2() -> FileResponse:
+    return FileResponse(DASHBOARD_V2_DIR / "index.html")
+
+
+@app.get("/api/v2/rbac/me")
+def dashboard_v2_rbac_me(request: Request) -> dict[str, Any]:
+    context = _rbac_context(request)
+    permissions = set(context["permissions"])
+    return {
+        **context,
+        "surfaces": {
+            "head": _authorized_modules("head", permissions),
+            "user": _authorized_modules("user", permissions),
+        },
+        "available_roles": [
+            {"id": role, "label": role.replace("_", " ").title()}
+            for role in ROLE_PERMISSIONS
+        ],
+    }
+
+
+@app.get("/api/v2/navigation")
+def dashboard_v2_navigation(request: Request, surface: str = "head") -> dict[str, Any]:
+    surface = surface.strip().lower()
+    if surface not in DASHBOARD_V2_MODULES:
+        raise HTTPException(status_code=400, detail="Unknown dashboard surface.")
+    context = _require_permission(request, "view_dashboard")
+    return {
+        "surface": surface,
+        "modules": _authorized_modules(surface, set(context["permissions"])),
+        "role": context["role"],
+        "scope": context["scope"],
+    }
+
+
+@app.get("/api/v2/head/overview")
+def dashboard_v2_head_overview(request: Request) -> dict[str, Any]:
+    context = _require_permission(request, "view_dashboard")
+    status_data = _status()
+    health = status_data.get("health") or {}
+    cameras = _get_camera_db().list_cameras(include_secret=False)
+    active_cameras = [camera for camera in cameras if camera["is_active"]]
+    stock = _get_warehouse_db().get_all_stock()
+    movement_counts = _get_warehouse_db().movement_counts()
+    audit = _get_security_audit_db().verify()
+    return {
+        "context": context,
+        "summary": {
+            "organizations": 1,
+            "active_cameras": len(active_cameras),
+            "saved_cameras": len(cameras),
+            "detector_running": status_data["running"],
+            "frames_read": health.get("frames_read", 0),
+            "last_frame_at": health.get("last_frame_at"),
+            "last_detection_count": health.get("last_detection_count", 0),
+            "stock_items": len(stock),
+            "audit_verified": audit.get("verified", False),
+        },
+        "health": health,
+        "movement_counts": movement_counts,
+        "future_integrations": [
+            "ERP",
+            "HRM",
+            "CRM",
+            "Inventory Management",
+            "Quality Control",
+            "Predictive Analytics",
+            "Multi-site Management",
+            "API Integrations",
+        ],
+    }
+
+
+@app.get("/api/v2/user/overview")
+def dashboard_v2_user_overview(request: Request) -> dict[str, Any]:
+    context = _require_permission(request, "view_dashboard")
+    status_data = _status()
+    health = status_data.get("health") or {}
+    stock = _get_warehouse_db().get_all_stock()
+    movements = _get_warehouse_db().recent_movements(limit=12)
+    return {
+        "context": context,
+        "summary": {
+            "detector_running": status_data["running"],
+            "active_cameras": health.get("camera_count", 0),
+            "frames_read": health.get("frames_read", 0),
+            "last_detection_count": health.get("last_detection_count", 0),
+            "last_tracked_count": health.get("last_tracked_count", 0),
+            "stock_items": len(stock),
+            "open_verification_tasks": 0,
+            "active_alerts": 0,
+        },
+        "stock": stock[:12],
+        "recent_movements": movements,
+    }
+
+
 @app.get("/api/status")
 def status() -> dict[str, Any]:
     data = _status()
@@ -1766,5 +2052,6 @@ def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list
     return [_live_feed_path(slot=slot, camera=camera)]
 
 
+app.mount("/dashboard-v2/assets", StaticFiles(directory=DASHBOARD_V2_DIR), name="dashboard-v2-assets")
 app.mount("/assets", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-assets")
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOT_DIR), name="snapshots")

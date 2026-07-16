@@ -6,7 +6,16 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import api.server as server  # noqa: E402
-from api.server import _redact_config, _security_enabled, _valid_api_key, live_frame, status  # noqa: E402
+from api.server import (  # noqa: E402
+    _authorized_modules,
+    _rbac_context,
+    _redact_config,
+    _security_enabled,
+    _valid_api_key,
+    dashboard_v2_navigation,
+    live_frame,
+    status,
+)
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 
 
@@ -78,3 +87,24 @@ def test_live_frame_returns_stable_jpeg_bytes(tmp_path, monkeypatch):
 
     assert response.body == jpeg
     assert response.media_type == "image/jpeg"
+
+
+def test_dashboard_v2_rbac_filters_user_modules():
+    request = FakeRequest(headers={"x-ai-role": "viewer"})
+    context = _rbac_context(request)
+    modules = _authorized_modules("user", set(context["permissions"]))
+    module_ids = {module["id"] for module in modules}
+
+    assert "live" in module_ids
+    assert "verification" not in module_ids
+
+
+def test_dashboard_v2_navigation_rejects_unknown_surface():
+    request = FakeRequest(headers={"x-ai-role": "super_admin"})
+
+    try:
+        dashboard_v2_navigation(request, surface="unknown")
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+    else:
+        raise AssertionError("Unknown dashboard surface should be rejected")
