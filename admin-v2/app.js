@@ -101,17 +101,23 @@ async function load() {
 function render() {
   const totals = state.overview?.totals || {};
   els.stats.innerHTML = Object.entries(totals)
-    .map(([key, value]) => `<article><span>${esc(key.replaceAll("_", " "))}</span><strong>${esc(value)}</strong></article>`)
+    .map(([key, value]) => `<article class="stat-card"><span>${esc(key.replaceAll("_", " "))}</span><strong>${esc(value)}</strong><small>Current platform metric</small></article>`)
     .join("");
   els.usersTable.innerHTML = state.users
     .map((user) => `<tr>
       <td><strong>${esc(user.name)}</strong><small>${esc(user.email)}</small></td>
-      <td>${esc(user.status)}</td>
-      <td>${esc((user.roles || []).join(", ") || "No role")}<small>${user.has_password ? "Password set" : "No password"} · ${esc(user.passkey_count || 0)} passkey(s)</small></td>
+      <td><span class="badge ${user.status === "active" ? "good" : "bad"}">${esc(user.status)}</span></td>
       <td>
-        <button data-user="${user.id}" data-action="disable">Disable</button>
-        <button data-user="${user.id}" data-action="reactivate">Reactivate</button>
-        <a href="/app-v2?user_email=${encodeURIComponent(user.email)}">Open app</a>
+        <span class="role-line">${esc((user.roles || []).join(", ") || "No role")}</span>
+        <small>${user.has_password ? "Password set" : "No password"} · ${esc(user.passkey_count || 0)} passkey(s)</small>
+        <small>Preferred: ${esc((user.preferred_auth_method || "biometric_first").replaceAll("_", " "))}</small>
+      </td>
+      <td>
+        <div class="table-actions">
+          <button data-user="${user.id}" data-action="disable">Disable</button>
+          <button data-user="${user.id}" data-action="reactivate">Reactivate</button>
+          <a href="/app-v2?user_email=${encodeURIComponent(user.email)}">Open app</a>
+        </div>
       </td>
     </tr>`)
     .join("");

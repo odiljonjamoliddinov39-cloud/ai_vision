@@ -134,19 +134,19 @@ async function renderModule(code) {
   }
   if (code === "live_monitoring") {
     const cameras = data.cameras || [];
-    els.moduleView.innerHTML = `<h2>Live Monitoring</h2><div class="live-grid">${cameras.map((cam) => `<figure><img src="${API_BASE}/api/live_frame?slot=${cam.slot_number}&t=${Date.now()}" /><figcaption>Slot ${esc(cam.slot_number)} — ${esc(cam.name)}</figcaption></figure>`).join("") || "<p>No scoped cameras assigned.</p>"}</div>`;
+    els.moduleView.innerHTML = `<div class="module-head"><div><p class="section-kicker">Camera grid</p><h2>Live Monitoring</h2></div><span class="status-pill">${esc(cameras.length)} feed(s)</span></div><div class="live-grid">${cameras.map((cam) => `<figure><div class="feed-top"><span>Slot ${esc(cam.slot_number)}</span><strong>${esc(cam.name)}</strong></div><img src="${API_BASE}/api/live_frame?slot=${cam.slot_number}&t=${Date.now()}" /><figcaption><span class="badge good">Detection frame</span><small>${esc(cam.status || "active")}</small></figcaption></figure>`).join("") || "<p>No scoped cameras assigned.</p>"}</div>`;
     return;
   }
   if (code === "counting" || code === "products") {
     const stock = data.stock || [];
-    els.moduleView.innerHTML = `<h2>${esc(module.name)}</h2><table><tbody>${stock.map((item) => `<tr><td>${esc(item.name)}</td><td>${esc(item.current_stock)}</td></tr>`).join("") || "<tr><td>No stock yet.</td></tr>"}</tbody></table>`;
+    els.moduleView.innerHTML = `<div class="module-head"><div><p class="section-kicker">Inventory</p><h2>${esc(module.name)}</h2></div><span class="status-pill">${esc(stock.length)} item(s)</span></div><table><tbody>${stock.map((item) => `<tr><td>${esc(item.name)}</td><td>${esc(item.current_stock)}</td></tr>`).join("") || "<tr><td>No stock yet.</td></tr>"}</tbody></table>`;
     return;
   }
   if (code === "reports" || code === "activity_history") {
-    els.moduleView.innerHTML = `<h2>${esc(module.name)}</h2><pre>${esc(JSON.stringify(data.movements || [], null, 2))}</pre>`;
+    els.moduleView.innerHTML = `<div class="module-head"><div><p class="section-kicker">History</p><h2>${esc(module.name)}</h2></div></div><pre>${esc(JSON.stringify(data.movements || [], null, 2))}</pre>`;
     return;
   }
-  els.moduleView.innerHTML = `<h2>${esc(module.name)}</h2><p>${esc(data.message || "Module assigned and ready.")}</p><pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+  els.moduleView.innerHTML = `<div class="module-head"><div><p class="section-kicker">Module</p><h2>${esc(module.name)}</h2></div><span class="status-pill">Assigned</span></div><p>${esc(data.message || "Module assigned and ready.")}</p><pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
 }
 els.moduleNav.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-module]");

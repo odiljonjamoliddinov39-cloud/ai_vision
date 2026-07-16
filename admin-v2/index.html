@@ -30,9 +30,12 @@
     <main class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <span>AI Vision</span>
-          <strong>Head Admin</strong>
-          <small>V2 access control center</small>
+          <div class="brand-mark">AV</div>
+          <div>
+            <span>AI Vision</span>
+            <strong>Head Admin</strong>
+            <small>Enterprise control center</small>
+          </div>
         </div>
         <nav>
           <a href="#overview">Overview</a>
@@ -43,8 +46,12 @@
           <a href="#scopes">Scopes</a>
           <a href="#audit">Audit</a>
         </nav>
-        <a class="old-link" href="/">Old dashboard</a>
-        <a class="old-link" href="/app-v2">User dashboard</a>
+        <div class="sidebar-card">
+          <span>Secure workspace</span>
+          <strong>RBAC + biometrics</strong>
+          <small>Accounts, roles, modules, scopes, and login policies.</small>
+        </div>
+        <a class="old-link" href="/app-v2">Open user app</a>
       </aside>
 
       <section class="main">
@@ -54,7 +61,10 @@
             <h1>Head Admin Dashboard</h1>
             <p>Build exactly what each user sees. New users start blank until you assign a role or modules.</p>
           </div>
-          <button id="refreshBtn" type="button">Refresh</button>
+          <div class="hero-actions">
+            <span class="status-pill">Production ready</span>
+            <button id="refreshBtn" type="button">Refresh</button>
+          </div>
         </header>
 
         <section id="overview" class="stats"></section>
@@ -62,8 +72,11 @@
         <section class="grid">
           <article id="users" class="panel wide">
             <div class="panel-head">
-              <h2>User Management</h2>
-              <span>Create, disable, reactivate, assign roles/modules/permissions/scopes.</span>
+              <div>
+                <p class="section-kicker">Accounts</p>
+                <h2>User Management</h2>
+              </div>
+              <span>Create users, verify login status, and open their assigned dashboard.</span>
             </div>
             <form id="userForm" class="inline-form">
               <input id="userName" required placeholder="User name" />
@@ -87,8 +100,11 @@
 
           <article id="builder" class="panel">
             <div class="panel-head">
-              <h2>Dashboard Builder</h2>
-              <span>Assign access to selected user.</span>
+              <div>
+                <p class="section-kicker">Access</p>
+                <h2>Dashboard Builder</h2>
+              </div>
+              <span>Assign role, modules, permissions, password, and preferred login.</span>
             </div>
             <label>User<select id="selectedUser"></select></label>
             <label>Role<select id="roleSelect"></select></label>
@@ -117,7 +133,10 @@
 
           <article id="scopes" class="panel">
             <div class="panel-head">
-              <h2>Scope Assignment</h2>
+              <div>
+                <p class="section-kicker">Scope</p>
+                <h2>Scope Assignment</h2>
+              </div>
               <span>Company, factory, warehouse, line, zone, camera.</span>
             </div>
             <label>Scope type
@@ -136,7 +155,10 @@
 
           <article id="roles" class="panel">
             <div class="panel-head">
-              <h2>Roles</h2>
+              <div>
+                <p class="section-kicker">Profiles</p>
+                <h2>Roles</h2>
+              </div>
               <span>Reusable profiles.</span>
             </div>
             <ul id="rolesList" class="pill-list"></ul>
@@ -144,7 +166,10 @@
 
           <article id="modules" class="panel">
             <div class="panel-head">
-              <h2>Modules</h2>
+              <div>
+                <p class="section-kicker">Navigation</p>
+                <h2>Modules</h2>
+              </div>
               <span>Reusable dashboard functions.</span>
             </div>
             <ul id="modulesList" class="module-list"></ul>
@@ -152,7 +177,10 @@
 
           <article id="audit" class="panel wide">
             <div class="panel-head">
-              <h2>Recent Audit Activity</h2>
+              <div>
+                <p class="section-kicker">Security</p>
+                <h2>Recent Audit Activity</h2>
+              </div>
               <span>Critical changes are recorded.</span>
             </div>
             <pre id="auditLog"></pre>

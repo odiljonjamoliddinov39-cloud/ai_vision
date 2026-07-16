@@ -30,9 +30,12 @@
     <main class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <span>AI Vision</span>
-          <strong>User Dashboard</strong>
-          <small id="userLine">Loading...</small>
+          <div class="brand-mark">AV</div>
+          <div>
+            <span>AI Vision</span>
+            <strong>Operations</strong>
+            <small id="userLine">Loading...</small>
+          </div>
         </div>
         <nav id="moduleNav"></nav>
         <section class="operator-card" aria-label="Workspace status">
@@ -44,11 +47,14 @@
       <section class="main">
         <header class="hero">
           <div>
-            <p class="eyebrow">Assigned workspace</p>
+            <p class="eyebrow">Operational workspace</p>
             <h1 id="pageTitle">User Dashboard</h1>
             <p id="scopeLine">Secure workspace loading...</p>
           </div>
-          <button id="refreshBtn" type="button">Refresh</button>
+          <div class="hero-actions">
+            <span class="status-pill">Live access</span>
+            <button id="refreshBtn" type="button">Refresh</button>
+          </div>
         </header>
         <section id="emptyState" class="empty hidden">
           <h2>No dashboard modules have been assigned to your account.</h2>
