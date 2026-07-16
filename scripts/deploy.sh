@@ -51,8 +51,8 @@ elif [ "$build_required" = "true" ]; then
   echo "Backend/runtime files changed. Rebuilding with Docker cache..."
   docker compose up -d --build --remove-orphans backend
 else
-  echo "Dashboard/config-only change. Recreating backend without dependency reinstall..."
-  docker compose up -d --no-deps --force-recreate backend
+  echo "Dashboard/config-only change. Rebuilding cheap app-code layer with Docker cache..."
+  docker compose up -d --build --no-deps --force-recreate backend
 fi
 
 echo "Pruning unused Docker images..."
