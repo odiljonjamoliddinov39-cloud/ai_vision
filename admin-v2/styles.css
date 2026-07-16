@@ -1199,3 +1199,38 @@ nav a[aria-current="page"] {
     grid-template-columns: 1fr;
   }
 }
+
+/* Final production cleanup: no floating mockup label or page gutter */
+body::before {
+  content: none !important;
+  display: none !important;
+}
+
+body {
+  overflow: hidden !important;
+}
+
+.shell {
+  width: 100vw;
+  max-width: 100vw;
+}
+
+.sidebar {
+  scrollbar-width: thin;
+}
+
+.sidebar::-webkit-scrollbar,
+.main::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar::-webkit-scrollbar-track,
+.main::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb,
+.main::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.28);
+}
