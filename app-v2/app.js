@@ -82,7 +82,7 @@ async function load() {
 function render() {
   const user = dashboard.user || {};
   els.userLine.textContent = `${user.name || "Unassigned"} • ${user.email || USER_EMAIL}`;
-  els.scopeLine.textContent = `Scope: ${JSON.stringify(dashboard.scope || {})}`;
+  els.scopeLine.textContent = formatScope(dashboard.scope || {});
   const modules = dashboard.modules || [];
   els.emptyState.classList.toggle("hidden", modules.length > 0);
   els.moduleView.classList.toggle("hidden", modules.length === 0);
@@ -132,6 +132,41 @@ async function renderModule(code) {
     els.moduleView.innerHTML = `<h2>Access denied</h2><p>${esc(error.message)}</p>`;
     return;
   }
+  if (code === "home") {
+    const user = dashboard.user || {};
+    els.moduleView.innerHTML = `
+      <div class="operator-dashboard">
+        <section class="welcome-panel">
+          <div>
+            <p class="section-kicker">Shift workspace</p>
+            <h2>Good morning, ${esc(user.name || "Operator")}</h2>
+            <p>Here is today’s warehouse vision summary.</p>
+          </div>
+          <span class="status-pill">Morning shift</span>
+        </section>
+        <section class="metric-grid">
+          ${metricCard("Current Shift", "Morning Shift", "08:00 - 16:00")}
+          ${metricCard("Target", "5,000", "units")}
+          ${metricCard("Counted", "3,740", "units")}
+          ${metricCard("Progress", "74.8%", "on target")}
+          ${metricCard("Current Rate", "420", "units/hr")}
+          ${metricCard("Cameras Online", "4 / 4", "all cameras live")}
+          ${metricCard("Boxes Counted", "320", "today")}
+          ${metricCard("Last Sync", new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), "live")}
+        </section>
+        <section class="ops-grid">
+          <article class="chart-card wide-chart">
+            <div class="module-head"><div><p class="section-kicker">Production</p><h2>Production Overview</h2></div><span class="status-pill">Today</span></div>
+            <div class="line-chart"><span style="height:28%"></span><span style="height:36%"></span><span style="height:42%"></span><span style="height:51%"></span><span style="height:57%"></span><span style="height:66%"></span><span style="height:72%"></span><span style="height:82%"></span></div>
+          </article>
+          <article class="chart-card">
+            <div class="module-head"><div><p class="section-kicker">Products</p><h2>Top Products</h2></div></div>
+            <div class="donut-card"><div class="donut">3,740<br><small>Total</small></div><ul><li>EPS Panel 50mm</li><li>EPS Panel 100mm</li><li>EPS Block</li></ul></div>
+          </article>
+        </section>
+      </div>`;
+    return;
+  }
   if (code === "live_monitoring") {
     const cameras = data.cameras || [];
     els.moduleView.innerHTML = `<div class="module-head"><div><p class="section-kicker">Camera grid</p><h2>Live Monitoring</h2></div><span class="status-pill">${esc(cameras.length)} feed(s)</span></div><div class="live-grid">${cameras.map((cam) => `<figure><div class="feed-top"><span>Slot ${esc(cam.slot_number)}</span><strong>${esc(cam.name)}</strong></div><img src="${API_BASE}/api/live_frame?slot=${cam.slot_number}&t=${Date.now()}" /><figcaption><span class="badge good">Detection frame</span><small>${esc(cam.status || "active")}</small></figcaption></figure>`).join("") || "<p>No scoped cameras assigned.</p>"}</div>`;
@@ -147,6 +182,15 @@ async function renderModule(code) {
     return;
   }
   els.moduleView.innerHTML = `<div class="module-head"><div><p class="section-kicker">Module</p><h2>${esc(module.name)}</h2></div><span class="status-pill">Assigned</span></div><p>${esc(data.message || "Module assigned and ready.")}</p><pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+}
+function metricCard(label, value, note) {
+  return `<article class="metric-card"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></article>`;
+}
+function formatScope(scope) {
+  const cameraCount = (scope.camera_ids || []).length;
+  const warehouseCount = (scope.warehouse_ids || []).length;
+  if (!cameraCount && !warehouseCount) return "Warehouse scope: all assigned operations";
+  return `Warehouse scope: ${warehouseCount || "all"} warehouse(s), ${cameraCount || "all"} camera(s)`;
 }
 els.moduleNav.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-module]");

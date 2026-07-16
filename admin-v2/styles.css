@@ -747,3 +747,171 @@ tr:hover td {
     padding: 20px;
   }
 }
+
+/* Reference-style enterprise dashboard */
+body::before {
+  content: "HEAD DASHBOARD (SUPER ADMIN)";
+  position: fixed;
+  left: 10px;
+  top: 8px;
+  z-index: 30;
+  border-radius: 4px;
+  background: #1d6fe8;
+  color: #fff;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.shell {
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.sidebar {
+  padding: 34px 12px 16px;
+  background: linear-gradient(180deg, #101b2b, #0b1320);
+  border-right: 0;
+  color: #dbeafe;
+}
+
+.brand {
+  border: 0;
+  background: transparent;
+  padding: 10px 8px 18px;
+}
+
+.brand span,
+.brand small,
+.sidebar-card small {
+  color: #9fb1c7;
+}
+
+.brand strong,
+.sidebar-card strong {
+  color: #ffffff;
+}
+
+.brand-mark {
+  background: #1d6fe8;
+}
+
+nav {
+  gap: 4px;
+}
+
+nav a,
+.old-link {
+  min-height: 42px;
+  color: #d8e4f3;
+  border-radius: 9px;
+  font-size: 0.9rem;
+}
+
+nav a:hover,
+.old-link:hover,
+nav a:first-child {
+  background: #1d6fe8;
+  color: #ffffff;
+}
+
+nav a::before {
+  background: currentColor;
+  opacity: 0.5;
+}
+
+.sidebar-card {
+  border-color: rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+}
+
+.sidebar-card span {
+  color: #60a5fa;
+}
+
+.main {
+  padding: 34px 18px 22px;
+  background: #f4f7fb;
+}
+
+.hero {
+  min-height: 118px;
+  padding: 20px 24px;
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+}
+
+.hero h1 {
+  font-size: clamp(2rem, 3vw, 2.75rem);
+}
+
+.stats {
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+}
+
+.stats article,
+.panel {
+  border-radius: 10px;
+  box-shadow: 0 5px 18px rgba(15, 23, 42, 0.055);
+}
+
+.stats article {
+  min-height: 98px;
+  padding: 14px;
+}
+
+.stats strong {
+  font-size: 1.55rem;
+}
+
+.grid {
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.85fr);
+  gap: 14px;
+}
+
+.panel {
+  padding: 16px;
+}
+
+.panel-head {
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.panel-head h2 {
+  font-size: 1.05rem;
+}
+
+input,
+select {
+  min-height: 38px;
+  border-radius: 7px;
+}
+
+button,
+a.old-link {
+  min-height: 36px;
+  border-radius: 7px;
+}
+
+table {
+  font-size: 0.86rem;
+}
+
+th {
+  background: #f6f8fb;
+}
+
+.badge {
+  min-height: 22px;
+  font-size: 0.72rem;
+}
+
+.auth-choice {
+  border-radius: 9px;
+}
+
+.pill-list li,
+.module-list li {
+  border-radius: 8px;
+}
