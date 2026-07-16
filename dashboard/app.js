@@ -95,7 +95,7 @@ const API_BASE = (() => {
   }
   const saved = localStorage.getItem("api_base");
   if (window.location.hostname.endsWith("vercel.app")) {
-    const deployedBackend = "https://ai-vision-backend-nasoe.ondigitalocean.app";
+    const deployedBackend = "https://67-205-160-8.sslip.io";
     const staleSavedBackend =
       saved &&
       (saved.includes("github.dev") ||

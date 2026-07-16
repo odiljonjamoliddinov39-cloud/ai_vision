@@ -23,7 +23,7 @@ const API_BASE = (() => {
   const saved = localStorage.getItem("ai_vision_v2_api_base");
   if (saved) return saved;
   if (window.location.hostname.endsWith("vercel.app")) {
-    return "https://ai-vision-backend-nasoe.ondigitalocean.app";
+    return "https://67-205-160-8.sslip.io";
   }
   return window.location.origin;
 })();

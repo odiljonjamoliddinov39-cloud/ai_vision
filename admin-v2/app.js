@@ -4,6 +4,7 @@ const els = {
   loginEmail: document.querySelector("#loginEmail"),
   loginPassword: document.querySelector("#loginPassword"),
   biometricLoginBtn: document.querySelector("#biometricLoginBtn"),
+  registerFromLoginBtn: document.querySelector("#registerFromLoginBtn"),
   setupPasswordBtn: document.querySelector("#setupPasswordBtn"),
   loginHint: document.querySelector("#loginHint"),
   refreshBtn: document.querySelector("#refreshBtn"),
@@ -37,7 +38,7 @@ const els = {
 const API_BASE = (() => {
   const param = new URLSearchParams(location.search).get("api");
   if (param) localStorage.setItem("ai_v2_api", param.replace(/\/+$/, ""));
-  return localStorage.getItem("ai_v2_api") || (location.hostname.endsWith("vercel.app") ? "https://ai-vision-backend-nasoe.ondigitalocean.app" : location.origin);
+  return localStorage.getItem("ai_v2_api") || (location.hostname.endsWith("vercel.app") ? "https://67-205-160-8.sslip.io" : location.origin);
 })();
 let ADMIN_EMAIL = localStorage.getItem("ai_v2_admin_email") || "admin@ai-vision.local";
 let AUTH_TOKEN = localStorage.getItem("ai_v2_admin_token") || "";
@@ -239,6 +240,10 @@ els.loginForm.addEventListener("submit", (event) => loginWithPassword(event).cat
   toast(e.message);
 }));
 els.biometricLoginBtn.addEventListener("click", () => loginWithBiometric().catch((e) => {
+  els.loginHint.textContent = biometricMessage(e.message);
+  toast(e.message);
+}));
+els.registerFromLoginBtn.addEventListener("click", () => loginAndRegisterDevice().catch((e) => {
   els.loginHint.textContent = e.message;
   toast(e.message);
 }));
@@ -261,4 +266,21 @@ if (AUTH_TOKEN) {
     els.loginScreen.classList.remove("hidden");
     toast(e.message);
   });
+}
+function biometricMessage(message) {
+  if (!window.isSecureContext) return "Fingerprint / Face ID requires HTTPS. Open the dashboard through the HTTPS Vercel page or https://67-205-160-8.sslip.io.";
+  return message.includes("No fingerprint") ? "No device is registered yet. Open 'Use password instead', enter your password, then click 'Login + register this device'." : message;
+}
+async function loginAndRegisterDevice() {
+  if (!window.PublicKeyCredential) throw new Error("This browser does not support Fingerprint / Face ID passkeys.");
+  if (!window.isSecureContext) throw new Error("Fingerprint / Face ID requires HTTPS.");
+  const result = await api("/api/v2/auth/login", { method: "POST", body: JSON.stringify({ email: els.loginEmail.value, password: els.loginPassword.value }) });
+  if (result.requires_passkey) {
+    await finishPasskeyLogin(result, els.loginEmail.value);
+    return;
+  }
+  saveAuth(result);
+  await registerPasskey();
+  await load();
+  toast("Device registered");
 }

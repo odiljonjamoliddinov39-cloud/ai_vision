@@ -4,6 +4,7 @@ const els = {
   loginEmail: document.querySelector("#loginEmail"),
   loginPassword: document.querySelector("#loginPassword"),
   biometricLoginBtn: document.querySelector("#biometricLoginBtn"),
+  registerFromLoginBtn: document.querySelector("#registerFromLoginBtn"),
   setupPasswordBtn: document.querySelector("#setupPasswordBtn"),
   loginHint: document.querySelector("#loginHint"),
   userLine: document.querySelector("#userLine"),
@@ -19,7 +20,7 @@ const API_BASE = (() => {
   const params = new URLSearchParams(location.search);
   if (params.get("api")) localStorage.setItem("ai_v2_api", params.get("api").replace(/\/+$/, ""));
   if (params.get("user_email")) localStorage.setItem("ai_v2_user_email", params.get("user_email"));
-  return localStorage.getItem("ai_v2_api") || (location.hostname.endsWith("vercel.app") ? "https://ai-vision-backend-nasoe.ondigitalocean.app" : location.origin);
+  return localStorage.getItem("ai_v2_api") || (location.hostname.endsWith("vercel.app") ? "https://67-205-160-8.sslip.io" : location.origin);
 })();
 let USER_EMAIL = localStorage.getItem("ai_v2_user_email") || "blank@ai-vision.local";
 let AUTH_TOKEN = localStorage.getItem("ai_v2_token") || "";
@@ -51,17 +52,26 @@ function publicKeyForGet(options) {
   publicKey.allowCredentials = (publicKey.allowCredentials || []).map((credential) => ({ ...credential, id: base64UrlToBuffer(credential.id) }));
   return publicKey;
 }
+function publicKeyForCreate(options) {
+  const publicKey = { ...options.publicKey };
+  publicKey.challenge = base64UrlToBuffer(publicKey.challenge);
+  publicKey.user = { ...publicKey.user, id: base64UrlToBuffer(publicKey.user.id) };
+  publicKey.excludeCredentials = (publicKey.excludeCredentials || []).map((credential) => ({ ...credential, id: base64UrlToBuffer(credential.id) }));
+  return publicKey;
+}
 function credentialForServer(credential) {
+  const response = {
+    clientDataJSON: bufferToBase64Url(credential.response.clientDataJSON),
+  };
+  if (credential.response.authenticatorData) response.authenticatorData = bufferToBase64Url(credential.response.authenticatorData);
+  if (credential.response.signature) response.signature = bufferToBase64Url(credential.response.signature);
+  if (credential.response.userHandle) response.userHandle = bufferToBase64Url(credential.response.userHandle);
+  if (credential.response.attestationObject) response.attestationObject = bufferToBase64Url(credential.response.attestationObject);
   return {
     id: credential.id,
     rawId: bufferToBase64Url(credential.rawId),
     type: credential.type,
-    response: {
-      authenticatorData: bufferToBase64Url(credential.response.authenticatorData),
-      clientDataJSON: bufferToBase64Url(credential.response.clientDataJSON),
-      signature: bufferToBase64Url(credential.response.signature),
-      userHandle: credential.response.userHandle ? bufferToBase64Url(credential.response.userHandle) : null,
-    },
+    response,
   };
 }
 function saveAuth(result) {
@@ -204,6 +214,10 @@ els.loginForm.addEventListener("submit", (event) => loginWithPassword(event).cat
   toast(e.message);
 }));
 els.biometricLoginBtn.addEventListener("click", () => loginWithBiometric().catch((e) => {
+  els.loginHint.textContent = biometricMessage(e.message);
+  toast(e.message);
+}));
+els.registerFromLoginBtn.addEventListener("click", () => loginAndRegisterDevice().catch((e) => {
   els.loginHint.textContent = e.message;
   toast(e.message);
 }));
@@ -226,4 +240,30 @@ if (AUTH_TOKEN) {
     els.loginScreen.classList.remove("hidden");
     toast(e.message);
   });
+}
+function biometricMessage(message) {
+  if (!window.isSecureContext) return "Fingerprint / Face ID requires HTTPS. Open the dashboard through the HTTPS Vercel page or https://67-205-160-8.sslip.io.";
+  return message.includes("No fingerprint") ? "No device is registered yet. Open 'Use password instead', enter your password, then click 'Login + register this device'." : message;
+}
+async function registerPasskey() {
+  if (!window.PublicKeyCredential) throw new Error("This browser does not support Fingerprint / Face ID passkeys.");
+  if (!window.isSecureContext) throw new Error("Fingerprint / Face ID requires HTTPS.");
+  const options = await apiPost("/api/v2/auth/passkeys/register/options", { name: "Primary biometric device" });
+  const credential = await navigator.credentials.create({ publicKey: publicKeyForCreate(options) });
+  await apiPost("/api/v2/auth/passkeys/register/verify", {
+    challenge_id: options.challenge_id,
+    credential: credentialForServer(credential),
+    name: "Primary biometric device",
+  });
+}
+async function loginAndRegisterDevice() {
+  const result = await apiPost("/api/v2/auth/login", { email: els.loginEmail.value, password: els.loginPassword.value });
+  if (result.requires_passkey) {
+    await finishPasskeyLogin(result, els.loginEmail.value);
+    return;
+  }
+  saveAuth(result);
+  await registerPasskey();
+  await load();
+  toast("Device registered");
 }
