@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Vision App V2</title>
+    <link rel="stylesheet" href="/app-v2/assets/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span>AI Vision</span>
+          <strong>User Dashboard</strong>
+          <small id="userLine">Loading…</small>
+        </div>
+        <nav id="moduleNav"></nav>
+        <a href="/admin-v2" class="admin-link">Head Admin</a>
+      </aside>
+      <section class="main">
+        <header class="hero">
+          <div>
+            <p class="eyebrow">Assigned workspace</p>
+            <h1 id="pageTitle">User Dashboard</h1>
+            <p id="scopeLine">Modules and data are controlled by Head Admin.</p>
+          </div>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </header>
+        <section id="emptyState" class="empty hidden">
+          <h2>No dashboard modules have been assigned to your account.</h2>
+          <p>Contact your administrator.</p>
+        </section>
+        <section id="moduleView" class="panel"></section>
+      </section>
+    </main>
+    <div id="toast" class="toast"></div>
+    <script src="/app-v2/assets/app.js" type="module"></script>
+  </body>
+</html>

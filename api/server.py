@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
@@ -44,10 +45,13 @@ INVENTORY_PATH = ROOT / "logs" / "inventory.json"
 INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
 DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_V2_DIR = ROOT / "dashboard-v2"
+ADMIN_V2_DIR = ROOT / "admin-v2"
+APP_V2_DIR = ROOT / "app-v2"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
 SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
+ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
@@ -80,6 +84,7 @@ _tracking_db: TrackingDB | None = None
 _warehouse_db: WarehouseDB | None = None
 _camera_db: CameraDB | None = None
 _security_audit_db: SecurityAuditDB | None = None
+_access_control_db: AccessControlDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
 _manual_stop_requested = False
@@ -336,6 +341,13 @@ def _get_security_audit_db() -> SecurityAuditDB:
     return _security_audit_db
 
 
+def _get_access_control_db() -> AccessControlDB:
+    global _access_control_db
+    if _access_control_db is None:
+        _access_control_db = AccessControlDB(db_path=str(ACCESS_CONTROL_DB_PATH))
+    return _access_control_db
+
+
 def _admin_api_key() -> str:
     return os.getenv("ADMIN_API_KEY", "").strip()
 
@@ -349,6 +361,35 @@ def _request_actor(request: Request) -> str:
     if forwarded_for:
         return forwarded_for.split(",", 1)[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def _v2_user_email(request: Request) -> str:
+    return (
+        request.query_params.get("user_email")
+        or request.headers.get("x-ai-user-email")
+        or "admin@ai-vision.local"
+    ).strip().lower()
+
+
+def _v2_dashboard(request: Request) -> dict[str, Any]:
+    return _get_access_control_db().resolve_dashboard(email=_v2_user_email(request))
+
+
+def _v2_require_permission(request: Request, permission: str) -> dict[str, Any]:
+    dashboard = _v2_dashboard(request)
+    if permission not in set(dashboard.get("permissions", [])):
+        raise HTTPException(status_code=403, detail=f"Permission required: {permission}")
+    return dashboard
+
+
+def _v2_require_module(request: Request, module_code: str, permission: str | None = None) -> dict[str, Any]:
+    dashboard = _v2_dashboard(request)
+    modules = {module["code"] for module in dashboard.get("modules", [])}
+    if module_code not in modules:
+        raise HTTPException(status_code=403, detail=f"Module not assigned: {module_code}")
+    if permission and permission not in set(dashboard.get("permissions", [])):
+        raise HTTPException(status_code=403, detail=f"Permission required: {permission}")
+    return dashboard
 
 
 def _is_public_path(path: str) -> bool:
@@ -558,6 +599,37 @@ class CameraControllerCreate(BaseModel):
     test_controller: bool = True
     test_streams: bool = False
     require_public: bool = True
+
+
+class V2UserCreate(BaseModel):
+    name: str = Field(min_length=1)
+    email: str = Field(min_length=3)
+
+
+class V2RoleCreate(BaseModel):
+    name: str = Field(min_length=1)
+    code: str = Field(min_length=1)
+
+
+class V2RoleAssignment(BaseModel):
+    role_code: str = Field(min_length=1)
+
+
+class V2ModuleAssignment(BaseModel):
+    module_code: str = Field(min_length=1)
+    effect: str = Field(pattern="^(allow|deny)$")
+    display_order: int | None = Field(default=None, ge=1)
+
+
+class V2PermissionAssignment(BaseModel):
+    permission_code: str = Field(min_length=1)
+    effect: str = Field(pattern="^(allow|deny)$")
+
+
+class V2ScopeAssignment(BaseModel):
+    scope_type: str = Field(pattern="^(company|factory|warehouse|production_line|zone|camera)$")
+    scope_ids: list[str] = Field(default_factory=list)
+    effect: str = Field(default="allow", pattern="^(allow|deny)$")
 
 
 STREAM_DEFAULT_PORTS = {
@@ -1277,6 +1349,157 @@ def dashboard() -> FileResponse:
 @app.get("/dashboard-v2")
 def dashboard_v2() -> FileResponse:
     return FileResponse(DASHBOARD_V2_DIR / "index.html")
+
+
+@app.get("/admin-v2")
+def admin_v2() -> FileResponse:
+    return FileResponse(ADMIN_V2_DIR / "index.html")
+
+
+@app.get("/app-v2")
+def app_v2() -> FileResponse:
+    return FileResponse(APP_V2_DIR / "index.html")
+
+
+@app.get("/api/v2/me/dashboard")
+def v2_me_dashboard(request: Request) -> dict[str, Any]:
+    return _v2_dashboard(request)
+
+
+@app.get("/api/v2/me/module/{module_code}")
+def v2_module_data(module_code: str, request: Request) -> dict[str, Any]:
+    dashboard = _v2_require_module(request, module_code)
+    if module_code == "live_monitoring":
+        cameras = _get_camera_db().list_active_cameras(include_secret=False)
+        allowed_ids = set(dashboard.get("scope", {}).get("camera_ids") or [])
+        if allowed_ids:
+            cameras = [camera for camera in cameras if str(camera.get("id")) in allowed_ids]
+        return {"module": module_code, "cameras": cameras, "status": _status()}
+    if module_code == "counting":
+        return {
+            "module": module_code,
+            "stock": _get_warehouse_db().get_all_stock(),
+            "movement_counts": _get_warehouse_db().movement_counts(),
+        }
+    if module_code in {"reports", "activity_history"}:
+        return {"module": module_code, "movements": _get_warehouse_db().recent_movements(limit=50)}
+    if module_code == "products":
+        return {"module": module_code, "stock": _get_warehouse_db().get_all_stock()}
+    if module_code == "system_health":
+        return {"module": module_code, "status": _status(), "opencv": opencv_diagnostics()}
+    if module_code == "audit_logs":
+        _v2_require_module(request, module_code, permission="audit.view")
+        return security_audit(limit=100)
+    return {"module": module_code, "message": "Module shell is assigned and ready for implementation."}
+
+
+@app.get("/api/v2/admin/overview")
+def v2_admin_overview(request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "dashboard.view")
+    ac = _get_access_control_db()
+    cameras = _get_camera_db().list_cameras(include_secret=False)
+    active_cameras = [camera for camera in cameras if camera["is_active"]]
+    health = (_status().get("health") or {})
+    return {
+        "totals": {
+            "companies": len([org for org in ac.list_organizations() if org["type"] == "company"]),
+            "factories": len([org for org in ac.list_organizations() if org["type"] == "factory"]),
+            "warehouses": len([org for org in ac.list_organizations() if org["type"] == "warehouse"]),
+            "users": len(ac.list_users()),
+            "online_cameras": len(active_cameras),
+            "offline_cameras": max(0, len(cameras) - len(active_cameras)),
+            "active_ai_processes": 1 if _status()["running"] else 0,
+            "products_counted_today": health.get("last_detection_count", 0),
+            "active_alerts": 0,
+        },
+        "server_status": _status(),
+        "recent_activity": _get_security_audit_db().recent(limit=12),
+    }
+
+
+@app.get("/api/v2/admin/bootstrap")
+def v2_admin_bootstrap(request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.view")
+    ac = _get_access_control_db()
+    return {
+        "users": ac.list_users(),
+        "roles": ac.list_roles(),
+        "permissions": ac.list_permissions(),
+        "modules": ac.list_modules(),
+        "organizations": ac.list_organizations(),
+    }
+
+
+@app.post("/api/v2/admin/users")
+def v2_admin_create_user(payload: V2UserCreate, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.create")
+    user = _get_access_control_db().create_user(payload.name, payload.email.strip().lower())
+    _audit("v2.user.created", {"user": user}, actor=_v2_user_email(request))
+    return user
+
+
+@app.post("/api/v2/admin/roles")
+def v2_admin_create_role(payload: V2RoleCreate, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "role.create")
+    role = _get_access_control_db().create_role(payload.name, payload.code)
+    _audit("v2.role.created", {"role": role}, actor=_v2_user_email(request))
+    return role
+
+
+@app.post("/api/v2/admin/users/{user_id}/roles")
+def v2_admin_assign_role(user_id: int, payload: V2RoleAssignment, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.edit")
+    _get_access_control_db().assign_role(user_id, payload.role_code)
+    _audit("v2.user.role_assigned", {"user_id": user_id, "role_code": payload.role_code}, actor=_v2_user_email(request))
+    return _get_access_control_db().resolve_dashboard(user_id=user_id)
+
+
+@app.delete("/api/v2/admin/users/{user_id}/roles/{role_code}")
+def v2_admin_remove_role(user_id: int, role_code: str, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.edit")
+    _get_access_control_db().remove_role(user_id, role_code)
+    _audit("v2.user.role_removed", {"user_id": user_id, "role_code": role_code}, actor=_v2_user_email(request))
+    return _get_access_control_db().resolve_dashboard(user_id=user_id)
+
+
+@app.post("/api/v2/admin/users/{user_id}/modules")
+def v2_admin_assign_module(user_id: int, payload: V2ModuleAssignment, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "module.assign")
+    _get_access_control_db().set_user_module(user_id, payload.module_code, payload.effect, payload.display_order)
+    _audit("v2.user.module_changed", {"user_id": user_id, **payload.model_dump()}, actor=_v2_user_email(request))
+    return _get_access_control_db().resolve_dashboard(user_id=user_id)
+
+
+@app.post("/api/v2/admin/users/{user_id}/permissions")
+def v2_admin_assign_permission(user_id: int, payload: V2PermissionAssignment, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.edit")
+    _get_access_control_db().set_user_permission(user_id, payload.permission_code, payload.effect)
+    _audit("v2.user.permission_changed", {"user_id": user_id, **payload.model_dump()}, actor=_v2_user_email(request))
+    return _get_access_control_db().resolve_dashboard(user_id=user_id)
+
+
+@app.post("/api/v2/admin/users/{user_id}/scopes")
+def v2_admin_assign_scope(user_id: int, payload: V2ScopeAssignment, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "scope.assign")
+    _get_access_control_db().set_user_scope(user_id, payload.scope_type, payload.scope_ids, payload.effect)
+    _audit("v2.user.scope_changed", {"user_id": user_id, **payload.model_dump()}, actor=_v2_user_email(request))
+    return _get_access_control_db().resolve_dashboard(user_id=user_id)
+
+
+@app.post("/api/v2/admin/users/{user_id}/disable")
+def v2_admin_disable_user(user_id: int, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.disable")
+    user = _get_access_control_db().set_user_status(user_id, "disabled")
+    _audit("v2.user.disabled", {"user_id": user_id}, actor=_v2_user_email(request))
+    return user or {}
+
+
+@app.post("/api/v2/admin/users/{user_id}/reactivate")
+def v2_admin_reactivate_user(user_id: int, request: Request) -> dict[str, Any]:
+    _v2_require_permission(request, "user.edit")
+    user = _get_access_control_db().set_user_status(user_id, "active")
+    _audit("v2.user.reactivated", {"user_id": user_id}, actor=_v2_user_email(request))
+    return user or {}
 
 
 @app.get("/api/v2/rbac/me")
@@ -2052,6 +2275,8 @@ def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list
     return [_live_feed_path(slot=slot, camera=camera)]
 
 
+app.mount("/admin-v2/assets", StaticFiles(directory=ADMIN_V2_DIR), name="admin-v2-assets")
+app.mount("/app-v2/assets", StaticFiles(directory=APP_V2_DIR), name="app-v2-assets")
 app.mount("/dashboard-v2/assets", StaticFiles(directory=DASHBOARD_V2_DIR), name="dashboard-v2-assets")
 app.mount("/assets", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-assets")
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOT_DIR), name="snapshots")
