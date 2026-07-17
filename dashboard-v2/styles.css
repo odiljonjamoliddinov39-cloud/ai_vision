@@ -317,6 +317,30 @@ td:last-child {
   white-space: nowrap;
 }
 
+.cc-add-role {
+  display: grid;
+  gap: 8px;
+}
+
+.cc-credentials {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.cc-cred em {
+  font-style: normal;
+  color: var(--muted);
+}
+
+.cc-chip-small {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .cc-add-company {
   max-width: 520px;
   margin-bottom: 18px;

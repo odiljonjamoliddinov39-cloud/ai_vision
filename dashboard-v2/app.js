@@ -231,20 +231,36 @@ function newId() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 }
 
+const revealedPasswords = new Set();
+
 function renderCompanyControl(container) {
   const companies = loadCompanies();
 
   const companyCards = companies
     .map((company) => {
       const roles = (company.roles || [])
-        .map(
-          (role) => `
+        .map((role) => {
+          const revealed = revealedPasswords.has(role.id);
+          const credentials = role.login
+            ? `
+              <div class="cc-credentials">
+                <span class="cc-cred"><em>Login:</em> ${escapeHtml(role.login)}</span>
+                <span class="cc-cred"><em>Password:</em> ${revealed ? escapeHtml(role.password || "") : "••••••••"}</span>
+                <button type="button" class="cc-chip cc-chip-small" data-cc-action="toggle-password"
+                        data-company="${company.id}" data-role="${role.id}">
+                  ${revealed ? "Hide" : "Show"}
+                </button>
+              </div>
+            `
+            : "";
+          return `
             <div class="cc-role">
               <div class="cc-role-head">
                 <strong>${escapeHtml(role.name)}</strong>
                 <button type="button" class="cc-remove" data-cc-action="remove-role"
                         data-company="${company.id}" data-role="${role.id}" aria-label="Remove role">✕</button>
               </div>
+              ${credentials}
               <div class="cc-access">
                 <span>Give access:</span>
                 ${ACCESS_OPTIONS.map(
@@ -259,8 +275,8 @@ function renderCompanyControl(container) {
                 ).join("")}
               </div>
             </div>
-          `
-        )
+          `;
+        })
         .join("");
 
       return `
@@ -271,8 +287,10 @@ function renderCompanyControl(container) {
                     data-company="${company.id}" aria-label="Remove company">✕</button>
           </header>
           ${roles || `<p class="empty">No roles yet.</p>`}
-          <form class="cc-add" data-cc-form="role" data-company="${company.id}">
+          <form class="cc-add cc-add-role" data-cc-form="role" data-company="${company.id}">
             <input name="name" placeholder="Role name" required maxlength="60" autocomplete="off" />
+            <input name="login" placeholder="Username (login)" required maxlength="60" autocomplete="off" />
+            <input name="password" type="password" placeholder="Password" required maxlength="120" autocomplete="new-password" />
             <button type="submit">Add role</button>
           </form>
         </article>
@@ -306,8 +324,17 @@ function handleCompanySubmit(event) {
   } else {
     const company = companies.find((item) => item.id === form.dataset.company);
     if (!company) return;
+    const login = form.elements.login.value.trim();
+    const password = form.elements.password.value;
+    if (!login || !password) return;
     company.roles = company.roles || [];
-    company.roles.push({ id: newId(), name, access: { camera: false, analytics: false } });
+    company.roles.push({
+      id: newId(),
+      name,
+      login,
+      password,
+      access: { camera: false, analytics: false },
+    });
     toast(`Role "${name}" added to ${company.name}.`);
   }
 
@@ -327,6 +354,9 @@ function handleCompanyClick(event) {
   } else if (button.dataset.ccAction === "remove-role") {
     company.roles = (company.roles || []).filter((role) => role.id !== button.dataset.role);
     saveCompanies(companies);
+  } else if (button.dataset.ccAction === "toggle-password") {
+    if (revealedPasswords.has(button.dataset.role)) revealedPasswords.delete(button.dataset.role);
+    else revealedPasswords.add(button.dataset.role);
   } else if (button.dataset.ccAction === "toggle-access") {
     const role = (company.roles || []).find((item) => item.id === button.dataset.role);
     if (!role) return;
