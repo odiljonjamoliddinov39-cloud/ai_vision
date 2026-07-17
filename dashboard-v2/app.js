@@ -34,6 +34,14 @@ const state = {
 
 const HEAD_MODULE_IDS = new Set(["overview", "users"]);
 
+const MODULE_OVERRIDES = {
+  users: { label: "Company Control", subtitle: "Companies, roles & access" },
+};
+
+function moduleLabel(module) {
+  return MODULE_OVERRIDES[module.id]?.label || module.label;
+}
+
 const permissionLabels = {
   view_dashboard: "View dashboard",
   view_organizations: "View organizations",
@@ -109,8 +117,8 @@ function renderNavigation() {
     .map(
       (module) => `
         <button class="${module.id === state.activeModule ? "active" : ""}" data-module="${module.id}" type="button">
-          <span>${escapeHtml(module.label)}</span>
-          <small>${escapeHtml(permissionLabels[module.permission] || module.permission)}</small>
+          <span>${escapeHtml(moduleLabel(module))}</span>
+          <small>${escapeHtml(MODULE_OVERRIDES[module.id]?.subtitle || permissionLabels[module.permission] || module.permission)}</small>
         </button>
       `
     )
@@ -145,7 +153,7 @@ function renderScope() {
 function renderModuleContent() {
   const modules = state.session?.surfaces?.head || [];
   const module = modules.find((item) => item.id === state.activeModule);
-  els.activeModuleTitle.textContent = module?.label || "Unavailable";
+  els.activeModuleTitle.textContent = module ? moduleLabel(module) : "Unavailable";
   els.activeModuleEyebrow.textContent = "Head module";
 
   const summary = state.overview?.summary || {};
@@ -174,6 +182,11 @@ function renderModuleContent() {
     return;
   }
 
+  if (module.id === "users") {
+    renderCompanyControl(els.moduleContent);
+    return;
+  }
+
   if (module.id === "activity" || module.id === "reports") {
     els.moduleContent.innerHTML = movements.length
       ? `<table><tbody>${movements
@@ -189,6 +202,140 @@ function renderModuleContent() {
       <p>This module is registered in the V2 architecture and protected by <code>${escapeHtml(module.permission)}</code>. It can evolve independently without restructuring the dashboard.</p>
     </div>
   `;
+}
+
+// ---- Company Control --------------------------------------------------------
+// Companies/roles live in localStorage for now; swap the store helpers for
+// backend endpoints later.
+
+const COMPANY_STORE_KEY = "ai_vision_v2_companies";
+const ACCESS_OPTIONS = [
+  { key: "camera", label: "Camera Control" },
+  { key: "analytics", label: "Analytics" },
+];
+
+function loadCompanies() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COMPANY_STORE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCompanies(companies) {
+  localStorage.setItem(COMPANY_STORE_KEY, JSON.stringify(companies));
+}
+
+function newId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function renderCompanyControl(container) {
+  const companies = loadCompanies();
+
+  const companyCards = companies
+    .map((company) => {
+      const roles = (company.roles || [])
+        .map(
+          (role) => `
+            <div class="cc-role">
+              <div class="cc-role-head">
+                <strong>${escapeHtml(role.name)}</strong>
+                <button type="button" class="cc-remove" data-cc-action="remove-role"
+                        data-company="${company.id}" data-role="${role.id}" aria-label="Remove role">✕</button>
+              </div>
+              <div class="cc-access">
+                <span>Give access:</span>
+                ${ACCESS_OPTIONS.map(
+                  (option) => `
+                    <button type="button" class="cc-chip ${role.access?.[option.key] ? "on" : ""}"
+                            data-cc-action="toggle-access" data-company="${company.id}"
+                            data-role="${role.id}" data-access="${option.key}"
+                            aria-pressed="${Boolean(role.access?.[option.key])}">
+                      ${option.label}
+                    </button>
+                  `
+                ).join("")}
+              </div>
+            </div>
+          `
+        )
+        .join("");
+
+      return `
+        <article class="cc-company">
+          <header class="cc-company-head">
+            <h3>${escapeHtml(company.name)}</h3>
+            <button type="button" class="cc-remove" data-cc-action="remove-company"
+                    data-company="${company.id}" aria-label="Remove company">✕</button>
+          </header>
+          ${roles || `<p class="empty">No roles yet.</p>`}
+          <form class="cc-add" data-cc-form="role" data-company="${company.id}">
+            <input name="name" placeholder="Role name" required maxlength="60" autocomplete="off" />
+            <button type="submit">Add role</button>
+          </form>
+        </article>
+      `;
+    })
+    .join("");
+
+  container.innerHTML = `
+    <p class="chart-note">Stored in this browser for now — backend hookup pending.</p>
+    <form class="cc-add cc-add-company" data-cc-form="company">
+      <input name="name" placeholder="Company name" required maxlength="60" autocomplete="off" />
+      <button type="submit">Add company</button>
+    </form>
+    <div class="cc-list">
+      ${companyCards || `<p class="empty">No companies yet — add the first one above.</p>`}
+    </div>
+  `;
+}
+
+function handleCompanySubmit(event) {
+  const form = event.target.closest("[data-cc-form]");
+  if (!form) return;
+  event.preventDefault();
+  const name = form.elements.name.value.trim();
+  if (!name) return;
+  const companies = loadCompanies();
+
+  if (form.dataset.ccForm === "company") {
+    companies.push({ id: newId(), name, roles: [] });
+    toast(`Company "${name}" added.`);
+  } else {
+    const company = companies.find((item) => item.id === form.dataset.company);
+    if (!company) return;
+    company.roles = company.roles || [];
+    company.roles.push({ id: newId(), name, access: { camera: false, analytics: false } });
+    toast(`Role "${name}" added to ${company.name}.`);
+  }
+
+  saveCompanies(companies);
+  renderCompanyControl(els.moduleContent);
+}
+
+function handleCompanyClick(event) {
+  const button = event.target.closest("[data-cc-action]");
+  if (!button) return;
+  const companies = loadCompanies();
+  const company = companies.find((item) => item.id === button.dataset.company);
+  if (!company) return;
+
+  if (button.dataset.ccAction === "remove-company") {
+    saveCompanies(companies.filter((item) => item.id !== company.id));
+  } else if (button.dataset.ccAction === "remove-role") {
+    company.roles = (company.roles || []).filter((role) => role.id !== button.dataset.role);
+    saveCompanies(companies);
+  } else if (button.dataset.ccAction === "toggle-access") {
+    const role = (company.roles || []).find((item) => item.id === button.dataset.role);
+    if (!role) return;
+    role.access = role.access || {};
+    role.access[button.dataset.access] = !role.access[button.dataset.access];
+    saveCompanies(companies);
+  }
+
+  renderCompanyControl(els.moduleContent);
 }
 
 // ---- Analytics charts -------------------------------------------------------
@@ -594,6 +741,9 @@ async function load() {
   renderScope();
   renderModuleContent();
 }
+
+els.moduleContent.addEventListener("submit", handleCompanySubmit);
+els.moduleContent.addEventListener("click", handleCompanyClick);
 
 els.moduleNav.addEventListener("click", (event) => {
   const button = event.target.closest("[data-module]");
