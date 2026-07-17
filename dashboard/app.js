@@ -111,8 +111,8 @@ const API_BASE = (() => {
   }
   return window.location.origin;
 })();
-const LIVE_FRAME_REFRESH_MS = 5000;
-const LIVE_FRAME_RETRY_MS = 10000;
+const LIVE_FRAME_REFRESH_MS = 1500;
+const LIVE_FRAME_RETRY_MS = 4000;
 const liveState = {
   detectionRunning: false,
 };

@@ -14,12 +14,10 @@ import os
 import re
 import secrets
 import signal
-import shutil
 import socket
 import subprocess
 import sys
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -103,8 +101,6 @@ _camera_db: CameraDB | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _access_control_db: AccessControlDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
-_raw_frame_locks: dict[str, asyncio.Lock] = {}
-_raw_frame_semaphore = asyncio.Semaphore(int(os.getenv("RAW_FRAME_CAPTURE_CONCURRENCY", "1")))
 _watchdog_task: asyncio.Task | None = None
 _manual_stop_requested = False
 _watchdog_last_start_attempt = 0.0
@@ -536,10 +532,7 @@ def _require_permission(request: Request, permission: str) -> dict[str, Any]:
 
 
 def _rate_limit(request: Request) -> JSONResponse | None:
-    if request.url.path == "/api/live_frame":
-        limit = int(os.getenv("LIVE_FRAME_RATE_LIMIT_PER_MINUTE", "1200"))
-    else:
-        limit = int(os.getenv("SECURITY_RATE_LIMIT_PER_MINUTE", "120"))
+    limit = int(os.getenv("SECURITY_RATE_LIMIT_PER_MINUTE", "120"))
     if limit <= 0:
         return None
     actor = _request_actor(request)
@@ -1340,50 +1333,9 @@ def _terminate_pid(pid: int) -> int | None:
     return None
 
 
-def _detection_selected_cameras(db: CameraDB) -> list[dict[str, Any]]:
-    active_cameras = db.list_active_cameras(include_secret=True)
-    raw_slots = os.getenv("DETECTION_ACTIVE_SLOTS", "1").strip()
-    selected_slots: set[int] = set()
-    for value in re.split(r"[, ]+", raw_slots):
-        if value.isdigit():
-            selected_slots.add(int(value))
-
-    if selected_slots:
-        selected = [
-            camera
-            for camera in active_cameras
-            if int(camera.get("slot_number") or 0) in selected_slots
-        ]
-        if selected:
-            return selected
-
-    max_cameras = max(1, int(os.getenv("DETECTION_MAX_CAMERAS", "1")))
-    return active_cameras[:max_cameras]
-
-
-def _write_detection_runtime_config(cameras: list[dict[str, Any]]) -> str:
-    data = _read_yaml(CONFIG_PATH)
-    data["cameras"] = [
-        {
-            "name": camera["name"],
-            "source": _camera_source_from_text(str(camera["stream_url"])),
-            "slot_number": camera.get("slot_number") or index,
-        }
-        for index, camera in enumerate(cameras, start=1)
-    ]
-    detection = data.setdefault("detection", {})
-    detection["image_size"] = min(int(detection.get("image_size") or 640), int(os.getenv("DETECTION_RUNTIME_IMAGE_SIZE", "480")))
-    display = data.setdefault("display", {})
-    display["live_frame_width"] = min(int(display.get("live_frame_width") or 320), int(os.getenv("DETECTION_RUNTIME_FRAME_WIDTH", "320")))
-    display["live_frame_jpeg_quality"] = min(int(display.get("live_frame_jpeg_quality") or 28), int(os.getenv("DETECTION_RUNTIME_JPEG_QUALITY", "28")))
-    runtime_path = ROOT / "config" / "detection_runtime.yaml"
-    _write_yaml(runtime_path, data)
-    return str(runtime_path.relative_to(ROOT))
-
-
-def _validate_active_cameras_for_start(cameras: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def _validate_active_cameras_for_start() -> None:
     db = _get_camera_db()
-    active_cameras = cameras or db.list_active_cameras(include_secret=True)
+    active_cameras = db.list_active_cameras(include_secret=True)
     if not active_cameras:
         raise HTTPException(
             status_code=400,
@@ -1405,7 +1357,7 @@ def _validate_active_cameras_for_start(cameras: list[dict[str, Any]] | None = No
             + " ".join(failures),
         )
 
-    return active_cameras
+    _sync_config_active_cameras(db)
 
 
 def _status() -> dict[str, Any]:
@@ -2284,18 +2236,15 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     # config/config.yaml (for example the demo camera checked into the repo) from
     # making the detector process only slot 1 while the dashboard has many active
     # NVR/controller channels saved in SQLite.
-    db = _get_camera_db()
-    _sync_config_active_cameras(db)
-    selected_cameras = _detection_selected_cameras(db)
-    _validate_active_cameras_for_start(selected_cameras)
-    runtime_config_path = _write_detection_runtime_config(selected_cameras)
+    _sync_config_active_cameras(_get_camera_db())
+    _validate_active_cameras_for_start()
     _manual_stop_requested = False
     _clear_live_frames()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _stdout_handle = DETECTION_STDOUT_PATH.open("w", encoding="utf-8", buffering=1)
     _stderr_handle = DETECTION_STDERR_PATH.open("w", encoding="utf-8", buffering=1)
-    _stdout_handle.write(f"\n--- detection start {_now_iso()} config={runtime_config_path} ---\n")
+    _stdout_handle.write(f"\n--- detection start {_now_iso()} config={request.config_path} ---\n")
     DETECTION_HEALTH_PATH.write_text(
         json.dumps(
             {
@@ -2316,7 +2265,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
         sys.executable,
         str(ROOT / "main.py"),
         "--config",
-        runtime_config_path,
+        request.config_path,
     ]
     if request.no_display:
         command.append("--no-display")
@@ -2594,169 +2543,23 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
     """
 
     latest = next((path for path in _live_feed_paths(slot=slot, camera=camera) if path.exists()), None)
-    if latest is not None:
-        for _ in range(5):
-            data = latest.read_bytes()
-            if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
-                return _jpeg_response(data, source="ai")
-            await asyncio.sleep(0.03)
+    if latest is None:
+        raise HTTPException(status_code=404, detail="No live frame is available yet.")
 
-    raw = await _raw_live_frame(slot=slot, camera=camera)
-    if raw is not None:
-        return _jpeg_response(raw, source="raw")
-
-    raise HTTPException(status_code=404, detail="No camera frame is available yet.")
-
-
-def _jpeg_response(data: bytes, source: str) -> Response:
-    return Response(
-        content=data,
-        media_type="image/jpeg",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "X-Live-Frame-Source": source,
-        },
-    )
-
-
-async def _raw_live_frame(slot: int | None = None, camera: str | None = None) -> bytes | None:
-    stream_url = _live_camera_stream_url(slot=slot, camera=camera)
-    if not stream_url or stream_url.strip().lower() == "dummy":
-        return None
-
-    cache_key = f"slot_{slot}" if slot is not None else f"camera_{camera or 'default'}"
-    cache_path = SNAPSHOT_DIR / f"raw_latest_{cache_key}.jpg"
-    cache_seconds = float(os.getenv("RAW_FRAME_CACHE_SECONDS", "3600"))
-    if _fresh_jpeg(cache_path, max_age_seconds=cache_seconds):
-        return cache_path.read_bytes()
-
-    lock = _raw_frame_locks.setdefault(cache_key, asyncio.Lock())
-    async with lock:
-        if _fresh_jpeg(cache_path, max_age_seconds=cache_seconds):
-            return cache_path.read_bytes()
-        if os.getenv("RAW_FRAME_CAPTURE_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
-            return None
-        async with _raw_frame_semaphore:
-            ok = await asyncio.to_thread(_capture_raw_frame, stream_url, cache_path)
-        if ok and _fresh_jpeg(cache_path, max_age_seconds=30):
-            return cache_path.read_bytes()
-    return None
-
-
-def _fresh_jpeg(path: Path, max_age_seconds: float) -> bool:
-    try:
-        if not path.exists() or time.time() - path.stat().st_mtime > max_age_seconds:
-            return False
-        data = path.read_bytes()
-        return data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")
-    except OSError:
-        return False
-
-
-def _live_camera_stream_url(slot: int | None = None, camera: str | None = None) -> str | None:
-    try:
-        cameras = _get_camera_db().list_active_cameras(include_secret=True)
-    except Exception:
-        return None
-    for row in cameras:
-        if slot is not None and int(row.get("slot_number") or 0) == int(slot):
-            return str(row.get("stream_url") or "")
-        if camera and str(row.get("name") or "") == camera:
-            return str(row.get("stream_url") or "")
-    return None
-
-
-def _capture_raw_frame(stream_url: str, cache_path: Path) -> bool:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = cache_path.with_name(f".{cache_path.name}.{uuid.uuid4().hex}.tmp")
-    if shutil.which("ffmpeg"):
-        try:
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-rtsp_transport",
-                    "tcp",
-                    "-stimeout",
-                    os.getenv("RAW_FRAME_FFMPEG_TIMEOUT_US", "2500000"),
-                    "-i",
-                    stream_url,
-                    "-frames:v",
-                    "1",
-                    "-vf",
-                    f"scale={os.getenv('RAW_FRAME_WIDTH', '320')}:-1",
-                    "-q:v",
-                    os.getenv("RAW_FRAME_FFMPEG_QUALITY", "10"),
-                    "-y",
-                    str(tmp_path),
-                ],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=float(os.getenv("RAW_FRAME_CAPTURE_TIMEOUT_SECONDS", "6")),
+    for _ in range(5):
+        data = latest.read_bytes()
+        if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
+            return Response(
+                content=data,
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                },
             )
-            if result.returncode == 0 and _fresh_jpeg(tmp_path, max_age_seconds=30):
-                tmp_path.replace(cache_path)
-                return True
-        except Exception:
-            pass
+        await asyncio.sleep(0.03)
 
-    code = r"""
-import os
-import sys
-import cv2
-
-stream_url, out_path = sys.argv[1], sys.argv[2]
-os.environ.setdefault(
-    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
-    "rtsp_transport;tcp|stimeout;3500000|max_delay;250000|buffer_size;65536",
-)
-cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-try:
-    if not cap.isOpened():
-        raise SystemExit(2)
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        raise SystemExit(3)
-    height, width = frame.shape[:2]
-    target_width = int(os.getenv("RAW_FRAME_WIDTH", "320"))
-    if width > target_width:
-        target_height = max(1, int(height * (target_width / width)))
-        frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
-    ok, jpg = cv2.imencode(
-        ".jpg",
-        frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), int(os.getenv("RAW_FRAME_JPEG_QUALITY", "28"))],
-    )
-    if not ok:
-        raise SystemExit(4)
-    with open(out_path, "wb") as fh:
-        fh.write(jpg.tobytes())
-finally:
-    cap.release()
-"""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code, stream_url, str(tmp_path)],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=float(os.getenv("RAW_FRAME_CAPTURE_TIMEOUT_SECONDS", "8")),
-        )
-        if result.returncode != 0 or not _fresh_jpeg(tmp_path, max_age_seconds=30):
-            return False
-        tmp_path.replace(cache_path)
-        return True
-    except Exception:
-        return False
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    raise HTTPException(status_code=503, detail="Latest live frame is being written; retry.")
 
 
 def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
