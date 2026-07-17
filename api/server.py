@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -2623,6 +2624,40 @@ def _live_camera_stream_url(slot: int | None = None, camera: str | None = None) 
 def _capture_raw_frame(stream_url: str, cache_path: Path) -> bool:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_name(f".{cache_path.name}.{uuid.uuid4().hex}.tmp")
+    if shutil.which("ffmpeg"):
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-rtsp_transport",
+                    "tcp",
+                    "-stimeout",
+                    os.getenv("RAW_FRAME_FFMPEG_TIMEOUT_US", "2500000"),
+                    "-i",
+                    stream_url,
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    f"scale={os.getenv('RAW_FRAME_WIDTH', '320')}:-1",
+                    "-q:v",
+                    os.getenv("RAW_FRAME_FFMPEG_QUALITY", "10"),
+                    "-y",
+                    str(tmp_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=float(os.getenv("RAW_FRAME_CAPTURE_TIMEOUT_SECONDS", "6")),
+            )
+            if result.returncode == 0 and _fresh_jpeg(tmp_path, max_age_seconds=30):
+                tmp_path.replace(cache_path)
+                return True
+        except Exception:
+            pass
+
     code = r"""
 import os
 import sys
