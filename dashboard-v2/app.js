@@ -108,6 +108,11 @@ function renderShell() {
 }
 
 function renderNavigation() {
+  if (state.surface === "user") {
+    state.activeModule = null;
+    els.moduleNav.innerHTML = "";
+    return;
+  }
   const modules = state.session?.surfaces?.[state.surface] || [];
   if (!modules.length) {
     state.activeModule = null;
@@ -131,20 +136,21 @@ function renderNavigation() {
 
 function renderSummary() {
   const summary = state.overview?.summary || {};
-  const cards = [
-    ["Active cameras", summary.active_cameras ?? 0],
-    ["Frames read", summary.frames_read ?? 0],
-    ["Last detections", summary.last_detection_count ?? 0],
-    ["Stock items", summary.stock_items ?? 0],
-  ];
-  if (state.surface === "head") {
-    cards.push(["Saved cameras", summary.saved_cameras ?? 0], ["Audit verified", summary.audit_verified ? "Yes" : "No"]);
+  if (state.surface === "user") {
+    els.summaryGrid.innerHTML = "";
   } else {
-    cards.push(["Verification tasks", summary.open_verification_tasks ?? 0], ["Active alerts", summary.active_alerts ?? 0]);
+    const cards = [
+      ["Active cameras", summary.active_cameras ?? 0],
+      ["Frames read", summary.frames_read ?? 0],
+      ["Last detections", summary.last_detection_count ?? 0],
+      ["Stock items", summary.stock_items ?? 0],
+      ["Saved cameras", summary.saved_cameras ?? 0],
+      ["Audit verified", summary.audit_verified ? "Yes" : "No"],
+    ];
+    els.summaryGrid.innerHTML = cards
+      .map(([label, value]) => `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`)
+      .join("");
   }
-  els.summaryGrid.innerHTML = cards
-    .map(([label, value]) => `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`)
-    .join("");
   const running = Boolean(summary.detector_running);
   els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
   els.detectorState.dataset.state = running ? "good" : "bad";
@@ -158,6 +164,25 @@ function renderScope() {
 }
 
 function renderModuleContent() {
+  if (state.surface === "user") {
+    const summary = state.overview?.summary || {};
+    const running = Boolean(summary.detector_running);
+    els.activeModuleEyebrow.textContent = "User surface";
+    els.activeModuleTitle.textContent = "Blank canvas";
+    els.moduleContent.innerHTML = `
+      <div class="module-placeholder">
+        <h3>This page is empty and ready to build</h3>
+        <p>It stays subscribed to the Head Dashboard feed, so anything added here starts with live data.</p>
+        <p class="sync-line">
+          <span class="sync-dot" data-state="${running ? "good" : "bad"}"></span>
+          Listening to Head Dashboard — detector ${running ? "running" : "stopped"} ·
+          ${escapeHtml(summary.active_cameras ?? 0)} active cameras ·
+          last frame: ${escapeHtml(summary.last_frame_at || "waiting")}
+        </p>
+      </div>
+    `;
+    return;
+  }
   const modules = state.session?.surfaces?.[state.surface] || [];
   const module = modules.find((item) => item.id === state.activeModule);
   els.activeModuleTitle.textContent = module?.label || "Unavailable";
@@ -601,7 +626,7 @@ async function load() {
   renderShell();
   const [session, overview] = await Promise.all([
     api("/api/v2/rbac/me"),
-    api(state.surface === "head" ? "/api/v2/head/overview" : "/api/v2/user/overview"),
+    api("/api/v2/head/overview"),
   ]);
   state.session = session;
   state.overview = overview;
@@ -610,6 +635,26 @@ async function load() {
   renderSummary();
   renderScope();
   renderModuleContent();
+  scheduleUserSync();
+}
+
+let userSyncTimer = null;
+
+function scheduleUserSync() {
+  if (userSyncTimer) {
+    clearInterval(userSyncTimer);
+    userSyncTimer = null;
+  }
+  if (state.surface !== "user") return;
+  userSyncTimer = setInterval(async () => {
+    try {
+      state.overview = await api("/api/v2/head/overview");
+      renderSummary();
+      renderModuleContent();
+    } catch {
+      // Keep the last known state; the next tick retries.
+    }
+  }, 10000);
 }
 
 els.surfaceButtons.forEach((button) => {
