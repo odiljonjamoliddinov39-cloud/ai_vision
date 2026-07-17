@@ -11,18 +11,24 @@
     <main class="v2-shell">
       <aside class="v2-sidebar">
         <div class="brand-card">
-          <span>AI Vision</span>
-          <strong>Enterprise Control</strong>
-          <small>Dashboard V2</small>
+          <button id="sidebarToggle" class="menu-btn" type="button" aria-label="Toggle sidebar" aria-expanded="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="4" y1="6" x2="20" y2="6" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="18" x2="20" y2="18" />
+            </svg>
+          </button>
+          <div class="brand-text">
+            <span>AI Vision</span>
+            <strong>Enterprise Control</strong>
+            <small>Dashboard V2</small>
+          </div>
         </div>
 
         <div class="surface-switch" role="tablist" aria-label="Dashboard surface">
           <button class="active" data-surface="head" type="button">Head Dashboard</button>
           <button data-surface="user" type="button">User Dashboard</button>
         </div>
-
-        <label class="field-label" for="roleSelect">Preview role</label>
-        <select id="roleSelect"></select>
 
         <nav class="module-nav" id="moduleNav" aria-label="Dashboard modules"></nav>
       </aside>
