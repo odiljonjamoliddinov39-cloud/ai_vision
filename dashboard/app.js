@@ -1,4 +1,4 @@
-﻿const els = {
+const els = {
   pageTitle: document.querySelector("#pageTitle"),
   statusPill: document.querySelector("#statusPill"),
   refreshBtn: document.querySelector("#refreshBtn"),
@@ -149,7 +149,7 @@ const api = async (path, options = {}) => {
       const message = await response.text();
       if (response.status === 401) {
         throw new Error(
-          "Backend требует admin API key. Откройте dashboard один раз с ?token=YOUR_ADMIN_API_KEY."
+          "Backend requires an admin API key. Open the dashboard with ?token=YOUR_ADMIN_API_KEY once."
         );
       }
       throw new Error(message || response.statusText);
@@ -157,8 +157,8 @@ const api = async (path, options = {}) => {
 
     return response.json();
   } catch (error) {
-    console.error("Ошибка API-запроса", path, error);
-    throw new Error(error?.message || "Сетевой запрос не выполнен");
+    console.error("API fetch failed", path, error);
+    throw new Error(error?.message || "Network request failed");
   }
 };
 
@@ -178,7 +178,7 @@ const escapeHtml = (value) =>
 
 const setStatus = (running) => {
   liveState.detectionRunning = Boolean(running);
-  els.statusPill.textContent = running ? "Детекция запущена" : "Детекция остановлена";
+  els.statusPill.textContent = running ? "Detection running" : "Detection stopped";
   els.statusPill.dataset.state = running ? "running" : "stopped";
   els.btnStartDetection.disabled = running;
   els.btnStopDetection.disabled = !running;
@@ -203,18 +203,16 @@ const setActiveTab = (tab) => {
 
   els.pageTitle.textContent =
     tab === "itemEntry"
-      ? "Добавить товар"
+      ? "Item Entry"
       : tab === "cameraSettings"
-      ? "Настройки камер"
+      ? "Camera Settings"
       : tab === "checkIn"
-      ? "Приём / выдача"
+      ? "Check In"
       : tab === "recognitions"
-      ? "Распознавание"
+      ? "Recognitions"
       : tab === "occupancy"
-      ? "Наличие"
-      : tab === "warehouse"
-      ? "События склада"
-      : "Готовый список";
+      ? "Occupancy"
+      : "Ready List";
 };
 
 const cameraState = {
@@ -226,10 +224,10 @@ const MAX_CAMERA_SLOTS = 50;
 
 const setCameraConnectionStatus = (status, message) => {
   const labels = {
-    connected: "Подключено",
-    failed: "Ошибка",
-    loading: "Загрузка",
-    unknown: "Не проверено",
+    connected: "Connected",
+    failed: "Failed",
+    loading: "Loading",
+    unknown: "Not tested",
   };
   const label = labels[status] || labels.unknown;
   els.cameraConnectionStatus.textContent = label;
@@ -239,10 +237,10 @@ const setCameraConnectionStatus = (status, message) => {
 
 const setControllerConnectionStatus = (status, message) => {
   const labels = {
-    connected: "Подключено",
-    failed: "Ошибка",
-    loading: "Загрузка",
-    unknown: "Не проверено",
+    connected: "Connected",
+    failed: "Failed",
+    loading: "Loading",
+    unknown: "Not tested",
   };
   const label = labels[status] || labels.unknown;
   els.controllerConnectionStatus.textContent = label;
@@ -267,23 +265,23 @@ const renderCameras = () => {
         (camera) =>
           `<option value="${camera.id}" ${camera.is_active ? "selected" : ""}>${escapeHtml(camera.name)} — ${escapeHtml(camera.status)}</option>`
       )
-      .join("") || `<option value="">Нет сохранённых камер</option>`;
+      .join("") || `<option value="">No saved cameras</option>`;
 
   els.activeSlotList.innerHTML =
     cameraState.activeCameras
       .map(
         (camera) =>
-          `<div class="slot-chip"><span>Слот ${escapeHtml(camera.slot_number || "-")}</span><strong>${escapeHtml(camera.name)}</strong><em>${escapeHtml(camera.status)}</em></div>`
+          `<div class="slot-chip"><span>Slot ${escapeHtml(camera.slot_number || "-")}</span><strong>${escapeHtml(camera.name)}</strong><em>${escapeHtml(camera.status)}</em></div>`
       )
-      .join("") || `<p class="panel-sub">Активных слотов камер пока нет.</p>`;
+      .join("") || `<p class="panel-sub">No active camera slots yet.</p>`;
 
   els.savedCameraTable.innerHTML =
     cameras
       .map(
         (camera) =>
-          `<tr><td>${escapeHtml(camera.name)}</td><td>${escapeHtml(camera.slot_number || "-")}</td><td>${escapeHtml(camera.masked_stream_url)}</td><td>${escapeHtml(camera.status)}</td><td>${camera.is_active ? "Активна" : "-"}</td></tr>`
+          `<tr><td>${escapeHtml(camera.name)}</td><td>${escapeHtml(camera.slot_number || "-")}</td><td>${escapeHtml(camera.masked_stream_url)}</td><td>${escapeHtml(camera.status)}</td><td>${camera.is_active ? "Active" : "-"}</td></tr>`
       )
-      .join("") || `<tr><td colspan="5">Сохранённых камер пока нет.</td></tr>`;
+      .join("") || `<tr><td colspan="5">No saved cameras yet.</td></tr>`;
 };
 
 const numberFromInput = (input, fallback = null) => {
@@ -305,12 +303,12 @@ const isPrivateControllerHost = (host) => {
 const handleTestCamera = async () => {
   const streamUrl = els.cameraStreamUrl.value.trim();
   if (!streamUrl) {
-    toast("Сначала введите URL потока камеры.");
+    toast("Enter a camera stream URL first.");
     return;
   }
 
   els.btnTestCamera.disabled = true;
-  setCameraConnectionStatus("loading", "Загрузка");
+  setCameraConnectionStatus("loading", "Loading");
   try {
     const result = await api("/api/cameras/test", {
       method: "POST",
@@ -337,36 +335,36 @@ const handleConnectController = async (event) => {
   const lastSlot = startSlot + channelCount - 1;
 
   if (!els.controllerHost.value.trim()) {
-    toast("IP/host контроллера обязателен.");
+    toast("Controller IP/host is required.");
     return;
   }
   if (isPrivateControllerHost(els.controllerHost.value)) {
     const message =
-      "Используйте публичный IP или DNS/DDNS. Частные Wi‑Fi/LAN IP недоступны для облачного backend.";
+      "Use a public IP or DNS/DDNS hostname. Private Wi-Fi/LAN IPs cannot be reached by the cloud backend.";
     setControllerConnectionStatus("failed", message);
     toast(message);
     return;
   }
   if (!Number.isInteger(channelCount) || channelCount < 1 || channelCount > MAX_CAMERA_SLOTS) {
-    toast(`Количество камер должно быть от 1 до ${MAX_CAMERA_SLOTS}.`);
+    toast(`Number of cameras must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
   if (!Number.isInteger(channelStart) || channelStart < 1) {
-    toast("Первый канал контроллера должен быть 1 или выше.");
+    toast("First controller channel must be 1 or higher.");
     return;
   }
   if (!Number.isInteger(startSlot) || startSlot < 1 || lastSlot > MAX_CAMERA_SLOTS) {
-    toast(`Слоты контроллера должны помещаться в диапазон 1–${MAX_CAMERA_SLOTS}.`);
+    toast(`Controller slots must fit between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
 
   els.btnConnectController.disabled = true;
-  setControllerConnectionStatus("loading", "Проверка контроллера и создание слотов камер...");
+  setControllerConnectionStatus("loading", "Checking controller and creating camera slots...");
   try {
     const result = await api("/api/camera-controller", {
       method: "POST",
       body: JSON.stringify({
-        name: els.controllerName.value.trim() || "Контроллер камер",
+        name: els.controllerName.value.trim() || "Camera Controller",
         host: els.controllerHost.value.trim(),
         protocol: els.controllerProtocol.value,
         port,
@@ -393,8 +391,8 @@ const handleConnectController = async (event) => {
     const activeCount = (result.results || []).filter((row) => row.active).length;
     const connected = result.controller?.reachable;
     const message = connected
-      ? `Контроллер подключён. Добавлено камер: ${createdCount}, назначено слотов: ${activeCount}.`
-      : result.controller?.message || "Контроллер недоступен.";
+      ? `Controller connected. Added ${createdCount} cameras and assigned ${activeCount} slots.`
+      : result.controller?.message || "Controller could not be reached.";
     setControllerConnectionStatus(connected ? "connected" : "failed", message);
     toast(message);
   } catch (error) {
@@ -411,16 +409,16 @@ const handleConnectCamera = async (event) => {
   const streamUrl = els.cameraStreamUrl.value.trim();
   const slotNumber = Number(els.cameraSlot.value || 1);
   if (!name || !streamUrl) {
-    toast("Название камеры и URL потока обязательны.");
+    toast("Camera name and stream URL are required.");
     return;
   }
   if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > MAX_CAMERA_SLOTS) {
-    toast(`Слот камеры должен быть от 1 до ${MAX_CAMERA_SLOTS}.`);
+    toast(`Camera slot must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
 
   els.btnConnectCamera.disabled = true;
-  setCameraConnectionStatus("loading", "Загрузка");
+  setCameraConnectionStatus("loading", "Loading");
   try {
     const result = await api("/api/cameras", {
       method: "POST",
@@ -438,7 +436,7 @@ const handleConnectCamera = async (event) => {
     renderLiveScreens();
     const connected = result.test?.status === "connected";
     setCameraConnectionStatus(connected ? "connected" : "failed", result.test?.message);
-    toast(connected ? "Камера подключена и активирована." : result.test?.message || "Камера сохранена, но соединение не удалось.");
+    toast(connected ? "Camera connected and set active." : result.test?.message || "Camera saved but connection failed.");
   } catch (error) {
     setCameraConnectionStatus("failed", error.message);
     toast(error.message);
@@ -451,11 +449,11 @@ const handleSetActiveCamera = async () => {
   const cameraId = els.slotCameraSelect.value;
   const slotNumber = Number(els.activeSlotNumber.value || 1);
   if (!cameraId) {
-    toast("Сначала выберите сохранённую камеру.");
+    toast("Select a saved camera first.");
     return;
   }
   if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > MAX_CAMERA_SLOTS) {
-    toast(`Слот должен быть от 1 до ${MAX_CAMERA_SLOTS}.`);
+    toast(`Slot must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
 
@@ -469,7 +467,7 @@ const handleSetActiveCamera = async () => {
     cameraState.activeCameras = result.active_cameras || [];
     renderCameras();
     renderLiveScreens();
-    toast(result.restarted ? "Слот камеры назначен, детекция перезапущена." : "Слот камеры назначен.");
+    toast(result.restarted ? "Camera slot assigned and detection restarted." : "Camera slot assigned.");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -480,7 +478,7 @@ const handleSetActiveCamera = async () => {
 const handleClearCameraSlot = async () => {
   const slotNumber = Number(els.activeSlotNumber.value || 1);
   if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > MAX_CAMERA_SLOTS) {
-    toast(`Слот должен быть от 1 до ${MAX_CAMERA_SLOTS}.`);
+    toast(`Slot must be between 1 and ${MAX_CAMERA_SLOTS}.`);
     return;
   }
 
@@ -491,7 +489,7 @@ const handleClearCameraSlot = async () => {
     cameraState.activeCameras = result.active_cameras || [];
     renderCameras();
     renderLiveScreens();
-    toast(result.restarted ? "Слот камеры очищен, детекция перезапущена." : "Слот камеры очищен.");
+    toast(result.restarted ? "Camera slot cleared and detection restarted." : "Camera slot cleared.");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -509,7 +507,7 @@ const loadInventory = async () => {
 const renderInventory = () => {
   const items = inventoryState.items;
   const totalQuantity = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-  const types = [...new Set(items.map((item) => item.item_type || "неизвестно"))];
+  const types = [...new Set(items.map((item) => item.item_type || "unknown"))];
 
   els.totalItems.textContent = items.length;
   els.itemTypes.textContent = types.length;
@@ -518,18 +516,18 @@ const renderInventory = () => {
   const itemRows = items
     .map(
       (item) =>
-        `<tr><td>${item.item_id}</td><td>${item.name}</td><td>${item.item_type || "неизвестно"}</td><td>${item.quantity}</td></tr>`
+        `<tr><td>${item.item_id}</td><td>${item.name}</td><td>${item.item_type || "unknown"}</td><td>${item.quantity}</td></tr>`
     )
     .join("");
-  els.itemList.innerHTML = itemRows || `<tr><td colspan="4">Товаров пока нет.</td></tr>`;
-  els.checkItemTable.innerHTML = itemRows || `<tr><td colspan="4">Товаров пока нет.</td></tr>`;
+  els.itemList.innerHTML = itemRows || `<tr><td colspan="4">No items yet.</td></tr>`;
+  els.checkItemTable.innerHTML = itemRows || `<tr><td colspan="4">No items yet.</td></tr>`;
   els.readyListTable.innerHTML =
-    itemRows || `<tr><td colspan="5">Товаров пока нет.</td></tr>`;
+    itemRows || `<tr><td colspan="5">No items yet.</td></tr>`;
 
   const options = items
     .map((item) => `<option value="${item.item_id}">${item.item_id} — ${item.name}</option>`)
     .join("");
-  els.checkItemId.innerHTML = options || `<option value="">Нет товаров</option>`;
+  els.checkItemId.innerHTML = options || `<option value="">No items</option>`;
 
   els.historyTable.innerHTML =
     inventoryState.history
@@ -537,7 +535,7 @@ const renderInventory = () => {
         (entry) =>
           `<tr><td>${entry.timestamp}</td><td>${entry.action}</td><td>${entry.item_id}</td><td>${entry.quantity}</td><td>${entry.note || "—"}</td></tr>`
       )
-      .join("") || `<tr><td colspan="5">Действий пока нет.</td></tr>`;
+      .join("") || `<tr><td colspan="5">No activity yet.</td></tr>`;
 };
 
 const loadRecognitions = async () => {
@@ -556,9 +554,9 @@ const renderRecognitions = (data, running = false) => {
 
   const detectionText = running
     ? entryCount > 0
-      ? `Активно — последних детекций: ${entryCount}`
-      : "Работает — последних детекций нет"
-    : "Детекция остановлена";
+      ? `Active — ${entryCount} recent detections`
+      : "Running — no recent detections"
+    : "Detection stopped";
 
   els.videoRecognitionStatus.textContent = detectionText;
   els.recognitionStatus.textContent = detectionText;
@@ -575,7 +573,7 @@ const renderRecognitions = (data, running = false) => {
         (entry) =>
           `<tr><td>${entry.timestamp}</td><td>${entry.class_name}</td><td>${entry.confidence}</td></tr>`
       )
-      .join("") || `<tr><td colspan="3">Последних детекций нет.</td></tr>`;
+      .join("") || `<tr><td colspan="3">No recent detections.</td></tr>`;
 
   els.recognitionEntries.innerHTML =
     entries
@@ -583,19 +581,19 @@ const renderRecognitions = (data, running = false) => {
         (entry) =>
           `<tr><td>${entry.timestamp}</td><td>${entry.class_name}</td><td>${entry.camera}</td><td>${entry.confidence}</td></tr>`
       )
-      .join("") || `<tr><td colspan="4">Последних детекций нет.</td></tr>`;
+      .join("") || `<tr><td colspan="4">No recent detections.</td></tr>`;
 
   els.recognitionCounts.innerHTML =
     visionItems
       .map((item) => {
-        const stateLabel = item.state === "check-out" ? "Выдача" : "Приём";
+        const stateLabel = item.state === "check-out" ? "Check-out" : "Check-in";
         return `<tr><td>${escapeHtml(item.product_name)}</td><td>${stateLabel}</td><td>${item.quantity}</td><td>${item.current_stock}</td></tr>`;
       })
       .join("") ||
     counts
-      .map((count) => `<tr><td>${escapeHtml(count.class_name)}</td><td>Обнаружено</td><td>${count.count}</td><td>—</td></tr>`)
+      .map((count) => `<tr><td>${escapeHtml(count.class_name)}</td><td>Detected</td><td>${count.count}</td><td>—</td></tr>`)
       .join("") ||
-    `<tr><td colspan="4">Распознанных коробок пока нет.</td></tr>`;
+    `<tr><td colspan="4">No recognized boxes yet.</td></tr>`;
 
   els.visionCheckInTotal.textContent = movementCounts.IN || 0;
   els.visionCheckOutTotal.textContent = movementCounts.OUT || 0;
@@ -615,10 +613,9 @@ const renderRecognitions = (data, running = false) => {
           movement.estimated_width_m == null
             ? "—"
             : `~${Number(movement.estimated_width_m).toFixed(2)} x ${Number(movement.estimated_height_m).toFixed(2)} x ${Number(movement.estimated_depth_m).toFixed(2)} m`;
-        const direction = movement.direction === "OUT" ? "Выход" : "Вход";
-        return `<tr><td>${movement.created_at}</td><td>${direction}</td><td>${escapeHtml(movement.product_name)}</td><td>${quantity}</td><td>${escapeHtml(movement.object_type || "—")}</td><td>${size}</td><td>${escapeHtml(movement.camera_id || "—")}</td><td>#${movement.tracking_id}</td><td>${confidence}</td></tr>`;
+        return `<tr><td>${movement.created_at}</td><td>${movement.direction}</td><td>${escapeHtml(movement.product_name)}</td><td>${quantity}</td><td>${escapeHtml(movement.object_type || "—")}</td><td>${size}</td><td>${escapeHtml(movement.camera_id || "—")}</td><td>#${movement.tracking_id}</td><td>${confidence}</td></tr>`;
       })
-      .join("") || `<tr><td colspan="9">Автоматических событий с камер пока нет.</td></tr>`;
+      .join("") || `<tr><td colspan="9">No automatic camera check-ins yet.</td></tr>`;
 
   els.visionStockTable.innerHTML =
     stock
@@ -626,7 +623,7 @@ const renderRecognitions = (data, running = false) => {
         (item) =>
           `<tr><td>${item.name}</td><td>${item.current_stock}</td><td>${item.created_at}</td></tr>`
       )
-      .join("") || `<tr><td colspan="3">Остатков, посчитанных камерой, пока нет.</td></tr>`;
+      .join("") || `<tr><td colspan="3">No camera-counted stock yet.</td></tr>`;
 };
 
 const renderAi3dScene = (spatialObjects) => {
@@ -635,14 +632,14 @@ const renderAi3dScene = (spatialObjects) => {
   if (!spatialObjects.length) {
     els.ai3dScene.innerHTML = `
       <div class="ai-3d-empty">
-        <strong>Текущих 3D-объектов нет</strong>
-        <span>Запустите детекцию и дождитесь кадров камеры, чтобы построить сцену распознавания.</span>
+        <strong>No current 3D objects</strong>
+        <span>Start detection and wait for camera frames to build the recognition scene.</span>
       </div>
     `;
     return;
   }
 
-  const maxДистанция = Math.max(
+  const maxDistance = Math.max(
     1,
     ...spatialObjects.map((item) => Number(item.distance_m || 0))
   );
@@ -653,10 +650,10 @@ const renderAi3dScene = (spatialObjects) => {
       const height = Math.max(0.15, Number(item.height_m || 0.2));
       const depth = Math.max(0.15, Number(item.depth_m || 0.2));
       const distance = Math.max(0, Number(item.distance_m || 0));
-      const distancePct = Math.min(100, Math.round((distance / maxДистанция) * 100));
-      const scale = Math.max(0.7, Math.min(1.35, 1.3 - distance / Math.max(maxДистанция * 1.4, 1)));
+      const distancePct = Math.min(100, Math.round((distance / maxDistance) * 100));
+      const scale = Math.max(0.7, Math.min(1.35, 1.3 - distance / Math.max(maxDistance * 1.4, 1)));
       const grid = (item.quantity_grid || [1, 1, 1]).join(" x ");
-      const label = item.inventory_name || item.class_name || "Обнаружено item";
+      const label = item.inventory_name || item.class_name || "Detected item";
       const hue = (index * 54) % 360;
       const sizeLabel = `${width.toFixed(2)} x ${height.toFixed(2)} x ${depth.toFixed(2)} m`;
 
@@ -669,10 +666,10 @@ const renderAi3dScene = (spatialObjects) => {
           </div>
           <div class="object-meta">
             <strong>${escapeHtml(label)}</strong>
-            <span>${escapeHtml(item.object_type || "объект")} · ${item.quantity || 1} ед.</span>
-            <em>Сетка ${escapeHtml(grid)} · ~${sizeLabel}</em>
+            <span>${escapeHtml(item.object_type || "object")} · ${item.quantity || 1} unit(s)</span>
+            <em>Grid ${escapeHtml(grid)} · ~${sizeLabel}</em>
             <div class="distance-track"><span></span></div>
-            <small>Дистанция ~${distance.toFixed(1)} m</small>
+            <small>Distance ~${distance.toFixed(1)} m</small>
           </div>
         </article>
       `;
@@ -689,17 +686,17 @@ const renderFunctionHealth = (status) => {
   els.healthStockMode.textContent =
     health.warehouse_counting_enabled
       ? health.warehouse_counting_mode || "on"
-      : "Выкл";
+      : "Off";
 
   const parts = [];
-  parts.push(status.running ? "Процесс детекции запущен." : "Процесс детекции остановлен.");
-  if (health.last_frame_at) parts.push(`Последний кадр: ${health.last_frame_at}.`);
-  if (health.error) parts.push(`Ошибка: ${health.error}`);
+  parts.push(status.running ? "Detector process is running." : "Detector process is stopped.");
+  if (health.last_frame_at) parts.push(`Last frame: ${health.last_frame_at}.`);
+  if (health.error) parts.push(`Error: ${health.error}`);
   if (!health.last_frame_at && status.running) {
-    parts.push("Обработанный кадр пока не получен.");
+    parts.push("No processed frame has been reported yet.");
   }
   if (health.spatial_analysis_enabled) {
-    parts.push("Монокулярная 3D-оценка активна.");
+    parts.push("Monocular 3D estimation is active.");
   }
   els.healthMessage.textContent = parts.join(" ");
 
@@ -710,7 +707,7 @@ const renderFunctionHealth = (status) => {
         const size = `~${Number(item.width_m).toFixed(2)} x ${Number(item.height_m).toFixed(2)} x ${Number(item.depth_m).toFixed(2)} m`;
         return `<tr><td>${escapeHtml(item.inventory_name)}</td><td>${escapeHtml(item.object_type)}</td><td>${item.quantity}</td><td>${grid}</td><td>${size}</td><td>~${Number(item.distance_m).toFixed(1)} m</td></tr>`;
       })
-      .join("") || `<tr><td colspan="6">Текущих 3D-оценок нет.</td></tr>`;
+      .join("") || `<tr><td colspan="6">No current 3D estimates.</td></tr>`;
 
   renderAi3dScene(spatialObjects);
 };
@@ -733,7 +730,7 @@ const renderOccupancy = ({ occupancy, events }) => {
   els.occupancyCounts.innerHTML =
     counts
       .map((count) => `<tr><td>${count.class_name}</td><td>${count.count}</td></tr>`)
-      .join("") || `<tr><td colspan="2">Сейчас внутри ничего нет.</td></tr>`;
+      .join("") || `<tr><td colspan="2">Nothing checked in right now.</td></tr>`;
 
   els.occupancyCurrentTable.innerHTML =
     current
@@ -741,7 +738,7 @@ const renderOccupancy = ({ occupancy, events }) => {
         (row) =>
           `<tr><td>#${row.track_id}</td><td>${row.class_name}</td><td>${row.camera_name}</td><td>${row.since}</td></tr>`
       )
-      .join("") || `<tr><td colspan="4">Сейчас внутри ничего нет.</td></tr>`;
+      .join("") || `<tr><td colspan="4">Nothing checked in right now.</td></tr>`;
 
   els.occupancyEventsTable.innerHTML =
     events
@@ -750,10 +747,10 @@ const renderOccupancy = ({ occupancy, events }) => {
           event.event_type === "check_out" && event.duration_seconds != null
             ? `${Math.round(event.duration_seconds)}s`
             : "—";
-        const label = event.event_type === "check_in" ? "Приём" : "Выдача";
+        const label = event.event_type === "check_in" ? "Check-in" : "Check-out";
         return `<tr><td>${event.timestamp}</td><td>${label}</td><td>#${event.track_id}</td><td>${event.class_name}</td><td>${event.camera_name}</td><td>${dwell}</td></tr>`;
       })
-      .join("") || `<tr><td colspan="6">Событий наличия пока нет.</td></tr>`;
+      .join("") || `<tr><td colspan="6">No occupancy events yet.</td></tr>`;
 };
 
 const refreshDashboard = async () => {
@@ -791,7 +788,7 @@ const handleAddItem = async (event) => {
   const imageFile = els.itemImage.files[0];
 
   if (!itemId || !name) {
-    toast("ID товара и название обязательны.");
+    toast("Item ID and name are required.");
     return;
   }
 
@@ -807,7 +804,7 @@ const handleAddItem = async (event) => {
 
     els.itemForm.reset();
     await loadInventory();
-    toast("Товар успешно добавлен.");
+    toast("Item added successfully.");
   } catch (error) {
     toast(error.message);
   }
@@ -819,7 +816,7 @@ const handleCheckAction = async (action) => {
   const note = els.checkNote.value.trim();
 
   if (!itemId || quantity < 1) {
-    toast("Выберите товар и количество.");
+    toast("Select an item and quantity.");
     return;
   }
 
@@ -831,7 +828,7 @@ const handleCheckAction = async (action) => {
     els.checkQuantity.value = 1;
     els.checkNote.value = "";
     await loadInventory();
-    toast(action === "checkin" ? "Товар успешно принят." : "Товар успешно выдан.");
+    toast(`Item ${action.replace("check", "checked ")} successfully.`);
   } catch (error) {
     toast(error.message);
   }
@@ -840,16 +837,16 @@ const handleCheckAction = async (action) => {
 const handleDetectionAction = async (action, button) => {
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = "Выполняется...";
+  button.textContent = "Working...";
   try {
     const result = await api(`/api/${action}`, { method: "POST" });
     setStatus(result.running);
     toast(
       action === "start"
-        ? "Детекция запущена."
+        ? "Detection started."
         : action === "stop"
-        ? "Детекция остановлена."
-        : "Детекция перезапущена."
+        ? "Detection stopped."
+        : "Detection restarted."
     );
   } catch (error) {
     toast(error.message);
@@ -868,7 +865,7 @@ const renderLiveScreens = () => {
   const activeCameras = cameraState.activeCameras || [];
   if (!activeCameras.length) {
     els.cameraLiveGrid.innerHTML =
-      `<div class="camera-screen empty"><div><strong>Нет активных слотов камер</strong><span>Назначьте сохранённые камеры на слоты в настройках камер.</span></div></div>`;
+      `<div class="camera-screen empty"><div><strong>No active camera slots</strong><span>Assign saved cameras to slots in Camera Settings.</span></div></div>`;
     return;
   }
 
@@ -878,13 +875,13 @@ const renderLiveScreens = () => {
       return `
         <div class="camera-screen">
           <div class="screen-head">
-            <span>Слот ${escapeHtml(slot)}</span>
+            <span>Slot ${escapeHtml(slot)}</span>
             <strong>${escapeHtml(camera.name)}</strong>
             <em>${escapeHtml(camera.status)}</em>
           </div>
           <div class="screen-body">
-            <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} видео" />
-            <span class="screen-placeholder" data-live-placeholder>Ожидание кадров</span>
+            <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} live view" />
+            <span class="screen-placeholder" data-live-placeholder>Waiting for frames</span>
           </div>
         </div>
       `;
@@ -900,7 +897,7 @@ const refreshLiveScreens = () => {
       image.addEventListener("load", () => {
         image.dataset.loading = "false";
         image.dataset.failures = "0";
-        setLivePlaceholder(image, "Кадры детекции");
+        setLivePlaceholder(image, "Live detection frames");
         image.closest(".screen-body")?.classList.add("has-frame");
         window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_REFRESH_MS);
       });
@@ -912,8 +909,8 @@ const refreshLiveScreens = () => {
         setLivePlaceholder(
           image,
           liveState.detectionRunning
-            ? "Кадра из этого слота пока нет. Поток камеры может быть недоступен."
-            : "Детекция остановлена. Запустите детекцию после доступности потоков камер."
+            ? "No frame from this slot yet. Camera stream may be unreachable."
+            : "Detection is stopped. Start detection after camera streams are reachable."
         );
         window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_RETRY_MS);
       });
@@ -926,7 +923,7 @@ const refreshLiveScreens = () => {
 };
 
 const refreshLiveImage = (image) => {
-  if (!image?.dataset?.liveСлот || image.dataset.loading === "true") {
+  if (!image?.dataset?.liveSlot || image.dataset.loading === "true") {
     return;
   }
   const now = Date.now();
@@ -956,8 +953,8 @@ const updateLivePlaceholders = () => {
     setLivePlaceholder(
       image,
       liveState.detectionRunning
-        ? "Ожидание первого обработанного кадра..."
-        : "Детекция остановлена. Запустите детекцию после доступности потоков камер."
+        ? "Waiting for the first processed frame..."
+        : "Detection is stopped. Start detection after camera streams are reachable."
     );
   });
 };
@@ -998,4 +995,3 @@ setActiveTab("itemEntry");
 await refreshDashboard();
 startLiveFeed();
 window.setInterval(refreshDashboard, 6000);
-
