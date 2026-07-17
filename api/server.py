@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -101,6 +102,8 @@ _camera_db: CameraDB | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _access_control_db: AccessControlDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
+_raw_frame_locks: dict[str, asyncio.Lock] = {}
+_raw_frame_semaphore = asyncio.Semaphore(int(os.getenv("RAW_FRAME_CAPTURE_CONCURRENCY", "1")))
 _watchdog_task: asyncio.Task | None = None
 _manual_stop_requested = False
 _watchdog_last_start_attempt = 0.0
@@ -532,7 +535,10 @@ def _require_permission(request: Request, permission: str) -> dict[str, Any]:
 
 
 def _rate_limit(request: Request) -> JSONResponse | None:
-    limit = int(os.getenv("SECURITY_RATE_LIMIT_PER_MINUTE", "120"))
+    if request.url.path == "/api/live_frame":
+        limit = int(os.getenv("LIVE_FRAME_RATE_LIMIT_PER_MINUTE", "1200"))
+    else:
+        limit = int(os.getenv("SECURITY_RATE_LIMIT_PER_MINUTE", "120"))
     if limit <= 0:
         return None
     actor = _request_actor(request)
@@ -2543,23 +2549,133 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
     """
 
     latest = next((path for path in _live_feed_paths(slot=slot, camera=camera) if path.exists()), None)
-    if latest is None:
-        raise HTTPException(status_code=404, detail="No live frame is available yet.")
+    if latest is not None:
+        for _ in range(5):
+            data = latest.read_bytes()
+            if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
+                return _jpeg_response(data, source="ai")
+            await asyncio.sleep(0.03)
 
-    for _ in range(5):
-        data = latest.read_bytes()
-        if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
-            return Response(
-                content=data,
-                media_type="image/jpeg",
-                headers={
-                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                    "Pragma": "no-cache",
-                },
-            )
-        await asyncio.sleep(0.03)
+    raw = await _raw_live_frame(slot=slot, camera=camera)
+    if raw is not None:
+        return _jpeg_response(raw, source="raw")
 
-    raise HTTPException(status_code=503, detail="Latest live frame is being written; retry.")
+    raise HTTPException(status_code=404, detail="No camera frame is available yet.")
+
+
+def _jpeg_response(data: bytes, source: str) -> Response:
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "X-Live-Frame-Source": source,
+        },
+    )
+
+
+async def _raw_live_frame(slot: int | None = None, camera: str | None = None) -> bytes | None:
+    stream_url = _live_camera_stream_url(slot=slot, camera=camera)
+    if not stream_url or stream_url.strip().lower() == "dummy":
+        return None
+
+    cache_key = f"slot_{slot}" if slot is not None else f"camera_{camera or 'default'}"
+    cache_path = SNAPSHOT_DIR / f"raw_latest_{cache_key}.jpg"
+    cache_seconds = float(os.getenv("RAW_FRAME_CACHE_SECONDS", "2.5"))
+    if _fresh_jpeg(cache_path, max_age_seconds=cache_seconds):
+        return cache_path.read_bytes()
+
+    lock = _raw_frame_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        if _fresh_jpeg(cache_path, max_age_seconds=cache_seconds):
+            return cache_path.read_bytes()
+        async with _raw_frame_semaphore:
+            ok = await asyncio.to_thread(_capture_raw_frame, stream_url, cache_path)
+        if ok and _fresh_jpeg(cache_path, max_age_seconds=30):
+            return cache_path.read_bytes()
+    return None
+
+
+def _fresh_jpeg(path: Path, max_age_seconds: float) -> bool:
+    try:
+        if not path.exists() or time.time() - path.stat().st_mtime > max_age_seconds:
+            return False
+        data = path.read_bytes()
+        return data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")
+    except OSError:
+        return False
+
+
+def _live_camera_stream_url(slot: int | None = None, camera: str | None = None) -> str | None:
+    try:
+        cameras = _get_camera_db().list_active_cameras(include_secret=True)
+    except Exception:
+        return None
+    for row in cameras:
+        if slot is not None and int(row.get("slot_number") or 0) == int(slot):
+            return str(row.get("stream_url") or "")
+        if camera and str(row.get("name") or "") == camera:
+            return str(row.get("stream_url") or "")
+    return None
+
+
+def _capture_raw_frame(stream_url: str, cache_path: Path) -> bool:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_name(f".{cache_path.name}.{uuid.uuid4().hex}.tmp")
+    code = r"""
+import os
+import sys
+import cv2
+
+stream_url, out_path = sys.argv[1], sys.argv[2]
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp|stimeout;3500000|max_delay;250000|buffer_size;65536",
+)
+cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+try:
+    if not cap.isOpened():
+        raise SystemExit(2)
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        raise SystemExit(3)
+    height, width = frame.shape[:2]
+    target_width = int(os.getenv("RAW_FRAME_WIDTH", "320"))
+    if width > target_width:
+        target_height = max(1, int(height * (target_width / width)))
+        frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
+    ok, jpg = cv2.imencode(
+        ".jpg",
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(os.getenv("RAW_FRAME_JPEG_QUALITY", "28"))],
+    )
+    if not ok:
+        raise SystemExit(4)
+    with open(out_path, "wb") as fh:
+        fh.write(jpg.tobytes())
+finally:
+    cap.release()
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, stream_url, str(tmp_path)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=float(os.getenv("RAW_FRAME_CAPTURE_TIMEOUT_SECONDS", "8")),
+        )
+        if result.returncode != 0 or not _fresh_jpeg(tmp_path, max_age_seconds=30):
+            return False
+        tmp_path.replace(cache_path)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
