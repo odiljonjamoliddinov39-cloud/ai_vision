@@ -2583,7 +2583,7 @@ async def _raw_live_frame(slot: int | None = None, camera: str | None = None) ->
 
     cache_key = f"slot_{slot}" if slot is not None else f"camera_{camera or 'default'}"
     cache_path = SNAPSHOT_DIR / f"raw_latest_{cache_key}.jpg"
-    cache_seconds = float(os.getenv("RAW_FRAME_CACHE_SECONDS", "2.5"))
+    cache_seconds = float(os.getenv("RAW_FRAME_CACHE_SECONDS", "3600"))
     if _fresh_jpeg(cache_path, max_age_seconds=cache_seconds):
         return cache_path.read_bytes()
 
