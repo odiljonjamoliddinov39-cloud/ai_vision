@@ -2591,6 +2591,8 @@ async def _raw_live_frame(slot: int | None = None, camera: str | None = None) ->
     async with lock:
         if _fresh_jpeg(cache_path, max_age_seconds=cache_seconds):
             return cache_path.read_bytes()
+        if os.getenv("RAW_FRAME_CAPTURE_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+            return None
         async with _raw_frame_semaphore:
             ok = await asyncio.to_thread(_capture_raw_frame, stream_url, cache_path)
         if ok and _fresh_jpeg(cache_path, max_age_seconds=30):
