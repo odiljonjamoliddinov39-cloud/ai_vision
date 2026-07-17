@@ -178,7 +178,7 @@ const escapeHtml = (value) =>
 
 const setStatus = (running) => {
   liveState.detectionRunning = Boolean(running);
-  els.statusPill.textContent = running ? "Detection running" : "Detection stopped";
+  els.statusPill.textContent = running ? "Детекция запущена" : "Детекция остановлена";
   els.statusPill.dataset.state = running ? "running" : "stopped";
   els.btnStartDetection.disabled = running;
   els.btnStopDetection.disabled = !running;
@@ -556,7 +556,7 @@ const renderRecognitions = (data, running = false) => {
     ? entryCount > 0
       ? `Active — ${entryCount} recent detections`
       : "Running — no recent detections"
-    : "Detection stopped";
+    : "Детекция остановлена";
 
   els.videoRecognitionStatus.textContent = detectionText;
   els.recognitionStatus.textContent = detectionText;
@@ -837,16 +837,16 @@ const handleCheckAction = async (action) => {
 const handleDetectionAction = async (action, button) => {
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = "Working...";
+  button.textContent = "Выполняется...";
   try {
     const result = await api(`/api/${action}`, { method: "POST" });
     setStatus(result.running);
     toast(
       action === "start"
-        ? "Detection started."
+        ? "Детекция запущена."
         : action === "stop"
-        ? "Detection stopped."
-        : "Detection restarted."
+        ? "Детекция остановлена."
+        : "Детекция перезапущена."
     );
   } catch (error) {
     toast(error.message);
