@@ -58,10 +58,7 @@ LOG_PATH = ROOT / "logs" / "events.log"
 SNAPSHOT_DIR = ROOT / "snapshots"
 INVENTORY_PATH = ROOT / "logs" / "inventory.json"
 INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
-DASHBOARD_DIR = ROOT / "dashboard"
 DASHBOARD_V2_DIR = ROOT / "dashboard-v2"
-ADMIN_V2_DIR = ROOT / "admin-v2"
-APP_V2_DIR = ROOT / "app-v2"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
@@ -1447,22 +1444,12 @@ async def start_detection_watchdog() -> None:
 
 @app.get("/")
 def dashboard() -> FileResponse:
-    return FileResponse(DASHBOARD_DIR / "index.html")
+    return FileResponse(DASHBOARD_V2_DIR / "index.html")
 
 
 @app.get("/dashboard-v2")
 def dashboard_v2() -> FileResponse:
     return FileResponse(DASHBOARD_V2_DIR / "index.html")
-
-
-@app.get("/admin-v2")
-def admin_v2() -> FileResponse:
-    return FileResponse(ADMIN_V2_DIR / "index.html")
-
-
-@app.get("/app-v2")
-def app_v2() -> FileResponse:
-    return FileResponse(APP_V2_DIR / "index.html")
 
 
 @app.post("/api/v2/auth/login")
@@ -2575,8 +2562,6 @@ def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list
     return [_live_feed_path(slot=slot, camera=camera)]
 
 
-app.mount("/admin-v2/assets", StaticFiles(directory=ADMIN_V2_DIR), name="admin-v2-assets")
-app.mount("/app-v2/assets", StaticFiles(directory=APP_V2_DIR), name="app-v2-assets")
 app.mount("/dashboard-v2/assets", StaticFiles(directory=DASHBOARD_V2_DIR), name="dashboard-v2-assets")
-app.mount("/assets", StaticFiles(directory=DASHBOARD_DIR), name="dashboard-assets")
+app.mount("/assets", StaticFiles(directory=DASHBOARD_V2_DIR), name="dashboard-assets")
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOT_DIR), name="snapshots")
