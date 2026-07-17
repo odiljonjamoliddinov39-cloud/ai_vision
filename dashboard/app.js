@@ -178,7 +178,7 @@ const escapeHtml = (value) =>
 
 const setStatus = (running) => {
   liveState.detectionRunning = Boolean(running);
-  els.statusPill.textContent = running ? "Детекция запущена" : "Детекция остановлена";
+  els.statusPill.textContent = running ? "Detection running" : "Detection stopped";
   els.statusPill.dataset.state = running ? "running" : "stopped";
   els.btnStartDetection.disabled = running;
   els.btnStopDetection.disabled = !running;
@@ -556,7 +556,7 @@ const renderRecognitions = (data, running = false) => {
     ? entryCount > 0
       ? `Active — ${entryCount} recent detections`
       : "Running — no recent detections"
-    : "Детекция остановлена";
+    : "Detection stopped";
 
   els.videoRecognitionStatus.textContent = detectionText;
   els.recognitionStatus.textContent = detectionText;
@@ -837,16 +837,16 @@ const handleCheckAction = async (action) => {
 const handleDetectionAction = async (action, button) => {
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = "Выполняется...";
+  button.textContent = "Working...";
   try {
     const result = await api(`/api/${action}`, { method: "POST" });
     setStatus(result.running);
     toast(
       action === "start"
-        ? "Детекция запущена."
+        ? "Detection started."
         : action === "stop"
-        ? "Детекция остановлена."
-        : "Детекция перезапущена."
+        ? "Detection stopped."
+        : "Detection restarted."
     );
   } catch (error) {
     toast(error.message);
@@ -865,7 +865,7 @@ const renderLiveScreens = () => {
   const activeCameras = cameraState.activeCameras || [];
   if (!activeCameras.length) {
     els.cameraLiveGrid.innerHTML =
-      `<div class="camera-screen empty"><div><strong>Активных слотов камер нет</strong><span>Назначьте сохранённые камеры на слоты в настройках камер.</span></div></div>`;
+      `<div class="camera-screen empty"><div><strong>No active camera slots</strong><span>Assign saved cameras to slots in Camera Settings.</span></div></div>`;
     return;
   }
 
@@ -875,13 +875,13 @@ const renderLiveScreens = () => {
       return `
         <div class="camera-screen">
           <div class="screen-head">
-            <span>Слот ${escapeHtml(slot)}</span>
+            <span>Slot ${escapeHtml(slot)}</span>
             <strong>${escapeHtml(camera.name)}</strong>
             <em>${escapeHtml(camera.status)}</em>
           </div>
           <div class="screen-body">
             <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} live view" />
-            <span class="screen-placeholder" data-live-placeholder>Ожидание кадров</span>
+            <span class="screen-placeholder" data-live-placeholder>Waiting for frames</span>
           </div>
         </div>
       `;
@@ -897,7 +897,7 @@ const refreshLiveScreens = () => {
       image.addEventListener("load", () => {
         image.dataset.loading = "false";
         image.dataset.failures = "0";
-        setLivePlaceholder(image, "Кадры AI-детекции");
+        setLivePlaceholder(image, "Live detection frames");
         image.closest(".screen-body")?.classList.add("has-frame");
         window.setTimeout(
           () => refreshLiveImage(image),
@@ -912,8 +912,8 @@ const refreshLiveScreens = () => {
         setLivePlaceholder(
           image,
           liveState.detectionRunning
-            ? "Пока нет кадра с этого слота. Поток камеры может быть недоступен."
-            : "Детекция остановлена. Запустите детекцию после проверки потоков камер."
+            ? "No frame from this slot yet. Camera stream may be unreachable."
+            : "Detection is stopped. Start detection after camera streams are reachable."
         );
         window.setTimeout(
           () => refreshLiveImage(image),
@@ -959,8 +959,8 @@ const updateLivePlaceholders = () => {
     setLivePlaceholder(
       image,
       liveState.detectionRunning
-        ? "Ожидание первого обработанного кадра..."
-        : "Детекция остановлена. Запустите детекцию после проверки потоков камер."
+        ? "Waiting for the first processed frame..."
+        : "Detection is stopped. Start detection after camera streams are reachable."
     );
   });
 };
