@@ -1452,6 +1452,11 @@ def dashboard_v2() -> FileResponse:
     return FileResponse(DASHBOARD_V2_DIR / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    return FileResponse(DASHBOARD_V2_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 @app.post("/api/v2/auth/login")
 def v2_auth_login(payload: V2LoginRequest, request: Request) -> dict[str, Any]:
     ac = _get_access_control_db()

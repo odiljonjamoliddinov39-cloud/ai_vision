@@ -9,8 +9,6 @@ const els = {
   activeModuleTitle: document.querySelector("#activeModuleTitle"),
   moduleContent: document.querySelector("#moduleContent"),
   detectorState: document.querySelector("#detectorState"),
-  rbacList: document.querySelector("#rbacList"),
-  integrationList: document.querySelector("#integrationList"),
   refreshBtn: document.querySelector("#refreshBtn"),
   toast: document.querySelector("#toast"),
 };
@@ -152,35 +150,11 @@ function renderSummary() {
   els.detectorState.dataset.state = running ? "good" : "bad";
 }
 
-function renderRbac() {
+function renderScope() {
   const session = state.session;
   if (!session) return;
   const scope = session.scope || {};
   els.scopeLine.textContent = `${session.role_label} • ${scope.company} / ${scope.factory} / ${scope.warehouse}`;
-  const permissions = (session.permissions || [])
-    .slice(0, 12)
-    .map((permission) => `<span>${escapeHtml(permissionLabels[permission] || permission)}</span>`)
-    .join("");
-  els.rbacList.innerHTML = `
-    <dt>User</dt><dd>${escapeHtml(session.user?.name)}</dd>
-    <dt>Role</dt><dd>${escapeHtml(session.role_label)}</dd>
-    <dt>Scope</dt><dd>${escapeHtml(scope.company)} → ${escapeHtml(scope.factory)} → ${escapeHtml(scope.warehouse)}</dd>
-    <dt>Permissions</dt><dd class="permission-cloud">${permissions}</dd>
-  `;
-}
-
-function renderIntegrations() {
-  const integrations = state.overview?.future_integrations || [
-    "ERP",
-    "HRM",
-    "CRM",
-    "Inventory Management",
-    "Quality Control",
-    "Predictive Analytics",
-    "Multi-site Management",
-    "API Integrations",
-  ];
-  els.integrationList.innerHTML = integrations.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
 }
 
 function renderModuleContent() {
@@ -190,7 +164,6 @@ function renderModuleContent() {
   els.activeModuleEyebrow.textContent = state.surface === "head" ? "Head module" : "User module";
 
   const summary = state.overview?.summary || {};
-  const stock = state.overview?.stock || [];
   const movements = state.overview?.recent_movements || [];
   const health = state.overview?.health || {};
 
@@ -212,24 +185,7 @@ function renderModuleContent() {
   }
 
   if (module.id === "counting" || module.id === "home" || module.id === "overview") {
-    els.moduleContent.innerHTML = `
-      <div class="split-content">
-        <div>
-          <h3>Operational status</h3>
-          <p>Detector state, camera reachability, counts, and inventory signals are pulled from the current AI Vision backend.</p>
-          <ul>
-            <li>Last frame: ${escapeHtml(summary.last_frame_at || health.last_frame_at || "Waiting")}</li>
-            <li>Tracked objects: ${escapeHtml(summary.last_tracked_count ?? health.last_tracked_count ?? 0)}</li>
-            <li>Movement IN: ${escapeHtml(state.overview?.movement_counts?.IN ?? 0)}</li>
-            <li>Movement OUT: ${escapeHtml(state.overview?.movement_counts?.OUT ?? 0)}</li>
-          </ul>
-        </div>
-        <div>
-          <h3>Recent products</h3>
-          ${stock.length ? `<table><tbody>${stock.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.current_stock)}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">No stock rows yet.</p>`}
-        </div>
-      </div>
-    `;
+    renderAnalytics(els.moduleContent);
     return;
   }
 
@@ -250,6 +206,397 @@ function renderModuleContent() {
   `;
 }
 
+// ---- Analytics charts -------------------------------------------------------
+// Sample data for now; swap sampleAnalytics() for a backend endpoint later.
+
+const CHART_COLORS = { blue: "#0284c7", green: "#15803d" };
+const CHART_W = 960;
+const CHART_H = 250;
+const CHART_PAD = { top: 22, right: 14, bottom: 30, left: 50 };
+const chartRegistry = new Map();
+
+function mulberry32(seed) {
+  let a = seed | 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function lastDays(count) {
+  const days = [];
+  const now = new Date();
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const day = new Date(now);
+    day.setDate(now.getDate() - i);
+    days.push(day);
+  }
+  return days;
+}
+
+function shortDate(day) {
+  return day.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function sampleAnalytics() {
+  const rand = mulberry32(20260717);
+  const companies = lastDays(30).map((date, index) => ({
+    date,
+    value: Math.max(0, Math.round(rand() * 3 + index / 14 - 0.4)),
+  }));
+  const uptime = lastDays(7).map((date) => ({
+    date,
+    value: Math.round((88 + rand() * 11.5) * 10) / 10,
+  }));
+  const movements = lastDays(14).map((date) => ({
+    date,
+    in: Math.round(22 + rand() * 38),
+    out: Math.round(16 + rand() * 36),
+  }));
+  return { companies, uptime, movements };
+}
+
+function axisMax(value) {
+  const candidates = [2, 4, 5, 8, 10, 20, 30, 40, 50, 60, 80, 100, 200, 500, 1000];
+  return candidates.find((candidate) => candidate >= value) || Math.ceil(value / 1000) * 1000;
+}
+
+function axisTicks(max, min = 0) {
+  const span = max - min;
+  let step;
+  if (span <= 6) step = 1;
+  else step = [4, 3, 2].map((parts) => span / parts).find((candidate) => Number.isInteger(candidate)) || span / 4;
+  const ticks = [];
+  for (let v = min; v <= max + 1e-9; v += step) ticks.push(+v.toFixed(2));
+  return ticks;
+}
+
+function chartScales({ count, yMin, yMax }) {
+  const plotW = CHART_W - CHART_PAD.left - CHART_PAD.right;
+  const plotH = CHART_H - CHART_PAD.top - CHART_PAD.bottom;
+  return {
+    plotW,
+    plotH,
+    slotW: plotW / count,
+    x: (index) => CHART_PAD.left + (plotW / count) * index,
+    xCenter: (index) => CHART_PAD.left + (plotW / count) * (index + 0.5),
+    y: (value) => CHART_PAD.top + plotH * (1 - (value - yMin) / (yMax - yMin)),
+  };
+}
+
+function gridSvg(ticks, yMin, yMax, scale, formatTick) {
+  return ticks
+    .map((tick) => {
+      const y = scale.y(tick);
+      const isBase = tick === yMin;
+      return `
+        <line x1="${CHART_PAD.left}" x2="${CHART_W - CHART_PAD.right}" y1="${y}" y2="${y}"
+              class="${isBase ? "chart-baseline" : "chart-gridline"}" />
+        <text x="${CHART_PAD.left - 8}" y="${y + 3.5}" class="chart-tick" text-anchor="end">${formatTick(tick)}</text>
+      `;
+    })
+    .join("");
+}
+
+function xLabelIndexes(count, want) {
+  if (count <= want) return Array.from({ length: count }, (_, index) => index);
+  const step = (count - 1) / (want - 1);
+  return Array.from({ length: want }, (_, index) => Math.round(index * step));
+}
+
+function xLabelsSvg(points, scale, want = 5) {
+  return xLabelIndexes(points.length, want)
+    .map((index) => `<text x="${scale.xCenter(index)}" y="${CHART_H - 8}" class="chart-tick" text-anchor="middle">${shortDate(points[index].date)}</text>`)
+    .join("");
+}
+
+function roundedBarPath(x, yTop, width, yBase) {
+  const height = yBase - yTop;
+  if (height <= 0) return "";
+  const r = Math.min(4, height, width / 2);
+  return `M ${x} ${yBase}
+          L ${x} ${yTop + r}
+          Q ${x} ${yTop} ${x + r} ${yTop}
+          L ${x + width - r} ${yTop}
+          Q ${x + width} ${yTop} ${x + width} ${yTop + r}
+          L ${x + width} ${yBase} Z`;
+}
+
+function barChartSvg(id, points, { color, formatValue }) {
+  const dataMax = Math.max(...points.map((point) => point.value));
+  const yMax = axisMax(dataMax || 1);
+  const scale = chartScales({ count: points.length, yMin: 0, yMax });
+  const yBase = scale.y(0);
+  const barW = Math.max(3, scale.slotW * 0.62);
+  const maxIndex = points.reduce((best, point, index) => (point.value > points[best].value ? index : best), 0);
+
+  const bars = points
+    .map((point, index) => {
+      const x = scale.xCenter(index) - barW / 2;
+      const yTop = scale.y(point.value);
+      const label =
+        index === maxIndex && point.value > 0
+          ? `<text x="${scale.xCenter(index)}" y="${yTop - 6}" class="chart-value" text-anchor="middle">${formatValue(point.value)}</text>`
+          : "";
+      return `
+        <g class="chart-slot" data-index="${index}">
+          <rect x="${scale.x(index)}" y="${CHART_PAD.top}" width="${scale.slotW}" height="${scale.plotH}" fill="transparent" />
+          <path d="${roundedBarPath(x, yTop, barW, yBase)}" fill="${color}" />
+          ${label}
+        </g>
+      `;
+    })
+    .join("");
+
+  return `
+    <svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" aria-label="Bar chart" data-chart-svg="${id}">
+      ${gridSvg(axisTicks(yMax), 0, yMax, scale, formatValue)}
+      ${bars}
+      ${xLabelsSvg(points, scale)}
+    </svg>
+  `;
+}
+
+function lineChartSvg(id, points, { color, yMin, yMax, formatValue }) {
+  const scale = chartScales({ count: points.length, yMin, yMax });
+  const coords = points.map((point, index) => [scale.xCenter(index), scale.y(point.value)]);
+  const path = coords.map(([x, y], index) => `${index ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+  const [lastX, lastY] = coords[coords.length - 1];
+  const areaPath = `${path} L ${lastX.toFixed(1)} ${scale.y(yMin)} L ${coords[0][0].toFixed(1)} ${scale.y(yMin)} Z`;
+
+  return `
+    <svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" aria-label="Line chart" data-chart-svg="${id}">
+      ${gridSvg(axisTicks(yMax, yMin), yMin, yMax, scale, formatValue)}
+      <path d="${areaPath}" fill="${color}" opacity="0.14" />
+      <path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <line class="chart-crosshair" x1="0" x2="0" y1="${CHART_PAD.top}" y2="${CHART_PAD.top + scale.plotH}" hidden />
+      <circle class="chart-focus" r="4.5" fill="${color}" stroke="var(--panel-strong)" stroke-width="2" hidden />
+      <text x="${lastX - 8}" y="${lastY - 10}" class="chart-value" text-anchor="end">${formatValue(points[points.length - 1].value)}</text>
+      ${xLabelsSvg(points, scale, points.length)}
+    </svg>
+  `;
+}
+
+function groupedBarChartSvg(id, points, { seriesKeys, seriesLabels, colors, formatValue }) {
+  const dataMax = Math.max(...points.flatMap((point) => seriesKeys.map((key) => point[key])));
+  const yMax = axisMax(dataMax || 1);
+  const scale = chartScales({ count: points.length, yMin: 0, yMax });
+  const yBase = scale.y(0);
+  const gap = 2;
+  const barW = Math.max(3, (scale.slotW * 0.66 - gap) / seriesKeys.length);
+
+  const groups = points
+    .map((point, index) => {
+      const groupW = barW * seriesKeys.length + gap;
+      const startX = scale.xCenter(index) - groupW / 2;
+      const bars = seriesKeys
+        .map((key, keyIndex) => {
+          const x = startX + keyIndex * (barW + gap);
+          const yTop = scale.y(point[key]);
+          return `<path d="${roundedBarPath(x, yTop, barW, yBase)}" fill="${colors[keyIndex]}" />`;
+        })
+        .join("");
+      return `
+        <g class="chart-slot" data-index="${index}">
+          <rect x="${scale.x(index)}" y="${CHART_PAD.top}" width="${scale.slotW}" height="${scale.plotH}" fill="transparent" />
+          ${bars}
+        </g>
+      `;
+    })
+    .join("");
+
+  return `
+    <svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" aria-label="Grouped bar chart" data-chart-svg="${id}">
+      ${gridSvg(axisTicks(yMax), 0, yMax, scale, formatValue)}
+      ${groups}
+      ${xLabelsSvg(points, scale)}
+    </svg>
+  `;
+}
+
+function chartTableHtml(spec) {
+  const header = `<tr><th>Date</th>${spec.series.map((series) => `<th>${escapeHtml(series.label)}</th>`).join("")}</tr>`;
+  const rows = spec.points
+    .map(
+      (point) =>
+        `<tr><td>${shortDate(point.date)}</td>${spec.series
+          .map((series) => `<td>${spec.formatValue(point[series.key])}</td>`)
+          .join("")}</tr>`
+    )
+    .join("");
+  return `<div class="chart-table-wrap"><table class="chart-table"><thead>${header}</thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function chartCardHtml(spec) {
+  const legend =
+    spec.series.length > 1
+      ? `<div class="chart-legend">${spec.series
+          .map((series, index) => `<span><i style="background:${spec.colors[index]}"></i>${escapeHtml(series.label)}</span>`)
+          .join("")}</div>`
+      : "";
+  return `
+    <article class="chart-card" data-chart="${spec.id}">
+      <header class="chart-head">
+        <div>
+          <h3>${escapeHtml(spec.title)}</h3>
+          <p class="chart-sub">${escapeHtml(spec.subtitle)}</p>
+        </div>
+        <button type="button" class="chart-toggle" data-chart-toggle="${spec.id}">Table</button>
+      </header>
+      ${legend}
+      <div class="chart-body" data-chart-body="${spec.id}">${spec.svg}<div class="chart-tip" hidden></div></div>
+    </article>
+  `;
+}
+
+function tipHtml(spec, index) {
+  const point = spec.points[index];
+  const rows = spec.series
+    .map(
+      (series, seriesIndex) =>
+        `<div><i style="background:${spec.colors[seriesIndex]}"></i>${escapeHtml(series.label)}: <strong>${spec.formatValue(point[series.key])}</strong></div>`
+    )
+    .join("");
+  return `<em>${shortDate(point.date)}</em>${rows}`;
+}
+
+function moveTip(tip, body, clientX) {
+  const rect = body.getBoundingClientRect();
+  const x = clientX - rect.left;
+  tip.style.left = `${Math.min(Math.max(x, 70), rect.width - 70)}px`;
+}
+
+function wireCharts(root) {
+  root.querySelectorAll("[data-chart]").forEach((card) => {
+    const spec = chartRegistry.get(card.dataset.chart);
+    if (!spec) return;
+    const body = card.querySelector("[data-chart-body]");
+    const tip = () => card.querySelector(".chart-tip");
+
+    card.querySelector("[data-chart-toggle]").addEventListener("click", (event) => {
+      spec.showTable = !spec.showTable;
+      event.target.textContent = spec.showTable ? "Chart" : "Table";
+      body.innerHTML = spec.showTable ? chartTableHtml(spec) : `${spec.svg}<div class="chart-tip" hidden></div>`;
+    });
+
+    body.addEventListener("pointerleave", () => {
+      const tipEl = tip();
+      if (tipEl) tipEl.hidden = true;
+      const svg = body.querySelector("svg");
+      svg?.querySelector(".chart-crosshair")?.setAttribute("hidden", "");
+      svg?.querySelector(".chart-focus")?.setAttribute("hidden", "");
+    });
+
+    body.addEventListener("pointermove", (event) => {
+      const svg = body.querySelector("svg");
+      const tipEl = tip();
+      if (!svg || !tipEl || spec.showTable) return;
+      const svgRect = svg.getBoundingClientRect();
+      const xRatio = (event.clientX - svgRect.left) / svgRect.width;
+      const plotStart = CHART_PAD.left / CHART_W;
+      const plotEnd = (CHART_W - CHART_PAD.right) / CHART_W;
+      if (xRatio < plotStart || xRatio > plotEnd) return;
+      const index = Math.min(
+        spec.points.length - 1,
+        Math.max(0, Math.floor(((xRatio - plotStart) / (plotEnd - plotStart)) * spec.points.length))
+      );
+      tipEl.innerHTML = tipHtml(spec, index);
+      tipEl.hidden = false;
+      moveTip(tipEl, body, event.clientX);
+
+      if (spec.type === "line") {
+        const scale = chartScales({ count: spec.points.length, yMin: spec.yMin, yMax: spec.yMax });
+        const crosshair = svg.querySelector(".chart-crosshair");
+        const focus = svg.querySelector(".chart-focus");
+        const cx = scale.xCenter(index);
+        crosshair.setAttribute("x1", cx);
+        crosshair.setAttribute("x2", cx);
+        crosshair.removeAttribute("hidden");
+        focus.setAttribute("cx", cx);
+        focus.setAttribute("cy", scale.y(spec.points[index].value));
+        focus.removeAttribute("hidden");
+      }
+    });
+  });
+}
+
+function renderAnalytics(container) {
+  const data = sampleAnalytics();
+  const count = (value) => String(Math.round(value));
+  const pct = (value) => `${value}%`;
+
+  const specs = [
+    {
+      id: "companies",
+      type: "bar",
+      title: "Companies activated",
+      subtitle: "New companies per day — past 30 days",
+      points: data.companies,
+      series: [{ key: "value", label: "Companies" }],
+      colors: [CHART_COLORS.blue],
+      formatValue: count,
+      svg: null,
+    },
+    {
+      id: "uptime",
+      type: "line",
+      title: "Active cameras",
+      subtitle: "Share of cameras online — past 7 days",
+      points: data.uptime,
+      series: [{ key: "value", label: "Online" }],
+      colors: [CHART_COLORS.blue],
+      formatValue: pct,
+      yMin: 80,
+      yMax: 100,
+      svg: null,
+    },
+    {
+      id: "movements",
+      type: "grouped",
+      title: "Warehouse movements",
+      subtitle: "Items in vs out per day — past 14 days",
+      points: data.movements,
+      series: [
+        { key: "in", label: "IN" },
+        { key: "out", label: "OUT" },
+      ],
+      colors: [CHART_COLORS.blue, CHART_COLORS.green],
+      formatValue: count,
+      svg: null,
+    },
+  ];
+
+  specs.forEach((spec) => {
+    if (spec.type === "bar") {
+      spec.svg = barChartSvg(spec.id, spec.points, { color: spec.colors[0], formatValue: spec.formatValue });
+    } else if (spec.type === "line") {
+      spec.svg = lineChartSvg(spec.id, spec.points, {
+        color: spec.colors[0],
+        yMin: spec.yMin,
+        yMax: spec.yMax,
+        formatValue: spec.formatValue,
+      });
+    } else {
+      spec.svg = groupedBarChartSvg(spec.id, spec.points, {
+        seriesKeys: spec.series.map((series) => series.key),
+        seriesLabels: spec.series.map((series) => series.label),
+        colors: spec.colors,
+        formatValue: spec.formatValue,
+      });
+    }
+    spec.showTable = false;
+    chartRegistry.set(spec.id, spec);
+  });
+
+  container.innerHTML = `
+    <p class="chart-note">Sample data — analytics endpoints are not wired to the backend yet.</p>
+    <div class="chart-grid">${specs.map(chartCardHtml).join("")}</div>
+  `;
+  wireCharts(container);
+}
+
 async function load() {
   renderShell();
   const [session, overview] = await Promise.all([
@@ -261,8 +608,7 @@ async function load() {
   renderRoles();
   renderNavigation();
   renderSummary();
-  renderRbac();
-  renderIntegrations();
+  renderScope();
   renderModuleContent();
 }
 
