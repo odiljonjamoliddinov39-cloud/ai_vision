@@ -26,4 +26,4 @@ RUN mkdir -p /app/logs /app/snapshots /app/models /app/database
 
 EXPOSE 8080
 
-CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--log-level", "warning"]

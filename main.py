@@ -232,6 +232,10 @@ def main():
     prev_time = time.time()
     frame_number = 0
     dummy_positions = {cam.name: 0 for cam in cameras}
+    target_detection_fps = float(det_cfg.get("target_fps", 2.0) or 0)
+    min_detection_interval = 1.0 / target_detection_fps if target_detection_fps > 0 else 0.0
+    last_detection_at = {cam.name: 0.0 for cam in cameras}
+    last_detections = {cam.name: [] for cam in cameras}
 
     try:
         while True:
@@ -248,9 +252,16 @@ def main():
                 any_frame = True
                 frames_read += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
+                should_infer = (
+                    detector.model is None
+                    or min_detection_interval <= 0
+                    or now - last_detection_at.get(cam.name, 0.0) >= min_detection_interval
+                )
 
-                if object_tracker is not None:
+                if object_tracker is not None and should_infer:
                     detections = object_tracker.update(frame)
+                    last_detection_at[cam.name] = now
+                    last_detections[cam.name] = detections
                     last_tracked_count = len(detections)
                     check_ins = presence_tracker.update(cam.name, detections, now)
                     for event in check_ins:
@@ -263,10 +274,16 @@ def main():
                 elif detector.model is None:
                     detections = _demo_tracked_objects(dummy_positions[cam.name])
                     dummy_positions[cam.name] += 1
+                    last_detection_at[cam.name] = now
+                    last_detections[cam.name] = detections
                     last_tracked_count = len(detections)
-                else:
+                elif should_infer:
                     detections = detector.detect(frame)
+                    last_detection_at[cam.name] = now
+                    last_detections[cam.name] = detections
                     last_tracked_count = 0
+                else:
+                    detections = last_detections.get(cam.name, [])
 
                 last_detection_count = len(detections)
                 if spatial_analyzer is not None:
