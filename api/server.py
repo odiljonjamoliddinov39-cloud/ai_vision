@@ -1360,56 +1360,6 @@ def _validate_active_cameras_for_start() -> None:
     _sync_config_active_cameras(db)
 
 
-def _detection_selected_cameras(db: CameraDB) -> list[dict[str, Any]]:
-    active_cameras = db.list_active_cameras(include_secret=True)
-    raw_slots = os.getenv("DETECTION_ACTIVE_SLOTS", "1").strip()
-    selected_slots = {
-        int(value)
-        for value in re.split(r"[, ]+", raw_slots)
-        if value.strip().isdigit()
-    }
-    if selected_slots:
-        selected = [
-            camera
-            for camera in active_cameras
-            if int(camera.get("slot_number") or 0) in selected_slots
-        ]
-        if selected:
-            return selected
-    max_cameras = max(1, int(os.getenv("DETECTION_MAX_CAMERAS", "1")))
-    return active_cameras[:max_cameras]
-
-
-def _write_detection_runtime_config(cameras: list[dict[str, Any]]) -> str:
-    data = _read_yaml(CONFIG_PATH)
-    data["cameras"] = [
-        {
-            "name": camera["name"],
-            "source": _camera_source_from_text(str(camera["stream_url"])),
-            "slot_number": camera.get("slot_number") or index,
-        }
-        for index, camera in enumerate(cameras, start=1)
-    ]
-
-    detection = data.setdefault("detection", {})
-    detection["model_path"] = os.getenv("DETECTION_MODEL_PATH", detection.get("model_path") or "yolov8n.pt")
-    detection["confidence_threshold"] = float(os.getenv("DETECTION_CONFIDENCE", detection.get("confidence_threshold", 0.25)))
-    detection["image_size"] = int(os.getenv("DETECTION_IMAGE_SIZE", detection.get("image_size", 416)))
-    detection["device"] = os.getenv("DETECTION_DEVICE", detection.get("device", "cpu"))
-    detection["target_fps"] = float(os.getenv("DETECTION_TARGET_FPS", detection.get("target_fps", 2.0)))
-
-    data.setdefault("spatial_analysis", {})["enabled"] = _env_bool("SPATIAL_ANALYSIS_ENABLED", False)
-    data.setdefault("snapshots", {})["enabled"] = _env_bool("SNAPSHOTS_ENABLED", False)
-    recognition = data.setdefault("recognition", {})
-    recognition["enabled"] = _env_bool("RECOGNITION_ENABLED", bool(recognition.get("enabled", True)))
-    recognition["provider"] = os.getenv("RECOGNITION_PROVIDER", recognition.get("provider", "gemini"))
-    recognition["max_workers"] = int(os.getenv("RECOGNITION_MAX_WORKERS", "1"))
-
-    runtime_path = ROOT / "config" / "detection_runtime.yaml"
-    _write_yaml(runtime_path, data)
-    return str(runtime_path.relative_to(ROOT))
-
-
 def _status() -> dict[str, Any]:
     pid = _detector_pid()
     return {
@@ -2286,24 +2236,15 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     # config/config.yaml (for example the demo camera checked into the repo) from
     # making the detector process only slot 1 while the dashboard has many active
     # NVR/controller channels saved in SQLite.
-    db = _get_camera_db()
-    _sync_config_active_cameras(db)
-    selected_cameras = _detection_selected_cameras(db)
-    if not selected_cameras:
-        raise HTTPException(
-            status_code=400,
-            detail="Assign at least one active camera slot before starting detection.",
-        )
-    if not _env_bool("DETECTION_SKIP_CAMERA_VALIDATION", True):
-        _validate_active_cameras_for_start()
-    runtime_config_path = _write_detection_runtime_config(selected_cameras)
+    _sync_config_active_cameras(_get_camera_db())
+    _validate_active_cameras_for_start()
     _manual_stop_requested = False
     _clear_live_frames()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _stdout_handle = DETECTION_STDOUT_PATH.open("w", encoding="utf-8", buffering=1)
     _stderr_handle = DETECTION_STDERR_PATH.open("w", encoding="utf-8", buffering=1)
-    _stdout_handle.write(f"\n--- detection start {_now_iso()} config={runtime_config_path} ---\n")
+    _stdout_handle.write(f"\n--- detection start {_now_iso()} config={request.config_path} ---\n")
     DETECTION_HEALTH_PATH.write_text(
         json.dumps(
             {
@@ -2324,7 +2265,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
         sys.executable,
         str(ROOT / "main.py"),
         "--config",
-        runtime_config_path,
+        request.config_path,
     ]
     if request.no_display:
         command.append("--no-display")

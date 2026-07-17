@@ -111,8 +111,8 @@ const API_BASE = (() => {
   }
   return window.location.origin;
 })();
-const LIVE_FRAME_REFRESH_MS = 1500;
-const LIVE_FRAME_RETRY_MS = 4000;
+const LIVE_FRAME_REFRESH_MS = 120;
+const LIVE_FRAME_RETRY_MS = 750;
 const liveState = {
   detectionRunning: false,
 };
@@ -899,10 +899,7 @@ const refreshLiveScreens = () => {
         image.dataset.failures = "0";
         setLivePlaceholder(image, "Live detection frames");
         image.closest(".screen-body")?.classList.add("has-frame");
-        window.setTimeout(
-          () => refreshLiveImage(image),
-          LIVE_FRAME_REFRESH_MS + Number(image.dataset.liveSlot || 0) * 80
-        );
+        window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_REFRESH_MS);
       });
       image.addEventListener("error", () => {
         image.dataset.loading = "false";
@@ -915,10 +912,7 @@ const refreshLiveScreens = () => {
             ? "No frame from this slot yet. Camera stream may be unreachable."
             : "Detection is stopped. Start detection after camera streams are reachable."
         );
-        window.setTimeout(
-          () => refreshLiveImage(image),
-          LIVE_FRAME_RETRY_MS + Number(image.dataset.liveSlot || 0) * 120
-        );
+        window.setTimeout(() => refreshLiveImage(image), LIVE_FRAME_RETRY_MS);
       });
     }
 
@@ -967,6 +961,8 @@ const updateLivePlaceholders = () => {
 
 const startLiveFeed = async () => {
   renderLiveScreens();
+  refreshLiveScreens();
+  window.setInterval(refreshLiveScreens, 2500);
 };
 
 els.navButtons.forEach((button) => {
