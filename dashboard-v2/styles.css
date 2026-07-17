@@ -199,6 +199,10 @@ button,
   display: none;
 }
 
+.status-grid[hidden] {
+  display: none;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(140px, 1fr));
