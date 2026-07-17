@@ -155,6 +155,7 @@ function renderModuleContent() {
   const module = modules.find((item) => item.id === state.activeModule);
   els.activeModuleTitle.textContent = module ? moduleLabel(module) : "Unavailable";
   els.activeModuleEyebrow.textContent = "Head module";
+  els.summaryGrid.hidden = module?.id === "users";
 
   const summary = state.overview?.summary || {};
   const movements = state.overview?.recent_movements || [];
