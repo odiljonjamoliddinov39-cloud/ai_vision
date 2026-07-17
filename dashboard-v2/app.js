@@ -1,7 +1,5 @@
 const els = {
-  surfaceButtons: Array.from(document.querySelectorAll("[data-surface]")),
   moduleNav: document.querySelector("#moduleNav"),
-  pageTitle: document.querySelector("#pageTitle"),
   scopeLine: document.querySelector("#scopeLine"),
   summaryGrid: document.querySelector("#summaryGrid"),
   activeModuleEyebrow: document.querySelector("#activeModuleEyebrow"),
@@ -28,7 +26,6 @@ const API_BASE = (() => {
 })();
 
 const state = {
-  surface: localStorage.getItem("ai_vision_v2_surface") || "head",
   role: "super_admin",
   activeModule: null,
   session: null,
@@ -96,20 +93,8 @@ function toast(message) {
   window.setTimeout(() => els.toast.classList.remove("show"), 2600);
 }
 
-function renderShell() {
-  els.surfaceButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.surface === state.surface);
-  });
-  els.pageTitle.textContent = state.surface === "head" ? "Head Dashboard" : "User Dashboard";
-}
-
 function renderNavigation() {
-  if (state.surface === "user") {
-    state.activeModule = null;
-    els.moduleNav.innerHTML = "";
-    return;
-  }
-  const modules = (state.session?.surfaces?.[state.surface] || []).filter((module) =>
+  const modules = (state.session?.surfaces?.head || []).filter((module) =>
     HEAD_MODULE_IDS.has(module.id)
   );
   if (!modules.length) {
@@ -134,21 +119,17 @@ function renderNavigation() {
 
 function renderSummary() {
   const summary = state.overview?.summary || {};
-  if (state.surface === "user") {
-    els.summaryGrid.innerHTML = "";
-  } else {
-    const cards = [
-      ["Active cameras", summary.active_cameras ?? 0],
-      ["Frames read", summary.frames_read ?? 0],
-      ["Last detections", summary.last_detection_count ?? 0],
-      ["Stock items", summary.stock_items ?? 0],
-      ["Saved cameras", summary.saved_cameras ?? 0],
-      ["Audit verified", summary.audit_verified ? "Yes" : "No"],
-    ];
-    els.summaryGrid.innerHTML = cards
-      .map(([label, value]) => `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`)
-      .join("");
-  }
+  const cards = [
+    ["Active cameras", summary.active_cameras ?? 0],
+    ["Frames read", summary.frames_read ?? 0],
+    ["Last detections", summary.last_detection_count ?? 0],
+    ["Stock items", summary.stock_items ?? 0],
+    ["Saved cameras", summary.saved_cameras ?? 0],
+    ["Audit verified", summary.audit_verified ? "Yes" : "No"],
+  ];
+  els.summaryGrid.innerHTML = cards
+    .map(([label, value]) => `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`)
+    .join("");
   const running = Boolean(summary.detector_running);
   els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
   els.detectorState.dataset.state = running ? "good" : "bad";
@@ -162,29 +143,10 @@ function renderScope() {
 }
 
 function renderModuleContent() {
-  if (state.surface === "user") {
-    const summary = state.overview?.summary || {};
-    const running = Boolean(summary.detector_running);
-    els.activeModuleEyebrow.textContent = "User surface";
-    els.activeModuleTitle.textContent = "Blank canvas";
-    els.moduleContent.innerHTML = `
-      <div class="module-placeholder">
-        <h3>This page is empty and ready to build</h3>
-        <p>It stays subscribed to the Head Dashboard feed, so anything added here starts with live data.</p>
-        <p class="sync-line">
-          <span class="sync-dot" data-state="${running ? "good" : "bad"}"></span>
-          Listening to Head Dashboard — detector ${running ? "running" : "stopped"} ·
-          ${escapeHtml(summary.active_cameras ?? 0)} active cameras ·
-          last frame: ${escapeHtml(summary.last_frame_at || "waiting")}
-        </p>
-      </div>
-    `;
-    return;
-  }
-  const modules = state.session?.surfaces?.[state.surface] || [];
+  const modules = state.session?.surfaces?.head || [];
   const module = modules.find((item) => item.id === state.activeModule);
   els.activeModuleTitle.textContent = module?.label || "Unavailable";
-  els.activeModuleEyebrow.textContent = state.surface === "head" ? "Head module" : "User module";
+  els.activeModuleEyebrow.textContent = "Head module";
 
   const summary = state.overview?.summary || {};
   const movements = state.overview?.recent_movements || [];
@@ -621,7 +583,6 @@ function renderAnalytics(container) {
 }
 
 async function load() {
-  renderShell();
   const [session, overview] = await Promise.all([
     api("/api/v2/rbac/me"),
     api("/api/v2/head/overview"),
@@ -632,36 +593,7 @@ async function load() {
   renderSummary();
   renderScope();
   renderModuleContent();
-  scheduleUserSync();
 }
-
-let userSyncTimer = null;
-
-function scheduleUserSync() {
-  if (userSyncTimer) {
-    clearInterval(userSyncTimer);
-    userSyncTimer = null;
-  }
-  if (state.surface !== "user") return;
-  userSyncTimer = setInterval(async () => {
-    try {
-      state.overview = await api("/api/v2/head/overview");
-      renderSummary();
-      renderModuleContent();
-    } catch {
-      // Keep the last known state; the next tick retries.
-    }
-  }, 10000);
-}
-
-els.surfaceButtons.forEach((button) => {
-  button.addEventListener("click", async () => {
-    state.surface = button.dataset.surface;
-    localStorage.setItem("ai_vision_v2_surface", state.surface);
-    state.activeModule = null;
-    await load().catch((error) => toast(error.message));
-  });
-});
 
 els.moduleNav.addEventListener("click", (event) => {
   const button = event.target.closest("[data-module]");
