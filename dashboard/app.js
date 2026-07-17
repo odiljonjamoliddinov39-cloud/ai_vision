@@ -865,7 +865,7 @@ const renderLiveScreens = () => {
   const activeCameras = cameraState.activeCameras || [];
   if (!activeCameras.length) {
     els.cameraLiveGrid.innerHTML =
-      `<div class="camera-screen empty"><div><strong>No active camera slots</strong><span>Assign saved cameras to slots in Camera Settings.</span></div></div>`;
+      `<div class="camera-screen empty"><div><strong>Активных слотов камер нет</strong><span>Назначьте сохранённые камеры на слоты в настройках камер.</span></div></div>`;
     return;
   }
 
@@ -875,13 +875,13 @@ const renderLiveScreens = () => {
       return `
         <div class="camera-screen">
           <div class="screen-head">
-            <span>Slot ${escapeHtml(slot)}</span>
+            <span>Слот ${escapeHtml(slot)}</span>
             <strong>${escapeHtml(camera.name)}</strong>
             <em>${escapeHtml(camera.status)}</em>
           </div>
           <div class="screen-body">
             <img data-live-slot="${escapeHtml(slot)}" alt="${escapeHtml(camera.name)} live view" />
-            <span class="screen-placeholder" data-live-placeholder>Waiting for frames</span>
+            <span class="screen-placeholder" data-live-placeholder>Ожидание кадров</span>
           </div>
         </div>
       `;
@@ -897,7 +897,7 @@ const refreshLiveScreens = () => {
       image.addEventListener("load", () => {
         image.dataset.loading = "false";
         image.dataset.failures = "0";
-        setLivePlaceholder(image, "Live detection frames");
+        setLivePlaceholder(image, "Кадры AI-детекции");
         image.closest(".screen-body")?.classList.add("has-frame");
         window.setTimeout(
           () => refreshLiveImage(image),
@@ -912,8 +912,8 @@ const refreshLiveScreens = () => {
         setLivePlaceholder(
           image,
           liveState.detectionRunning
-            ? "No frame from this slot yet. Camera stream may be unreachable."
-            : "Detection is stopped. Start detection after camera streams are reachable."
+            ? "Пока нет кадра с этого слота. Поток камеры может быть недоступен."
+            : "Детекция остановлена. Запустите детекцию после проверки потоков камер."
         );
         window.setTimeout(
           () => refreshLiveImage(image),
@@ -959,8 +959,8 @@ const updateLivePlaceholders = () => {
     setLivePlaceholder(
       image,
       liveState.detectionRunning
-        ? "Waiting for the first processed frame..."
-        : "Detection is stopped. Start detection after camera streams are reachable."
+        ? "Ожидание первого обработанного кадра..."
+        : "Детекция остановлена. Запустите детекцию после проверки потоков камер."
     );
   });
 };
