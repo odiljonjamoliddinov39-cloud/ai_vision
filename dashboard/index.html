@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Warehouse Admin</title>
+    <title>Админ склада</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
@@ -11,79 +12,79 @@
       <aside class="sidebar">
         <div class="brand">
           <p>AI Vision</p>
-          <strong>Warehouse Admin</strong>
+          <strong>Админ склада</strong>
         </div>
 
         <nav class="nav-menu" aria-label="Main navigation">
-          <button class="nav-btn active" data-tab="itemEntry">Item Entry</button>
-          <button class="nav-btn" data-tab="cameraSettings">Camera Settings</button>
-          <button class="nav-btn" data-tab="checkIn">Check In</button>
-          <button class="nav-btn" data-tab="recognitions">Recognitions</button>
-          <button class="nav-btn" data-tab="readyList">Ready List</button>
-          <button class="nav-btn" data-tab="occupancy">Occupancy</button>
-          <button class="nav-btn" data-tab="warehouse">Warehouse Events</button>
+          <button class="nav-btn active" data-tab="itemEntry">Добавить товар</button>
+          <button class="nav-btn" data-tab="cameraSettings">Настройки камер</button>
+          <button class="nav-btn" data-tab="checkIn">Приём / выдача</button>
+          <button class="nav-btn" data-tab="recognitions">Распознавание</button>
+          <button class="nav-btn" data-tab="readyList">Готовый список</button>
+          <button class="nav-btn" data-tab="occupancy">Наличие</button>
+          <button class="nav-btn" data-tab="warehouse">События склада</button>
         </nav>
       </aside>
 
       <section class="content-area">
         <header class="page-header">
           <div>
-            <p class="eyebrow">Warehouse inventory</p>
-            <h1 id="pageTitle">Item Entry</h1>
+            <p class="eyebrow">Складской учёт</p>
+            <h1 id="pageTitle">Добавить товар</h1>
           </div>
           <div class="header-controls">
             <div class="detection-controls">
-              <button class="primary" id="btnStartDetection" type="button">Start</button>
-              <button id="btnStopDetection" type="button">Stop</button>
-              <button id="btnRestartDetection" type="button">Restart</button>
+              <button class="primary" id="btnStartDetection" type="button">Старт</button>
+              <button id="btnStopDetection" type="button">Стоп</button>
+              <button id="btnRestartDetection" type="button">Перезапуск</button>
             </div>
-            <div class="status-pill" id="statusPill">Loading...</div>
+            <div class="status-pill" id="statusPill">Загрузка...</div>
           </div>
         </header>
 
         <section class="page" id="itemEntry">
           <div class="panel">
             <div class="panel-head">
-              <h2>Add new item</h2>
-              <button id="refreshBtn" type="button">Refresh</button>
+              <h2>Добавить новый товар</h2>
+              <button id="refreshBtn" type="button">Обновить</button>
             </div>
             <form id="itemForm" class="form-grid">
               <label>
-                Item ID
-                <input id="itemId" type="text" required placeholder="SKU or ID" />
+                ID товара
+                <input id="itemId" type="text" required placeholder="SKU или ID" />
               </label>
               <label>
-                Name
-                <input id="itemName" type="text" required placeholder="Item name" />
+                Название
+                <input id="itemName" type="text" required placeholder="Название товара" />
               </label>
               <label>
-                Type
-                <input id="itemType" type="text" placeholder="Item type" />
+                Тип
+                <input id="itemType" type="text" placeholder="Тип товара" />
               </label>
               <label>
-                Image
+                Фото
                 <input id="itemImage" type="file" accept="image/*" />
               </label>
               <label class="full-width">
-                Note
-                <textarea id="itemNote" placeholder="Optional note"></textarea>
+                Примечание
+                <textarea id="itemNote" placeholder="Необязательное примечание"></textarea>
               </label>
-              <button class="primary" type="submit">Add Item</button>
+              <button class="primary" type="submit">Добавить товар</button>
             </form>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Current items</h2>
+              <h2>Текущие товары</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>ID</th>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Quantity</th>
+                    <th>Название</th>
+                    <th>Тип</th>
+                    <th>Количество</th>
                   </tr>
                 </thead>
                 <tbody id="itemList"></tbody>
@@ -95,50 +96,50 @@
         <section class="page hidden" id="cameraSettings">
           <div class="panel">
             <div class="panel-head">
-              <h2>Connect CCTV</h2>
-              <div class="status-pill" id="cameraConnectionStatus">Not tested</div>
+              <h2>Подключить CCTV</h2>
+              <div class="status-pill" id="cameraConnectionStatus">Не проверено</div>
             </div>
             <p class="connection-detail" id="cameraConnectionDetail"></p>
             <form id="cameraForm" class="form-grid">
               <label>
-                Camera Name
-                <input id="cameraName" type="text" required placeholder="Warehouse Camera 1" />
+                Название камеры
+                <input id="cameraName" type="text" required placeholder="Складская камера 1" />
               </label>
               <label>
-                Camera IP / RTSP / HTTP URL
+                IP камеры / RTSP / HTTP URL
                 <input id="cameraStreamUrl" type="text" required placeholder="rtsp://username:password@192.168.1.64:554/stream1" />
               </label>
               <label>
-                Camera Slot
+                Слот камеры
                 <input id="cameraSlot" type="number" min="1" max="50" value="1" required />
               </label>
               <div class="button-row full-width">
-                <button id="btnTestCamera" type="button">Test Connection</button>
-                <button class="primary" id="btnConnectCamera" type="submit">Connect Camera</button>
+                <button id="btnTestCamera" type="button">Проверить соединение</button>
+                <button class="primary" id="btnConnectCamera" type="submit">Подключить камеру</button>
               </div>
             </form>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Connect Camera Controller / NVR</h2>
-              <div class="status-pill" id="controllerConnectionStatus">Not tested</div>
+              <h2>Подключить контроллер камер / NVR</h2>
+              <div class="status-pill" id="controllerConnectionStatus">Не проверено</div>
             </div>
             <p class="connection-detail" id="controllerConnectionDetail">
-              Use the controller/router public IP or DNS/DDNS hostname. Private Wi-Fi/LAN IPs
-              such as 192.168.x.x or 10.x.x.x cannot be reached from the cloud backend.
+              Используйте публичный IP контроллера/роутера или DNS/DDNS имя. Частные Wi‑Fi/LAN IP
+              вроде 192.168.x.x или 10.x.x.x недоступны из облачного backend.
             </p>
             <form id="controllerForm" class="form-grid">
               <label>
-                Controller Name
-                <input id="controllerName" type="text" value="Camera Controller" required />
+                Название контроллера
+                <input id="controllerName" type="text" value="Контроллер камер" required />
               </label>
               <label>
-                Public Controller IP / DNS
+                Публичный IP / DNS контроллера
                 <input id="controllerHost" type="text" required placeholder="203.0.113.10 or warehouse-nvr.example.com" />
               </label>
               <label>
-                Protocol
+                Протокол
                 <select id="controllerProtocol">
                   <option value="rtsp" selected>RTSP</option>
                   <option value="http">HTTP</option>
@@ -146,76 +147,76 @@
                 </select>
               </label>
               <label>
-                Port
+                Порт
                 <input id="controllerPort" type="number" min="1" max="65535" placeholder="554" />
               </label>
               <label>
-                Username
+                Логин
                 <input id="controllerUsername" type="text" placeholder="admin" />
               </label>
               <label>
-                Password
-                <input id="controllerPassword" type="password" placeholder="Optional" />
+                Пароль
+                <input id="controllerPassword" type="password" placeholder="Необязательно" />
               </label>
               <label>
-                Number of Cameras
+                Количество камер
                 <input id="controllerChannelCount" type="number" min="1" max="50" value="4" required />
               </label>
               <label>
-                First Controller Channel
+                Первый канал контроллера
                 <input id="controllerChannelStart" type="number" min="1" value="1" required />
               </label>
               <label>
-                First Dashboard Slot
+                Первый слот в dashboard
                 <input id="controllerStartSlot" type="number" min="1" max="50" value="1" required />
               </label>
               <label class="full-width">
-                Stream Path Template
+                Шаблон пути потока
                 <input id="controllerStreamTemplate" type="text" value="/Streaming/Channels/{channel}01" required />
               </label>
               <label class="full-width">
-                Camera Name Template
-                <input id="controllerCameraNameTemplate" type="text" value="{controller} Camera {channel}" required />
+                Шаблон названия камеры
+                <input id="controllerCameraNameTemplate" type="text" value="{controller} Камера {channel}" required />
               </label>
               <p class="panel-sub full-width">
-                The controller must expose its stream port on the internet, usually by router
-                port-forwarding RTSP 554 or the custom stream port to the controller/NVR.
-                Template examples: Hikvision <code>/Streaming/Channels/{channel}01</code>,
+                Контроллер должен открыть порт потока в интернет, обычно через port-forwarding
+                RTSP 554 или пользовательского порта на контроллер/NVR.
+                Примеры шаблонов: Hikvision <code>/Streaming/Channels/{channel}01</code>,
                 Dahua <code>/cam/realmonitor?channel={channel}&amp;subtype=0</code>.
               </p>
               <div class="button-row full-width">
-                <button class="primary" id="btnConnectController" type="submit">Connect Controller Cameras</button>
+                <button class="primary" id="btnConnectController" type="submit">Подключить камеры контроллера</button>
               </div>
             </form>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Saved Cameras</h2>
-              <button id="btnRefreshCameras" type="button">Refresh</button>
+              <h2>Сохранённые камеры</h2>
+              <button id="btnRefreshCameras" type="button">Обновить</button>
             </div>
             <div class="active-slots" id="activeSlotList"></div>
             <div class="form-grid camera-active-form">
               <label>
-                Slot
+                Слот
                 <input id="activeSlotNumber" type="number" min="1" max="50" value="1" />
               </label>
               <label>
-                Camera
+                Камера
                 <select id="slotCameraSelect"></select>
               </label>
-              <button class="primary" id="btnSetActiveCamera" type="button">Assign Slot</button>
-              <button id="btnClearCameraSlot" type="button">Clear Slot</button>
+              <button class="primary" id="btnSetActiveCamera" type="button">Назначить слот</button>
+              <button id="btnClearCameraSlot" type="button">Очистить слот</button>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Slot</th>
-                    <th>Stream</th>
-                    <th>Status</th>
-                    <th>Active</th>
+                    <th>Название</th>
+                    <th>Слот</th>
+                    <th>Поток</th>
+                    <th>Статус</th>
+                    <th>Активна</th>
                   </tr>
                 </thead>
                 <tbody id="savedCameraTable"></tbody>
@@ -225,10 +226,10 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Detected Camera Feeds</h2>
+              <h2>Видео с камер после AI-обработки</h2>
             </div>
             <p class="panel-sub">
-              One screen per active camera slot. These feeds show the latest AI-processed detection frames.
+              Один экран на каждый активный слот камеры. Здесь показываются последние кадры после AI-детекции.
             </p>
             <div class="camera-live-grid" id="cameraLiveGrid"></div>
           </div>
@@ -237,80 +238,80 @@
         <section class="page hidden" id="checkIn">
           <div class="metrics-row">
             <div class="metric-card">
-              <span>Total items</span>
+              <span>Всего товаров</span>
               <strong id="totalItems">0</strong>
             </div>
             <div class="metric-card">
-              <span>Item types</span>
+              <span>Типы товаров</span>
               <strong id="itemTypes">0</strong>
             </div>
             <div class="metric-card">
-              <span>Total quantity</span>
+              <span>Общее количество</span>
               <strong id="totalQuantity">0</strong>
             </div>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Function health</h2>
+              <h2>Состояние функций</h2>
             </div>
             <div class="metric-card-grid">
               <div class="metric-card">
-                <span>Camera frames</span>
+                <span>Кадры камер</span>
                 <strong id="healthFrames">0</strong>
               </div>
               <div class="metric-card">
-                <span>Last detections</span>
+                <span>Последние детекции</span>
                 <strong id="healthDetections">0</strong>
               </div>
               <div class="metric-card">
-                <span>Tracking IDs</span>
+                <span>Tracking ID</span>
                 <strong id="healthTracking">0</strong>
               </div>
               <div class="metric-card">
-                <span>Stock mode</span>
-                <strong id="healthStockMode">Off</strong>
+                <span>Режим склада</span>
+                <strong id="healthStockMode">Выкл</strong>
               </div>
             </div>
-            <p class="panel-sub" id="healthMessage">Waiting for detection health.</p>
+            <p class="panel-sub" id="healthMessage">Ожидание состояния детекции.</p>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Check in / out</h2>
+              <h2>Приём / выдача</h2>
             </div>
             <form id="checkInForm" class="form-grid">
               <label>
-                Item
+                Товар
                 <select id="checkItemId" required></select>
               </label>
               <label>
-                Quantity
+                Количество
                 <input id="checkQuantity" type="number" min="1" value="1" required />
               </label>
               <label class="full-width">
-                Note
-                <textarea id="checkNote" placeholder="Optional note"></textarea>
+                Примечание
+                <textarea id="checkNote" placeholder="Необязательное примечание"></textarea>
               </label>
               <div class="button-row">
-                <button class="primary" id="btnCheckIn" type="button">Check In</button>
-                <button id="btnCheckOut" type="button">Check Out</button>
+                <button class="primary" id="btnCheckIn" type="button">Принять</button>
+                <button id="btnCheckOut" type="button">Выдать</button>
               </div>
             </form>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Item overview</h2>
+              <h2>Обзор товаров</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>ID</th>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Quantity</th>
+                    <th>Название</th>
+                    <th>Тип</th>
+                    <th>Количество</th>
                   </tr>
                 </thead>
                 <tbody id="checkItemTable"></tbody>
@@ -320,19 +321,19 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Live recognition</h2>
+              <h2>Распознавание в реальном времени</h2>
             </div>
             <div class="metric-card-grid">
               <div class="metric-card">
-                <span>Recognition status</span>
-                <strong id="videoRecognitionStatus">Waiting for feed</strong>
+                <span>Статус распознавания</span>
+                <strong id="videoRecognitionStatus">Ожидание потока</strong>
               </div>
               <div class="metric-card">
-                <span>Unique classes</span>
+                <span>Уникальные классы</span>
                 <strong id="videoRecognitionClassCount">0</strong>
               </div>
               <div class="metric-card">
-                <span>Recent detections</span>
+                <span>Последние детекции</span>
                 <strong id="videoRecognitionEntryCount">0</strong>
               </div>
             </div>
@@ -340,9 +341,9 @@
               <table>
                 <thead>
                   <tr>
-                    <th>Timestamp</th>
-                    <th>Class</th>
-                    <th>Confidence</th>
+                    <th>Время</th>
+                    <th>Класс</th>
+                    <th>Уверенность</th>
                   </tr>
                 </thead>
                 <tbody id="videoRecognitionEntries"></tbody>
@@ -355,45 +356,45 @@
         <section class="page hidden" id="recognitions">
           <div class="metrics-row">
             <div class="metric-card">
-              <span>Automatic check-ins</span>
+              <span>Автоматический приём</span>
               <strong id="visionCheckInTotal">0</strong>
             </div>
             <div class="metric-card">
-              <span>Automatic check-outs</span>
+              <span>Автоматическая выдача</span>
               <strong id="visionCheckOutTotal">0</strong>
             </div>
             <div class="metric-card">
-              <span>Stocked classes</span>
+              <span>Классы на складе</span>
               <strong id="visionCurrentStockTotal">0</strong>
             </div>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>AI 3D Recognition Brain</h2>
+              <h2>AI 3D-мозг распознавания</h2>
             </div>
             <p class="panel-sub">
-              The AI maps detected items into a lightweight 3D-style scene using estimated size,
-              distance, quantity, and object type to make recognition easier.
+              AI размещает найденные товары в лёгкой 3D-сцене по примерному размеру,
+              расстоянию, количеству и типу объекта, чтобы распознавание было понятнее.
             </p>
             <div class="ai-3d-scene" id="ai3dScene"></div>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Live 3D estimates</h2>
+              <h2>3D-оценки в реальном времени</h2>
             </div>
-            <p class="panel-sub">Estimated from the calibrated camera view. Exact metric sizing requires a depth or stereo camera.</p>
+            <p class="panel-sub">Оценивается по откалиброванному виду камеры. Для точных размеров нужна depth/stereo камера.</p>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Inventory item</th>
-                    <th>Physical type</th>
-                    <th>Units</th>
-                    <th>Grid</th>
-                    <th>Estimated W x H x D</th>
-                    <th>Distance</th>
+                    <th>Товар</th>
+                    <th>Физический тип</th>
+                    <th>Единицы</th>
+                    <th>Сетка</th>
+                    <th>Оценка Ш x В x Г</th>
+                    <th>Дистанция</th>
                   </tr>
                 </thead>
                 <tbody id="spatialEstimateTable"></tbody>
@@ -403,21 +404,21 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Vision check-in events</h2>
+              <h2>События приёма/выдачи через Vision</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Direction</th>
-                    <th>Item</th>
-                    <th>Quantity</th>
-                    <th>Physical type</th>
-                    <th>Estimated size</th>
-                    <th>Camera</th>
+                    <th>Время</th>
+                    <th>Направление</th>
+                    <th>Товар</th>
+                    <th>Количество</th>
+                    <th>Физический тип</th>
+                    <th>Оценка размера</th>
+                    <th>Камера</th>
                     <th>Track ID</th>
-                    <th>Confidence</th>
+                    <th>Уверенность</th>
                   </tr>
                 </thead>
                 <tbody id="visionMovementEntries"></tbody>
@@ -427,15 +428,15 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Camera stock</h2>
+              <h2>Склад по камере</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Item</th>
-                    <th>Current stock</th>
-                    <th>Created</th>
+                    <th>Товар</th>
+                    <th>Текущий остаток</th>
+                    <th>Создано</th>
                   </tr>
                 </thead>
                 <tbody id="visionStockTable"></tbody>
@@ -445,19 +446,19 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Latest recognition entries</h2>
+              <h2>Последние записи распознавания</h2>
             </div>
             <div class="metric-card-grid">
               <div class="metric-card">
-                <span>Recognition status</span>
-                <strong id="recognitionStatus">Waiting for feed</strong>
+                <span>Статус распознавания</span>
+                <strong id="recognitionStatus">Ожидание потока</strong>
               </div>
               <div class="metric-card">
-                <span>Unique classes</span>
+                <span>Уникальные классы</span>
                 <strong id="recognitionClassCount">0</strong>
               </div>
               <div class="metric-card">
-                <span>Recent detections</span>
+                <span>Последние детекции</span>
                 <strong id="recognitionEntryCount">0</strong>
               </div>
             </div>
@@ -465,10 +466,10 @@
               <table>
                 <thead>
                   <tr>
-                    <th>Timestamp</th>
-                    <th>Class</th>
-                    <th>Camera</th>
-                    <th>Confidence</th>
+                    <th>Время</th>
+                    <th>Класс</th>
+                    <th>Камера</th>
+                    <th>Уверенность</th>
                   </tr>
                 </thead>
                 <tbody id="recognitionEntries"></tbody>
@@ -478,16 +479,16 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Class counts</h2>
+              <h2>Подсчёт по классам</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Item</th>
-                    <th>State</th>
-                    <th>Quantity</th>
-                    <th>Current stock</th>
+                    <th>Товар</th>
+                    <th>Состояние</th>
+                    <th>Количество</th>
+                    <th>Текущий остаток</th>
                   </tr>
                 </thead>
                 <tbody id="recognitionCounts"></tbody>
@@ -499,17 +500,17 @@
         <section class="page hidden" id="readyList">
           <div class="panel">
             <div class="panel-head">
-              <h2>Ready item list</h2>
+              <h2>Готовый список товаров</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>ID</th>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Quantity</th>
-                    <th>Updated</th>
+                    <th>Название</th>
+                    <th>Тип</th>
+                    <th>Количество</th>
+                    <th>Обновлено</th>
                   </tr>
                 </thead>
                 <tbody id="readyListTable"></tbody>
@@ -519,17 +520,17 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Activity history</h2>
+              <h2>История действий</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Timestamp</th>
-                    <th>Action</th>
+                    <th>Время</th>
+                    <th>Действие</th>
                     <th>ID</th>
-                    <th>Count</th>
-                    <th>Note</th>
+                    <th>Кол-во</th>
+                    <th>Примечание</th>
                   </tr>
                 </thead>
                 <tbody id="historyTable"></tbody>
@@ -540,26 +541,26 @@
         <section class="page hidden" id="occupancy">
           <div class="metrics-row">
             <div class="metric-card">
-              <span>Currently checked in</span>
+              <span>Сейчас внутри</span>
               <strong id="occupancyTotal">0</strong>
             </div>
             <div class="metric-card">
-              <span>Distinct classes</span>
+              <span>Разные классы</span>
               <strong id="occupancyClassCount">0</strong>
             </div>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Live occupancy (per class)</h2>
+              <h2>Текущее наличие по классам</h2>
             </div>
-            <p class="panel-sub">Tracked with ByteTrack; a track counts as checked-in until it's unseen past the configured grace period.</p>
+            <p class="panel-sub">Отслеживается через ByteTrack; объект считается внутри, пока не пропадёт дольше заданного времени ожидания.</p>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Class</th>
-                    <th>Count</th>
+                    <th>Класс</th>
+                    <th>Кол-во</th>
                   </tr>
                 </thead>
                 <tbody id="occupancyCounts"></tbody>
@@ -569,16 +570,16 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Currently checked in (by track ID)</h2>
+              <h2>Сейчас внутри по Track ID</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>Track ID</th>
-                    <th>Class</th>
-                    <th>Camera</th>
-                    <th>Since</th>
+                    <th>Класс</th>
+                    <th>Камера</th>
+                    <th>С момента</th>
                   </tr>
                 </thead>
                 <tbody id="occupancyCurrentTable"></tbody>
@@ -588,17 +589,17 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Recent check-in / check-out events</h2>
+              <h2>Последние события входа / выхода</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Timestamp</th>
-                    <th>Event</th>
+                    <th>Время</th>
+                    <th>Событие</th>
                     <th>Track ID</th>
-                    <th>Class</th>
-                    <th>Camera</th>
+                    <th>Класс</th>
+                    <th>Камера</th>
                     <th>Dwell</th>
                   </tr>
                 </thead>
@@ -610,38 +611,38 @@
         <section class="page hidden" id="warehouse">
           <div class="metrics-row">
             <div class="metric-card">
-              <span>Items in zones now</span>
+              <span>Товары в зонах сейчас</span>
               <strong id="warehouseItemsNow">0</strong>
             </div>
             <div class="metric-card">
-              <span>Items in (total)</span>
+              <span>Вошло всего</span>
               <strong id="warehouseItemsIn">0</strong>
             </div>
             <div class="metric-card">
-              <span>Items out (total)</span>
+              <span>Вышло всего</span>
               <strong id="warehouseItemsOut">0</strong>
             </div>
             <div class="metric-card">
-              <span>Suspicious removals</span>
+              <span>Подозрительные выносы</span>
               <strong id="warehouseSuspicious">0</strong>
             </div>
           </div>
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Suspicious activity (possible theft)</h2>
+              <h2>Подозрительная активность (возможная кража)</h2>
             </div>
-            <p class="panel-sub">Item removals flagged by rules: after_hours (outside working hours), unattended (no person in zone), bulk_removal (many items out in a short window).</p>
+            <p class="panel-sub">Вынос товара отмечается правилами: after_hours (вне рабочего времени), unattended (нет человека в зоне), bulk_removal (много товаров за короткое время).</p>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Timestamp</th>
-                    <th>Zone</th>
-                    <th>Item</th>
+                    <th>Время</th>
+                    <th>Зона</th>
+                    <th>Товар</th>
                     <th>Track</th>
-                    <th>Reasons</th>
-                    <th>People in zone</th>
+                    <th>Причины</th>
+                    <th>Люди в зоне</th>
                   </tr>
                 </thead>
                 <tbody id="warehouseAlertsTable"></tbody>
@@ -651,16 +652,16 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Live zone counts</h2>
+              <h2>Подсчёт по зонам</h2>
             </div>
-            <p class="panel-sub">Objects currently inside each configured zone (updated ~1x per second while detection runs).</p>
+            <p class="panel-sub">Объекты, которые сейчас находятся в каждой настроенной зоне (обновляется примерно раз в секунду при активной детекции).</p>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Zone</th>
-                    <th>Class</th>
-                    <th>Count</th>
+                    <th>Зона</th>
+                    <th>Класс</th>
+                    <th>Кол-во</th>
                   </tr>
                 </thead>
                 <tbody id="warehouseZoneCounts"></tbody>
@@ -670,19 +671,19 @@
 
           <div class="panel">
             <div class="panel-head">
-              <h2>Recent zone events (items &amp; people in/out)</h2>
+              <h2>Последние события зон (товары и люди вход/выход)</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Timestamp</th>
-                    <th>Event</th>
-                    <th>Zone</th>
-                    <th>Class</th>
+                    <th>Время</th>
+                    <th>Событие</th>
+                    <th>Зона</th>
+                    <th>Класс</th>
                     <th>Track</th>
-                    <th>Camera</th>
-                    <th>Flag</th>
+                    <th>Камера</th>
+                    <th>Флаг</th>
                   </tr>
                 </thead>
                 <tbody id="warehouseEventsTable"></tbody>
