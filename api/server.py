@@ -1340,9 +1340,50 @@ def _terminate_pid(pid: int) -> int | None:
     return None
 
 
-def _validate_active_cameras_for_start() -> None:
-    db = _get_camera_db()
+def _detection_selected_cameras(db: CameraDB) -> list[dict[str, Any]]:
     active_cameras = db.list_active_cameras(include_secret=True)
+    raw_slots = os.getenv("DETECTION_ACTIVE_SLOTS", "1").strip()
+    selected_slots: set[int] = set()
+    for value in re.split(r"[, ]+", raw_slots):
+        if value.isdigit():
+            selected_slots.add(int(value))
+
+    if selected_slots:
+        selected = [
+            camera
+            for camera in active_cameras
+            if int(camera.get("slot_number") or 0) in selected_slots
+        ]
+        if selected:
+            return selected
+
+    max_cameras = max(1, int(os.getenv("DETECTION_MAX_CAMERAS", "1")))
+    return active_cameras[:max_cameras]
+
+
+def _write_detection_runtime_config(cameras: list[dict[str, Any]]) -> str:
+    data = _read_yaml(CONFIG_PATH)
+    data["cameras"] = [
+        {
+            "name": camera["name"],
+            "source": _camera_source_from_text(str(camera["stream_url"])),
+            "slot_number": camera.get("slot_number") or index,
+        }
+        for index, camera in enumerate(cameras, start=1)
+    ]
+    detection = data.setdefault("detection", {})
+    detection["image_size"] = min(int(detection.get("image_size") or 640), int(os.getenv("DETECTION_RUNTIME_IMAGE_SIZE", "480")))
+    display = data.setdefault("display", {})
+    display["live_frame_width"] = min(int(display.get("live_frame_width") or 320), int(os.getenv("DETECTION_RUNTIME_FRAME_WIDTH", "320")))
+    display["live_frame_jpeg_quality"] = min(int(display.get("live_frame_jpeg_quality") or 28), int(os.getenv("DETECTION_RUNTIME_JPEG_QUALITY", "28")))
+    runtime_path = ROOT / "config" / "detection_runtime.yaml"
+    _write_yaml(runtime_path, data)
+    return str(runtime_path.relative_to(ROOT))
+
+
+def _validate_active_cameras_for_start(cameras: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    db = _get_camera_db()
+    active_cameras = cameras or db.list_active_cameras(include_secret=True)
     if not active_cameras:
         raise HTTPException(
             status_code=400,
@@ -1364,7 +1405,7 @@ def _validate_active_cameras_for_start() -> None:
             + " ".join(failures),
         )
 
-    _sync_config_active_cameras(db)
+    return active_cameras
 
 
 def _status() -> dict[str, Any]:
@@ -2243,15 +2284,18 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     # config/config.yaml (for example the demo camera checked into the repo) from
     # making the detector process only slot 1 while the dashboard has many active
     # NVR/controller channels saved in SQLite.
-    _sync_config_active_cameras(_get_camera_db())
-    _validate_active_cameras_for_start()
+    db = _get_camera_db()
+    _sync_config_active_cameras(db)
+    selected_cameras = _detection_selected_cameras(db)
+    _validate_active_cameras_for_start(selected_cameras)
+    runtime_config_path = _write_detection_runtime_config(selected_cameras)
     _manual_stop_requested = False
     _clear_live_frames()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _stdout_handle = DETECTION_STDOUT_PATH.open("w", encoding="utf-8", buffering=1)
     _stderr_handle = DETECTION_STDERR_PATH.open("w", encoding="utf-8", buffering=1)
-    _stdout_handle.write(f"\n--- detection start {_now_iso()} config={request.config_path} ---\n")
+    _stdout_handle.write(f"\n--- detection start {_now_iso()} config={runtime_config_path} ---\n")
     DETECTION_HEALTH_PATH.write_text(
         json.dumps(
             {
@@ -2272,7 +2316,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
         sys.executable,
         str(ROOT / "main.py"),
         "--config",
-        request.config_path,
+        runtime_config_path,
     ]
     if request.no_display:
         command.append("--no-display")
