@@ -1,6 +1,5 @@
 const els = {
   surfaceButtons: Array.from(document.querySelectorAll("[data-surface]")),
-  roleSelect: document.querySelector("#roleSelect"),
   moduleNav: document.querySelector("#moduleNav"),
   pageTitle: document.querySelector("#pageTitle"),
   scopeLine: document.querySelector("#scopeLine"),
@@ -10,6 +9,8 @@ const els = {
   moduleContent: document.querySelector("#moduleContent"),
   detectorState: document.querySelector("#detectorState"),
   refreshBtn: document.querySelector("#refreshBtn"),
+  shell: document.querySelector(".v2-shell"),
+  sidebarToggle: document.querySelector("#sidebarToggle"),
   toast: document.querySelector("#toast"),
 };
 
@@ -28,11 +29,13 @@ const API_BASE = (() => {
 
 const state = {
   surface: localStorage.getItem("ai_vision_v2_surface") || "head",
-  role: localStorage.getItem("ai_vision_v2_role") || "super_admin",
+  role: "super_admin",
   activeModule: null,
   session: null,
   overview: null,
 };
+
+const HEAD_MODULE_IDS = new Set(["overview", "users"]);
 
 const permissionLabels = {
   view_dashboard: "View dashboard",
@@ -93,13 +96,6 @@ function toast(message) {
   window.setTimeout(() => els.toast.classList.remove("show"), 2600);
 }
 
-function renderRoles() {
-  const roles = state.session?.available_roles || [];
-  els.roleSelect.innerHTML = roles
-    .map((role) => `<option value="${role.id}" ${role.id === state.role ? "selected" : ""}>${role.label}</option>`)
-    .join("");
-}
-
 function renderShell() {
   els.surfaceButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.surface === state.surface);
@@ -113,7 +109,9 @@ function renderNavigation() {
     els.moduleNav.innerHTML = "";
     return;
   }
-  const modules = state.session?.surfaces?.[state.surface] || [];
+  const modules = (state.session?.surfaces?.[state.surface] || []).filter((module) =>
+    HEAD_MODULE_IDS.has(module.id)
+  );
   if (!modules.length) {
     state.activeModule = null;
     els.moduleNav.innerHTML = `<p class="empty">No modules are available for this role.</p>`;
@@ -630,7 +628,6 @@ async function load() {
   ]);
   state.session = session;
   state.overview = overview;
-  renderRoles();
   renderNavigation();
   renderSummary();
   renderScope();
@@ -674,11 +671,17 @@ els.moduleNav.addEventListener("click", (event) => {
   renderModuleContent();
 });
 
-els.roleSelect.addEventListener("change", async () => {
-  state.role = els.roleSelect.value;
-  localStorage.setItem("ai_vision_v2_role", state.role);
-  state.activeModule = null;
-  await load().catch((error) => toast(error.message));
+function applySidebarState(collapsed) {
+  els.shell.classList.toggle("sidebar-collapsed", collapsed);
+  els.sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+}
+
+applySidebarState(localStorage.getItem("ai_vision_v2_sidebar") === "collapsed");
+
+els.sidebarToggle.addEventListener("click", () => {
+  const collapsed = !els.shell.classList.contains("sidebar-collapsed");
+  applySidebarState(collapsed);
+  localStorage.setItem("ai_vision_v2_sidebar", collapsed ? "collapsed" : "open");
 });
 
 els.refreshBtn.addEventListener("click", () => {
