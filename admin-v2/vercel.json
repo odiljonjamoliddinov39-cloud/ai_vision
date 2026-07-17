@@ -1,8 +1,0 @@
-{
-  "cleanUrls": true,
-  "rewrites": [
-    { "source": "/admin-v2/assets/:path*", "destination": "/:path*" },
-    { "source": "/assets/:path*", "destination": "/:path*" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
