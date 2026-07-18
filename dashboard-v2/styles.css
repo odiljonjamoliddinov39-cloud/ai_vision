@@ -435,13 +435,18 @@ td:last-child {
 }
 
 .cc-save-row {
+  position: sticky;
+  bottom: 12px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
   margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.92);
+  backdrop-filter: blur(10px);
 }
 
 .cc-unsaved {
