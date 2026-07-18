@@ -9,6 +9,8 @@ const els = {
   refreshBtn: document.querySelector("#refreshBtn"),
   shell: document.querySelector(".v2-shell"),
   sidebarToggle: document.querySelector("#sidebarToggle"),
+  brandAvatar: document.querySelector("#brandAvatar"),
+  sideCompanies: document.querySelector("#sideCompanies"),
   toast: document.querySelector("#toast"),
 };
 
@@ -105,24 +107,44 @@ function renderNavigation() {
   const modules = (state.session?.surfaces?.head || []).filter((module) =>
     HEAD_MODULE_IDS.has(module.id)
   );
-  if (!modules.length) {
-    state.activeModule = null;
-    els.moduleNav.innerHTML = `<p class="empty">No modules are available for this role.</p>`;
-    return;
+  const known =
+    state.activeModule === "settings" || modules.some((module) => module.id === state.activeModule);
+  if (!state.activeModule || !known) {
+    state.activeModule = modules[0]?.id || "settings";
   }
-  if (!state.activeModule || !modules.some((module) => module.id === state.activeModule)) {
-    state.activeModule = modules[0].id;
-  }
-  els.moduleNav.innerHTML = modules
-    .map(
-      (module) => `
-        <button class="${module.id === state.activeModule ? "active" : ""}" data-module="${module.id}" type="button">
-          <span>${escapeHtml(moduleLabel(module))}</span>
-          <small>${escapeHtml(MODULE_OVERRIDES[module.id]?.subtitle || permissionLabels[module.permission] || module.permission)}</small>
-        </button>
-      `
-    )
-    .join("");
+  const buttons = modules.map(
+    (module) => `
+      <button class="${module.id === state.activeModule ? "active" : ""}" data-module="${module.id}" type="button">
+        <span>${escapeHtml(moduleLabel(module))}</span>
+        <small>${escapeHtml(MODULE_OVERRIDES[module.id]?.subtitle || permissionLabels[module.permission] || module.permission)}</small>
+      </button>
+    `
+  );
+  buttons.push(`
+    <button class="${state.activeModule === "settings" ? "active" : ""}" data-module="settings" type="button">
+      <span>Settings</span>
+      <small>Profile &amp; security</small>
+    </button>
+  `);
+  els.moduleNav.innerHTML = buttons.join("");
+}
+
+const PENCIL_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>`;
+
+function renderSideCompanies() {
+  const companies = loadCompanies();
+  els.sideCompanies.innerHTML = companies.length
+    ? companies
+        .map(
+          (company) => `
+            <li>
+              <span>${escapeHtml(company.name)}</span>
+              <button type="button" data-edit-company="${company.id}" aria-label="Edit ${escapeHtml(company.name)}">${PENCIL_SVG}</button>
+            </li>
+          `
+        )
+        .join("")
+    : `<li class="side-empty">No companies yet</li>`;
 }
 
 function renderSummary() {
@@ -151,6 +173,13 @@ function renderScope() {
 }
 
 function renderModuleContent() {
+  if (state.activeModule === "settings") {
+    els.activeModuleTitle.textContent = "Settings";
+    els.activeModuleEyebrow.textContent = "Head module";
+    els.summaryGrid.hidden = true;
+    renderSettings(els.moduleContent);
+    return;
+  }
   const modules = state.session?.surfaces?.head || [];
   const module = modules.find((item) => item.id === state.activeModule);
   els.activeModuleTitle.textContent = module ? moduleLabel(module) : "Unavailable";
@@ -235,10 +264,53 @@ function newId() {
 const revealedPasswords = new Set();
 let ccDraft = null;
 let ccDirty = false;
+let ccEditingCompany = null;
 
 function ccCompanies() {
   if (!ccDraft) ccDraft = loadCompanies();
   return ccDraft;
+}
+
+function accountLink(role) {
+  return `${window.location.origin}/dashboard-v2#acc=${role.id}`;
+}
+
+function renderRoleView(company, role) {
+  const revealed = revealedPasswords.has(role.id);
+  const credentials = role.login
+    ? `
+      <div class="cc-credentials">
+        <span class="cc-cred"><em>Login:</em> ${escapeHtml(role.login)}</span>
+        <span class="cc-cred"><em>Password:</em> ${revealed ? escapeHtml(role.password || "") : "••••••••"}</span>
+        <button type="button" class="cc-chip cc-chip-small" data-cc-action="toggle-password"
+                data-company="${company.id}" data-role="${role.id}">
+          ${revealed ? "Hide" : "Show"}
+        </button>
+      </div>
+    `
+    : "";
+  const link = role.link
+    ? `
+      <div class="cc-link">
+        <a href="${escapeHtml(role.link)}" title="${escapeHtml(role.link)}">${escapeHtml(role.link)}</a>
+        <button type="button" class="cc-chip cc-chip-small" data-cc-action="copy-link" data-link="${escapeHtml(role.link)}">Copy</button>
+      </div>
+    `
+    : `<p class="cc-link-pending">Account link is generated when you press Save.</p>`;
+  return `${credentials}${link}`;
+}
+
+function renderRoleEdit(company, role) {
+  return `
+    <div class="cc-edit-grid">
+      <input data-cc-edit="role-name" data-company="${company.id}" data-role="${role.id}"
+             value="${escapeHtml(role.name)}" placeholder="Role name" maxlength="60" />
+      <input data-cc-edit="role-login" data-company="${company.id}" data-role="${role.id}"
+             value="${escapeHtml(role.login || "")}" placeholder="Username (login)" maxlength="60" />
+      <input data-cc-edit="role-password" data-company="${company.id}" data-role="${role.id}"
+             value="${escapeHtml(role.password || "")}" placeholder="Password" maxlength="120" />
+    </div>
+  `;
 }
 
 function renderCompanyControl(container) {
@@ -246,29 +318,17 @@ function renderCompanyControl(container) {
 
   const companyCards = companies
     .map((company) => {
+      const editing = company.id === ccEditingCompany;
       const roles = (company.roles || [])
-        .map((role) => {
-          const revealed = revealedPasswords.has(role.id);
-          const credentials = role.login
-            ? `
-              <div class="cc-credentials">
-                <span class="cc-cred"><em>Login:</em> ${escapeHtml(role.login)}</span>
-                <span class="cc-cred"><em>Password:</em> ${revealed ? escapeHtml(role.password || "") : "••••••••"}</span>
-                <button type="button" class="cc-chip cc-chip-small" data-cc-action="toggle-password"
-                        data-company="${company.id}" data-role="${role.id}">
-                  ${revealed ? "Hide" : "Show"}
-                </button>
-              </div>
-            `
-            : "";
-          return `
+        .map(
+          (role) => `
             <div class="cc-role">
               <div class="cc-role-head">
-                <strong>${escapeHtml(role.name)}</strong>
+                ${editing ? "" : `<strong>${escapeHtml(role.name)}</strong>`}
                 <button type="button" class="cc-remove" data-cc-action="remove-role"
                         data-company="${company.id}" data-role="${role.id}" aria-label="Remove role">✕</button>
               </div>
-              ${credentials}
+              ${editing ? renderRoleEdit(company, role) : renderRoleView(company, role)}
               <div class="cc-access">
                 <span>Give access:</span>
                 ${ACCESS_OPTIONS.map(
@@ -283,16 +343,27 @@ function renderCompanyControl(container) {
                 ).join("")}
               </div>
             </div>
-          `;
-        })
+          `
+        )
         .join("");
 
+      const heading = editing
+        ? `<input class="cc-name-input" data-cc-edit="company-name" data-company="${company.id}"
+                  value="${escapeHtml(company.name)}" maxlength="60" aria-label="Company name" />`
+        : `<h3>${escapeHtml(company.name)}</h3>`;
+      const editButton = editing
+        ? `<button type="button" class="cc-chip cc-chip-small on" data-cc-action="done-edit">Done</button>`
+        : `<button type="button" class="cc-remove" data-cc-action="edit-company" data-company="${company.id}" aria-label="Edit ${escapeHtml(company.name)}">${PENCIL_SVG}</button>`;
+
       return `
-        <article class="cc-company">
+        <article class="cc-company ${editing ? "editing" : ""}" data-company-card="${company.id}">
           <header class="cc-company-head">
-            <h3>${escapeHtml(company.name)}</h3>
-            <button type="button" class="cc-remove" data-cc-action="remove-company"
-                    data-company="${company.id}" aria-label="Remove company">✕</button>
+            ${heading}
+            <div class="cc-head-actions">
+              ${editButton}
+              <button type="button" class="cc-remove" data-cc-action="remove-company"
+                      data-company="${company.id}" aria-label="Remove company">✕</button>
+            </div>
           </header>
           ${roles || `<p class="empty">No roles yet.</p>`}
           <form class="cc-add cc-add-role" data-cc-form="role" data-company="${company.id}">
@@ -316,10 +387,38 @@ function renderCompanyControl(container) {
       ${companyCards || `<p class="empty">No companies yet — add the first one above.</p>`}
     </div>
     <div class="cc-save-row">
-      ${ccDirty ? `<span class="cc-unsaved">Unsaved changes</span>` : ""}
+      <span class="cc-unsaved" ${ccDirty ? "" : "hidden"}>Unsaved changes</span>
       <button type="button" class="cc-save" data-cc-action="save" ${ccDirty ? "" : "disabled"}>Save changes</button>
     </div>
   `;
+}
+
+function refreshSaveState() {
+  const button = els.moduleContent.querySelector(".cc-save");
+  const badge = els.moduleContent.querySelector(".cc-unsaved");
+  if (button) button.disabled = !ccDirty;
+  if (badge) badge.hidden = !ccDirty;
+}
+
+function handleCompanyInput(event) {
+  const input = event.target.closest("[data-cc-edit]");
+  if (!input) return;
+  const companies = ccCompanies();
+  const company = companies.find((item) => item.id === input.dataset.company);
+  if (!company) return;
+  const value = input.value;
+  const field = input.dataset.ccEdit;
+  if (field === "company-name") {
+    company.name = value;
+  } else {
+    const role = (company.roles || []).find((item) => item.id === input.dataset.role);
+    if (!role) return;
+    if (field === "role-name") role.name = value;
+    else if (field === "role-login") role.login = value;
+    else if (field === "role-password") role.password = value;
+  }
+  ccDirty = true;
+  refreshSaveState();
 }
 
 function handleCompanySubmit(event) {
@@ -359,9 +458,31 @@ function handleCompanyClick(event) {
   if (!button) return;
 
   if (button.dataset.ccAction === "save") {
-    saveCompanies(ccCompanies());
+    const companies = ccCompanies();
+    companies.forEach((company) => {
+      (company.roles || []).forEach((role) => {
+        if (!role.link) role.link = accountLink(role);
+      });
+    });
+    saveCompanies(companies);
     ccDirty = false;
-    toast("Changes saved.");
+    ccEditingCompany = null;
+    toast("Changes saved — account links are ready.");
+    renderCompanyControl(els.moduleContent);
+    renderSideCompanies();
+    return;
+  }
+
+  if (button.dataset.ccAction === "copy-link") {
+    navigator.clipboard?.writeText(button.dataset.link).then(
+      () => toast("Account link copied."),
+      () => toast("Could not copy — select the link manually.")
+    );
+    return;
+  }
+
+  if (button.dataset.ccAction === "done-edit") {
+    ccEditingCompany = null;
     renderCompanyControl(els.moduleContent);
     return;
   }
@@ -369,6 +490,12 @@ function handleCompanyClick(event) {
   const companies = ccCompanies();
   const company = companies.find((item) => item.id === button.dataset.company);
   if (!company) return;
+
+  if (button.dataset.ccAction === "edit-company") {
+    ccEditingCompany = company.id;
+    renderCompanyControl(els.moduleContent);
+    return;
+  }
 
   if (button.dataset.ccAction === "remove-company") {
     ccDraft = companies.filter((item) => item.id !== company.id);
@@ -388,6 +515,133 @@ function handleCompanyClick(event) {
   }
 
   renderCompanyControl(els.moduleContent);
+}
+
+// ---- Settings (profile & security) ------------------------------------------
+// Stored in localStorage for now, like the company data.
+
+const PROFILE_KEY = "ai_vision_v2_profile";
+
+function loadProfile() {
+  try {
+    return { login: "admin", password: "", avatar: null, ...JSON.parse(localStorage.getItem(PROFILE_KEY) || "{}") };
+  } catch {
+    return { login: "admin", password: "", avatar: null };
+  }
+}
+
+function saveProfile(profile) {
+  localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  updateBrandAvatar();
+}
+
+function updateBrandAvatar() {
+  const profile = loadProfile();
+  if (profile.avatar) {
+    els.brandAvatar.src = profile.avatar;
+    els.brandAvatar.hidden = false;
+  } else {
+    els.brandAvatar.hidden = true;
+    els.brandAvatar.removeAttribute("src");
+  }
+}
+
+function renderSettings(container) {
+  const profile = loadProfile();
+  container.innerHTML = `
+    <p class="chart-note">Stored in this browser for now — backend hookup pending.</p>
+    <div class="settings-grid">
+      <section class="cc-company">
+        <header class="cc-company-head"><h3>Profile picture</h3></header>
+        <div class="settings-avatar-row">
+          ${
+            profile.avatar
+              ? `<img class="settings-avatar" src="${profile.avatar}" alt="Profile picture" />`
+              : `<div class="settings-avatar settings-avatar-empty">${escapeHtml((profile.login || "A").slice(0, 1).toUpperCase())}</div>`
+          }
+          <div class="settings-avatar-actions">
+            <label class="cc-chip settings-upload">
+              Upload picture
+              <input id="avatarInput" type="file" accept="image/*" hidden />
+            </label>
+            ${profile.avatar ? `<button type="button" class="cc-chip cc-chip-small" data-settings-action="remove-avatar">Remove</button>` : ""}
+          </div>
+        </div>
+      </section>
+      <section class="cc-company">
+        <header class="cc-company-head"><h3>Login &amp; password</h3></header>
+        <p class="cc-cred"><em>Current login:</em> ${escapeHtml(profile.login)}</p>
+        <form class="cc-add cc-add-role" data-settings-form="security">
+          <input name="login" placeholder="New login" value="${escapeHtml(profile.login)}" required maxlength="60" autocomplete="username" />
+          <input name="password" type="password" placeholder="New password" required maxlength="120" autocomplete="new-password" />
+          <input name="confirm" type="password" placeholder="Confirm new password" required maxlength="120" autocomplete="new-password" />
+          <button type="submit">Update credentials</button>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function handleSettingsSubmit(event) {
+  const form = event.target.closest("[data-settings-form]");
+  if (!form) return;
+  event.preventDefault();
+  const login = form.elements.login.value.trim();
+  const password = form.elements.password.value;
+  const confirm = form.elements.confirm.value;
+  if (!login || !password) return;
+  if (password !== confirm) {
+    toast("Passwords do not match.");
+    return;
+  }
+  const profile = loadProfile();
+  profile.login = login;
+  profile.password = password;
+  saveProfile(profile);
+  toast("Credentials updated.");
+  renderSettings(els.moduleContent);
+}
+
+function handleSettingsChange(event) {
+  if (event.target.id !== "avatarInput") return;
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) {
+    toast("Picture is too large — keep it under 2 MB.");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const profile = loadProfile();
+    profile.avatar = String(reader.result);
+    saveProfile(profile);
+    toast("Profile picture updated.");
+    renderSettings(els.moduleContent);
+  };
+  reader.readAsDataURL(file);
+}
+
+function handleSettingsClick(event) {
+  const button = event.target.closest("[data-settings-action]");
+  if (!button) return;
+  if (button.dataset.settingsAction === "remove-avatar") {
+    const profile = loadProfile();
+    profile.avatar = null;
+    saveProfile(profile);
+    renderSettings(els.moduleContent);
+  }
+}
+
+function announceAccountFromHash() {
+  const match = window.location.hash.match(/acc=([a-z0-9]+)/i);
+  if (!match) return;
+  for (const company of loadCompanies()) {
+    const role = (company.roles || []).find((item) => item.id === match[1]);
+    if (role) {
+      toast(`Account link: ${role.name} @ ${company.name} (login: ${role.login}).`);
+      return;
+    }
+  }
 }
 
 // ---- Analytics charts -------------------------------------------------------
@@ -794,8 +1048,28 @@ async function load() {
   renderModuleContent();
 }
 
-els.moduleContent.addEventListener("submit", handleCompanySubmit);
-els.moduleContent.addEventListener("click", handleCompanyClick);
+els.moduleContent.addEventListener("submit", (event) => {
+  handleCompanySubmit(event);
+  handleSettingsSubmit(event);
+});
+els.moduleContent.addEventListener("click", (event) => {
+  handleCompanyClick(event);
+  handleSettingsClick(event);
+});
+els.moduleContent.addEventListener("input", handleCompanyInput);
+els.moduleContent.addEventListener("change", handleSettingsChange);
+
+els.sideCompanies.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-edit-company]");
+  if (!button) return;
+  ccEditingCompany = button.dataset.editCompany;
+  state.activeModule = "users";
+  renderNavigation();
+  renderModuleContent();
+  els.moduleContent
+    .querySelector(`[data-company-card="${ccEditingCompany}"]`)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+});
 
 els.moduleNav.addEventListener("click", (event) => {
   const button = event.target.closest("[data-module]");
@@ -822,4 +1096,8 @@ els.refreshBtn.addEventListener("click", () => {
   load().then(() => toast("Dashboard V2 refreshed.")).catch((error) => toast(error.message));
 });
 
-load().catch((error) => toast(error.message));
+renderSideCompanies();
+updateBrandAvatar();
+load()
+  .then(() => announceAccountFromHash())
+  .catch((error) => toast(error.message));
