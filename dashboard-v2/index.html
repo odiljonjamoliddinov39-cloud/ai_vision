@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI Vision Dashboard V2</title>
     <link rel="icon" type="image/svg+xml" href="/dashboard-v2/assets/favicon.svg" />
-    <link rel="stylesheet" href="/dashboard-v2/assets/styles.css?v=13" />
+    <link rel="stylesheet" href="/dashboard-v2/assets/styles.css?v=14" />
   </head>
   <body>
     <main class="v2-shell">
@@ -23,9 +23,15 @@
             <strong>Enterprise Control</strong>
             <small>Dashboard V2</small>
           </div>
+          <img id="brandAvatar" class="brand-avatar" alt="Profile picture" hidden />
         </div>
 
         <nav class="module-nav" id="moduleNav" aria-label="Dashboard modules"></nav>
+
+        <div class="side-section" id="companiesSection">
+          <p class="side-title">Companies</p>
+          <ul class="side-companies" id="sideCompanies"></ul>
+        </div>
       </aside>
 
       <section class="v2-main">
@@ -59,6 +65,6 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/dashboard-v2/assets/app.js?v=13" type="module"></script>
+    <script src="/dashboard-v2/assets/app.js?v=14" type="module"></script>
   </body>
 </html>
