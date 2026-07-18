@@ -1,6 +1,8 @@
 const els = {
   moduleNav: document.querySelector("#moduleNav"),
+  pageTitle: document.querySelector("#pageTitle"),
   scopeLine: document.querySelector("#scopeLine"),
+  companiesSection: document.querySelector("#companiesSection"),
   summaryGrid: document.querySelector("#summaryGrid"),
   activeModuleEyebrow: document.querySelector("#activeModuleEyebrow"),
   activeModuleTitle: document.querySelector("#activeModuleTitle"),
@@ -632,15 +634,68 @@ function handleSettingsClick(event) {
   }
 }
 
-function announceAccountFromHash() {
+// ---- User dashboard (account links) -----------------------------------------
+
+function resolveAccountFromHash() {
   const match = window.location.hash.match(/acc=([a-z0-9]+)/i);
-  if (!match) return;
+  if (!match) return null;
   for (const company of loadCompanies()) {
     const role = (company.roles || []).find((item) => item.id === match[1]);
-    if (role) {
-      toast(`Account link: ${role.name} @ ${company.name} (login: ${role.login}).`);
-      return;
-    }
+    if (role) return { company, role, missing: false };
+  }
+  return { company: null, role: null, missing: true };
+}
+
+function livePreviewHtml(summary, health) {
+  const slots = Math.min(Number(summary.active_cameras || health.camera_count || 4), 10);
+  return `
+    <div class="live-preview">
+      ${Array.from({ length: slots }, (_, index) => {
+        const slot = index + 1;
+        return `<figure><img src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderAccountView({ company, role, missing }) {
+  els.pageTitle.textContent = "User Dashboard";
+  els.moduleNav.innerHTML = "";
+  els.companiesSection.hidden = true;
+  els.summaryGrid.hidden = true;
+  els.activeModuleEyebrow.textContent = "User module";
+
+  const summary = state.overview?.summary || {};
+  const health = state.overview?.health || {};
+  const running = Boolean(summary.detector_running);
+  els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
+  els.detectorState.dataset.state = running ? "good" : "bad";
+
+  if (missing) {
+    els.scopeLine.textContent = "Account access";
+    els.activeModuleTitle.textContent = "Account not found";
+    els.moduleContent.innerHTML = `
+      <p class="empty">This account link isn't available on this device yet — account data is stored
+      in the browser where it was created until the backend hookup.</p>
+    `;
+    return;
+  }
+
+  els.scopeLine.textContent = `${role.name} • ${company.name} • login: ${role.login}`;
+  els.activeModuleTitle.textContent = `Welcome, ${role.name}`;
+
+  const blocks = [];
+  if (role.access?.analytics) {
+    blocks.push(`<section class="acc-block"><h3>Analytics</h3><div id="accCharts"></div></section>`);
+  }
+  if (role.access?.camera) {
+    blocks.push(`<section class="acc-block"><h3>Camera Control</h3>${livePreviewHtml(summary, health)}</section>`);
+  }
+  els.moduleContent.innerHTML = blocks.length
+    ? blocks.join("")
+    : `<p class="empty">No modules have been granted to this account yet. Ask your administrator for access.</p>`;
+  if (role.access?.analytics) {
+    renderAnalytics(els.moduleContent.querySelector("#accCharts"));
   }
 }
 
@@ -1042,6 +1097,13 @@ async function load() {
   ]);
   state.session = session;
   state.overview = overview;
+  const account = resolveAccountFromHash();
+  if (account) {
+    renderAccountView(account);
+    return;
+  }
+  els.pageTitle.textContent = "Head Dashboard";
+  els.companiesSection.hidden = false;
   renderNavigation();
   renderSummary();
   renderScope();
@@ -1096,8 +1158,8 @@ els.refreshBtn.addEventListener("click", () => {
   load().then(() => toast("Dashboard V2 refreshed.")).catch((error) => toast(error.message));
 });
 
+window.addEventListener("hashchange", () => window.location.reload());
+
 renderSideCompanies();
 updateBrandAvatar();
-load()
-  .then(() => announceAccountFromHash())
-  .catch((error) => toast(error.message));
+load().catch((error) => toast(error.message));
