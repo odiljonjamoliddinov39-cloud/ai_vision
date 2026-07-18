@@ -436,27 +436,35 @@ td:last-child {
 
 .cc-save-row {
   position: sticky;
-  bottom: 12px;
+  bottom: 16px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
   margin-top: 18px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(2, 6, 23, 0.92);
-  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.cc-save-row > * {
+  pointer-events: auto;
 }
 
 .cc-unsaved {
   color: var(--warn);
   font-size: 13px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.92);
+}
+
+.cc-save {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
 }
 
 .cc-save {
   border-color: rgba(56, 189, 248, 0.8);
-  background: rgba(56, 189, 248, 0.16);
+  background: linear-gradient(rgba(56, 189, 248, 0.16), rgba(56, 189, 248, 0.16)), #0b1624;
   font-weight: 600;
   padding: 0 22px;
 }
