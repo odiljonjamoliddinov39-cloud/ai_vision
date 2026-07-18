@@ -233,9 +233,16 @@ function newId() {
 }
 
 const revealedPasswords = new Set();
+let ccDraft = null;
+let ccDirty = false;
+
+function ccCompanies() {
+  if (!ccDraft) ccDraft = loadCompanies();
+  return ccDraft;
+}
 
 function renderCompanyControl(container) {
-  const companies = loadCompanies();
+  const companies = ccCompanies();
 
   const companyCards = companies
     .map((company) => {
@@ -308,6 +315,10 @@ function renderCompanyControl(container) {
     <div class="cc-list">
       ${companyCards || `<p class="empty">No companies yet — add the first one above.</p>`}
     </div>
+    <div class="cc-save-row">
+      ${ccDirty ? `<span class="cc-unsaved">Unsaved changes</span>` : ""}
+      <button type="button" class="cc-save" data-cc-action="save" ${ccDirty ? "" : "disabled"}>Save changes</button>
+    </div>
   `;
 }
 
@@ -317,7 +328,7 @@ function handleCompanySubmit(event) {
   event.preventDefault();
   const name = form.elements.name.value.trim();
   if (!name) return;
-  const companies = loadCompanies();
+  const companies = ccCompanies();
 
   if (form.dataset.ccForm === "company") {
     companies.push({ id: newId(), name, roles: [] });
@@ -339,22 +350,32 @@ function handleCompanySubmit(event) {
     toast(`Role "${name}" added to ${company.name}.`);
   }
 
-  saveCompanies(companies);
+  ccDirty = true;
   renderCompanyControl(els.moduleContent);
 }
 
 function handleCompanyClick(event) {
   const button = event.target.closest("[data-cc-action]");
   if (!button) return;
-  const companies = loadCompanies();
+
+  if (button.dataset.ccAction === "save") {
+    saveCompanies(ccCompanies());
+    ccDirty = false;
+    toast("Changes saved.");
+    renderCompanyControl(els.moduleContent);
+    return;
+  }
+
+  const companies = ccCompanies();
   const company = companies.find((item) => item.id === button.dataset.company);
   if (!company) return;
 
   if (button.dataset.ccAction === "remove-company") {
-    saveCompanies(companies.filter((item) => item.id !== company.id));
+    ccDraft = companies.filter((item) => item.id !== company.id);
+    ccDirty = true;
   } else if (button.dataset.ccAction === "remove-role") {
     company.roles = (company.roles || []).filter((role) => role.id !== button.dataset.role);
-    saveCompanies(companies);
+    ccDirty = true;
   } else if (button.dataset.ccAction === "toggle-password") {
     if (revealedPasswords.has(button.dataset.role)) revealedPasswords.delete(button.dataset.role);
     else revealedPasswords.add(button.dataset.role);
@@ -363,7 +384,7 @@ function handleCompanyClick(event) {
     if (!role) return;
     role.access = role.access || {};
     role.access[button.dataset.access] = !role.access[button.dataset.access];
-    saveCompanies(companies);
+    ccDirty = true;
   }
 
   renderCompanyControl(els.moduleContent);
