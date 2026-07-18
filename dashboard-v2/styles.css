@@ -434,6 +434,35 @@ td:last-child {
   color: var(--text);
 }
 
+.cc-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.cc-unsaved {
+  color: var(--warn);
+  font-size: 13px;
+}
+
+.cc-save {
+  border-color: rgba(56, 189, 248, 0.8);
+  background: rgba(56, 189, 248, 0.16);
+  font-weight: 600;
+  padding: 0 22px;
+}
+
+.cc-save:disabled {
+  opacity: 0.45;
+  cursor: default;
+  border-color: var(--line);
+  background: rgba(15, 23, 42, 0.75);
+}
+
 .chart-note {
   margin: 0 0 14px;
   color: var(--muted);
