@@ -658,20 +658,311 @@ function livePreviewHtml(summary, health) {
   `;
 }
 
+const MAX_NVRS = 5;
+const MAX_NVR_SLOTS = 15;
+let accountState = null;
+let accountModule = null;
+
+const QUALITY_OPTIONS = [
+  { id: "low", label: "Low · 480p", hint: "fastest serving" },
+  { id: "medium", label: "Medium · 720p", hint: "balanced" },
+  { id: "high", label: "High · 1080p", hint: "best picture" },
+];
+
+function companyConfig(company) {
+  if (!company.cameraConfig) company.cameraConfig = { nvrs: [], quality: "high" };
+  if (!company.cameraConfig.nvrs) company.cameraConfig.nvrs = [];
+  if (!company.ai) company.ai = { products: [], mode: "once" };
+  if (!company.ai.products) company.ai.products = [];
+  return company;
+}
+
+function persistAccountCompany() {
+  const companies = loadCompanies();
+  const index = companies.findIndex((item) => item.id === accountState.company.id);
+  if (index >= 0) {
+    companies[index] = accountState.company;
+    saveCompanies(companies);
+  }
+}
+
+function accountMenus(role) {
+  const menus = [];
+  if (role.access?.camera) menus.push({ id: "camera", label: "Camera Control", sub: "NVR & vision quality" });
+  if (role.access?.analytics) menus.push({ id: "analytics", label: "Analytics", sub: "Charts & trends" });
+  if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
+  menus.push({ id: "ai", label: "AI Check-in", sub: "Products to count" });
+  menus.push({ id: "dimension", label: "3D Dimensioning", sub: "Item measurements" });
+  return menus;
+}
+
+function productDims(name) {
+  let seed = 7;
+  for (const char of name) seed = (seed * 31 + char.charCodeAt(0)) | 0;
+  const rand = mulberry32(seed);
+  return {
+    w: 10 + Math.round(rand() * 70),
+    h: 8 + Math.round(rand() * 50),
+    d: 10 + Math.round(rand() * 60),
+  };
+}
+
+function dimBoxSvg({ w, h, d }) {
+  const scale = 1.6;
+  const bw = Math.max(30, w * scale);
+  const bh = Math.max(24, h * scale);
+  const bd = Math.max(16, d * scale * 0.5);
+  const x = 64;
+  const y = 20 + bd;
+  const width = x + bw + bd + 60;
+  const height = y + bh + 34;
+  return `
+    <svg viewBox="0 0 ${width} ${height}" class="dim-svg" role="img" aria-label="3D box ${w} by ${h} by ${d} centimeters">
+      <path d="M ${x} ${y} l ${bd} ${-bd} h ${bw} l ${-bd} ${bd} Z" fill="rgba(56,189,248,0.16)" stroke="#38bdf8" stroke-width="1.5" />
+      <rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="rgba(56,189,248,0.08)" stroke="#38bdf8" stroke-width="1.5" />
+      <path d="M ${x + bw} ${y} l ${bd} ${-bd} v ${bh} l ${-bd} ${bd} Z" fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1.5" />
+      <text x="${x + bw / 2}" y="${y + bh + 18}" class="dim-label" text-anchor="middle">W ${w} cm</text>
+      <text x="${x - 8}" y="${y + bh / 2}" class="dim-label" text-anchor="end">H ${h} cm</text>
+      <text x="${x + bw + bd / 2 + 6}" y="${y - bd / 2}" class="dim-label">D ${d} cm</text>
+    </svg>
+  `;
+}
+
+function renderAccountModule() {
+  const { company, role } = accountState;
+  companyConfig(company);
+  const menus = accountMenus(role);
+  const menu = menus.find((item) => item.id === accountModule) || menus[0];
+  accountModule = menu?.id || null;
+
+  els.moduleNav.innerHTML = menus
+    .map(
+      (item) => `
+        <button class="${item.id === accountModule ? "active" : ""}" data-acc-module="${item.id}" type="button">
+          <span>${escapeHtml(item.label)}</span>
+          <small>${escapeHtml(item.sub)}</small>
+        </button>
+      `
+    )
+    .join("");
+
+  els.activeModuleEyebrow.textContent = "User module";
+  els.activeModuleTitle.textContent = menu ? menu.label : `Welcome, ${role.name}`;
+
+  if (!menu) {
+    els.moduleContent.innerHTML = `<p class="empty">No modules have been granted to this account yet. Ask your administrator for access.</p>`;
+    return;
+  }
+
+  const config = company.cameraConfig;
+  const ai = company.ai;
+  const summary = state.overview?.summary || {};
+  const health = state.overview?.health || {};
+
+  if (menu.id === "camera") {
+    const atLimit = config.nvrs.length >= MAX_NVRS;
+    const nvrCards = config.nvrs
+      .map(
+        (nvr) => `
+          <article class="cc-company">
+            <header class="cc-company-head">
+              <h3>${escapeHtml(nvr.name)}</h3>
+              <button type="button" class="cc-remove" data-acc-action="remove-nvr" data-nvr="${nvr.id}" aria-label="Remove NVR">✕</button>
+            </header>
+            <p class="cc-cred"><em>RTSP:</em> <span class="nvr-rtsp" title="${escapeHtml(nvr.rtsp)}">${escapeHtml(nvr.rtsp)}</span></p>
+            <p class="cc-cred"><em>Camera slots:</em> ${nvr.slots} / ${MAX_NVR_SLOTS}</p>
+          </article>
+        `
+      )
+      .join("");
+    els.moduleContent.innerHTML = `
+      <p class="chart-note">NVR connections: ${config.nvrs.length}/${MAX_NVRS} — each NVR can expose up to ${MAX_NVR_SLOTS} camera slots.</p>
+      <div class="cc-list">${nvrCards || `<p class="empty">No NVRs connected yet — add the first one below.</p>`}</div>
+      <form class="cc-add cc-add-role nvr-form" data-acc-form="nvr" ${atLimit ? "hidden" : ""}>
+        <input name="name" placeholder="NVR name (e.g. Warehouse North)" required maxlength="60" autocomplete="off" />
+        <input name="rtsp" placeholder="rtsp://user:pass@192.168.1.10:554/stream" required maxlength="200" autocomplete="off" />
+        <input name="slots" type="number" min="1" max="${MAX_NVR_SLOTS}" value="8" required aria-label="Camera slots" />
+        <button type="submit">Add NVR</button>
+      </form>
+      ${atLimit ? `<p class="empty">NVR limit reached (${MAX_NVRS}). Remove one to add another.</p>` : ""}
+      <section class="acc-block quality-block">
+        <h3>Vision quality</h3>
+        <p class="chart-note">Lower quality serves video faster over slow connections.</p>
+        <div class="cc-access">
+          ${QUALITY_OPTIONS.map(
+            (option) => `
+              <button type="button" class="cc-chip ${config.quality === option.id ? "on" : ""}"
+                      data-acc-action="quality" data-quality="${option.id}">
+                ${option.label} <small>· ${option.hint}</small>
+              </button>
+            `
+          ).join("")}
+        </div>
+      </section>
+    `;
+    return;
+  }
+
+  if (menu.id === "analytics") {
+    els.moduleContent.innerHTML = `<div id="accCharts"></div>`;
+    renderAnalytics(els.moduleContent.querySelector("#accCharts"));
+    return;
+  }
+
+  if (menu.id === "feed") {
+    if (!config.nvrs.length) {
+      els.moduleContent.innerHTML = `<p class="empty">No NVRs connected — set one up in Camera Control first.</p>`;
+      return;
+    }
+    let globalSlot = 0;
+    const sections = config.nvrs
+      .map((nvr) => {
+        const tiles = Array.from({ length: nvr.slots }, (_, index) => {
+          globalSlot += 1;
+          if (globalSlot <= Math.max(Number(summary.active_cameras || health.camera_count || 1), 1)) {
+            return `<figure><img src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
+          }
+          return `<figure class="feed-empty"><div>No signal yet</div><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
+        }).join("");
+        return `<section class="acc-block"><h3>${escapeHtml(nvr.name)} <small class="muted">(${nvr.slots} slots)</small></h3><div class="live-preview">${tiles}</div></section>`;
+      })
+      .join("");
+    els.moduleContent.innerHTML = `
+      <p class="chart-note">Streaming at ${escapeHtml((QUALITY_OPTIONS.find((option) => option.id === config.quality) || QUALITY_OPTIONS[2]).label)} quality.</p>
+      ${sections}
+    `;
+    return;
+  }
+
+  if (menu.id === "ai") {
+    const rows = ai.products
+      .map(
+        (product) => `
+          <div class="cc-role ai-product">
+            <div class="cc-role-head">
+              <strong>${escapeHtml(product.name)}</strong>
+              <button type="button" class="cc-remove" data-acc-action="remove-product" data-product="${product.id}" aria-label="Remove product">✕</button>
+            </div>
+            <div class="cc-access">
+              <button type="button" class="cc-chip ${product.counting ? "on" : ""}" data-acc-action="toggle-product" data-product="${product.id}">
+                ${product.counting ? "Counting ✓" : "Not counting"}
+              </button>
+              ${product.dims ? `<span class="cc-cred"><em>Measured once:</em> ${product.dims.w}×${product.dims.h}×${product.dims.d} cm</span>` : ""}
+            </div>
+          </div>
+        `
+      )
+      .join("");
+    els.moduleContent.innerHTML = `
+      <p class="chart-note">Check in the products the AI should count — everything else is ignored.</p>
+      <form class="cc-add" data-acc-form="product">
+        <input name="name" placeholder="Product name (e.g. Bread crate)" required maxlength="60" autocomplete="off" />
+        <button type="submit">Check in product</button>
+      </form>
+      <div class="cc-list ai-list">${rows || `<p class="empty">No products checked in yet.</p>`}</div>
+      <section class="acc-block">
+        <h3>Recognition mode</h3>
+        <div class="cc-access">
+          <button type="button" class="cc-chip ${ai.mode === "once" ? "on" : ""}" data-acc-action="mode" data-mode="once">Count &amp; dimension once</button>
+          <button type="button" class="cc-chip ${ai.mode === "interval" ? "on" : ""}" data-acc-action="mode" data-mode="interval">Re-check every 5 minutes</button>
+        </div>
+        <p class="chart-note">${ai.mode === "once" ? "Each item is counted and measured a single time at first detection — no repeat scans." : "Items are re-recognized on a 5-minute cycle."}</p>
+      </section>
+    `;
+    return;
+  }
+
+  if (menu.id === "dimension") {
+    const measured = ai.products.filter((product) => product.counting && product.dims);
+    els.moduleContent.innerHTML = `
+      <p class="chart-note">What the AI draws when it looks at your checked-in items. ${ai.mode === "once" ? "Measured once at first detection — never re-measured on the 5-minute cycle." : "Re-measured every 5 minutes."}</p>
+      ${
+        measured.length
+          ? `<div class="cc-list dim-list">${measured
+              .map(
+                (product) => `
+                  <article class="cc-company dim-card">
+                    <header class="cc-company-head"><h3>${escapeHtml(product.name)}</h3><span class="cc-chip cc-chip-small on">Counted once ✓</span></header>
+                    ${dimBoxSvg(product.dims)}
+                    <p class="cc-cred"><em>Volume:</em> ${((product.dims.w * product.dims.h * product.dims.d) / 1000).toFixed(1)} L</p>
+                  </article>
+                `
+              )
+              .join("")}</div>`
+          : `<p class="empty">No measured items yet — check in a product in AI Check-in and enable counting.</p>`
+      }
+    `;
+    return;
+  }
+}
+
+function handleAccountSubmit(event) {
+  const form = event.target.closest("[data-acc-form]");
+  if (!form || !accountState) return;
+  event.preventDefault();
+  const { company } = accountState;
+  companyConfig(company);
+
+  if (form.dataset.accForm === "nvr") {
+    if (company.cameraConfig.nvrs.length >= MAX_NVRS) return;
+    const name = form.elements.name.value.trim();
+    const rtsp = form.elements.rtsp.value.trim();
+    const slots = Math.min(MAX_NVR_SLOTS, Math.max(1, Number(form.elements.slots.value) || 1));
+    if (!name || !rtsp) return;
+    company.cameraConfig.nvrs.push({ id: newId(), name, rtsp, slots });
+    toast(`NVR "${name}" connected with ${slots} slots.`);
+  } else if (form.dataset.accForm === "product") {
+    const name = form.elements.name.value.trim();
+    if (!name) return;
+    company.ai.products.push({ id: newId(), name, counting: true, dims: productDims(name), measuredAt: Date.now() });
+    toast(`"${name}" checked in — counted and measured once.`);
+  } else {
+    return;
+  }
+
+  persistAccountCompany();
+  renderAccountModule();
+}
+
+function handleAccountClick(event) {
+  const button = event.target.closest("[data-acc-action]");
+  if (!button || !accountState) return;
+  const { company } = accountState;
+  companyConfig(company);
+  const action = button.dataset.accAction;
+
+  if (action === "remove-nvr") {
+    company.cameraConfig.nvrs = company.cameraConfig.nvrs.filter((nvr) => nvr.id !== button.dataset.nvr);
+  } else if (action === "quality") {
+    company.cameraConfig.quality = button.dataset.quality;
+  } else if (action === "toggle-product") {
+    const product = company.ai.products.find((item) => item.id === button.dataset.product);
+    if (product) product.counting = !product.counting;
+  } else if (action === "remove-product") {
+    company.ai.products = company.ai.products.filter((item) => item.id !== button.dataset.product);
+  } else if (action === "mode") {
+    company.ai.mode = button.dataset.mode;
+  } else {
+    return;
+  }
+
+  persistAccountCompany();
+  renderAccountModule();
+}
+
 function renderAccountView({ company, role, missing }) {
   els.pageTitle.textContent = "User Dashboard";
-  els.moduleNav.innerHTML = "";
   els.companiesSection.hidden = true;
   els.summaryGrid.hidden = true;
   els.activeModuleEyebrow.textContent = "User module";
 
   const summary = state.overview?.summary || {};
-  const health = state.overview?.health || {};
   const running = Boolean(summary.detector_running);
   els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
   els.detectorState.dataset.state = running ? "good" : "bad";
 
   if (missing) {
+    els.moduleNav.innerHTML = "";
     els.scopeLine.textContent = "Account access";
     els.activeModuleTitle.textContent = "Account not found";
     els.moduleContent.innerHTML = `
@@ -681,22 +972,9 @@ function renderAccountView({ company, role, missing }) {
     return;
   }
 
+  accountState = { company, role };
   els.scopeLine.textContent = `${role.name} • ${company.name} • login: ${role.login}`;
-  els.activeModuleTitle.textContent = `Welcome, ${role.name}`;
-
-  const blocks = [];
-  if (role.access?.analytics) {
-    blocks.push(`<section class="acc-block"><h3>Analytics</h3><div id="accCharts"></div></section>`);
-  }
-  if (role.access?.camera) {
-    blocks.push(`<section class="acc-block"><h3>Camera Control</h3>${livePreviewHtml(summary, health)}</section>`);
-  }
-  els.moduleContent.innerHTML = blocks.length
-    ? blocks.join("")
-    : `<p class="empty">No modules have been granted to this account yet. Ask your administrator for access.</p>`;
-  if (role.access?.analytics) {
-    renderAnalytics(els.moduleContent.querySelector("#accCharts"));
-  }
+  renderAccountModule();
 }
 
 // ---- Analytics charts -------------------------------------------------------
@@ -1113,10 +1391,12 @@ async function load() {
 els.moduleContent.addEventListener("submit", (event) => {
   handleCompanySubmit(event);
   handleSettingsSubmit(event);
+  handleAccountSubmit(event);
 });
 els.moduleContent.addEventListener("click", (event) => {
   handleCompanyClick(event);
   handleSettingsClick(event);
+  handleAccountClick(event);
 });
 els.moduleContent.addEventListener("input", handleCompanyInput);
 els.moduleContent.addEventListener("change", handleSettingsChange);
@@ -1134,6 +1414,12 @@ els.sideCompanies.addEventListener("click", (event) => {
 });
 
 els.moduleNav.addEventListener("click", (event) => {
+  const accButton = event.target.closest("[data-acc-module]");
+  if (accButton && accountState) {
+    accountModule = accButton.dataset.accModule;
+    renderAccountModule();
+    return;
+  }
   const button = event.target.closest("[data-module]");
   if (!button) return;
   state.activeModule = button.dataset.module;

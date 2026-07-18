@@ -585,6 +585,63 @@ td:last-child {
   font-size: 16px;
 }
 
+.quality-block {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.nvr-form {
+  margin-top: 16px;
+  max-width: 560px;
+}
+
+.nvr-rtsp {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.feed-empty div {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ai-list,
+.dim-list {
+  margin-top: 16px;
+}
+
+.dim-card {
+  align-items: start;
+}
+
+.dim-svg {
+  width: 100%;
+  max-width: 260px;
+  height: auto;
+}
+
+.dim-label {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.muted small,
+h3 .muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
