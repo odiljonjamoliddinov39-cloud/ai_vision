@@ -204,4 +204,7 @@ def test_dashboard_exposes_multi_image_catalog_results_excel_and_3d_views():
     assert ".dimension-visual" in styles
     assert '.catalog-form input:not([type="file"])' in styles
     assert "appearance: none;" in styles
+    assert 'class="catalog-upload-help" data-image-count' in source
+    assert ".catalog-form > button[type=\"submit\"]" in styles
+    assert "grid-row: 1;" in styles
     assert 'CATALOG_RECOGNITION_INTERVAL_HOURS: "12"' in compose

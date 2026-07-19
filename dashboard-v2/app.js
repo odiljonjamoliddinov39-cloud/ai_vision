@@ -936,15 +936,15 @@ async function renderCatalogEnrollment(container) {
     container.innerHTML = `
       <p class="chart-note">Add only the items the AI is allowed to recognize. Every item requires multiple reference images; anything outside this catalog is ignored by scheduled recognition.</p>
       <form class="catalog-form" data-acc-form="catalog-product">
-        <label>
+        <label class="catalog-name-field">
           <span>Item name</span>
           <input name="name" placeholder="e.g. Bread crate" required maxlength="60" autocomplete="off" />
         </label>
         <label class="catalog-upload">
           <span>Reference images</span>
           <input name="images" type="file" accept="image/*" multiple required />
-          <small data-image-count>Choose at least 2 clear images from different angles.</small>
         </label>
+        <small class="catalog-upload-help" data-image-count>Choose at least 2 clear images from different angles.</small>
         <button type="submit">Add item to AI catalog</button>
       </form>
       <div class="recognition-schedule">
