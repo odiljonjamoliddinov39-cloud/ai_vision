@@ -1617,6 +1617,26 @@ function wireCharts(root) {
   });
 }
 
+function currentOperationalAlerts() {
+  const summary = state.overview?.summary || {};
+  const health = state.overview?.health || {};
+  const cameraCount = Number(health.camera_count || 0);
+
+  if (health.error) {
+    return [{ title: "Detector error", where: String(health.error), sev: "critical", color: "#dc2626" }];
+  }
+  if (!summary.detector_running) {
+    return [{ title: "Detector stopped", where: "Camera processing is not running", sev: "critical", color: "#dc2626" }];
+  }
+  if (cameraCount === 0) {
+    return [{ title: "No camera feeds connected", where: "Detector is running without an active feed", sev: "high", color: "var(--bad)" }];
+  }
+  if (!health.last_frame_at) {
+    return [{ title: "Waiting for camera frames", where: `${cameraCount} camera feed${cameraCount === 1 ? "" : "s"} connecting`, sev: "medium", color: "var(--warn)" }];
+  }
+  return [];
+}
+
 function renderAnalytics(container, catalogMode = false) {
   const data = sampleAnalytics();
   const count = (value) => String(Math.round(value));
@@ -1685,11 +1705,9 @@ function renderAnalytics(container, catalogMode = false) {
     chartRegistry.set(spec.id, spec);
   });
 
-  const alerts = [
-    { title: "Camera Offline", where: "Slot 2 · 2 min ago", sev: "high", color: "var(--bad)" },
-    { title: "NVR Disconnected", where: "Warehouse Central · 10 min ago", sev: "critical", color: "#dc2626" },
-    { title: "Low Production Rate", where: "Line 2 · 15 min ago", sev: "medium", color: "var(--warn)" },
-  ];
+  const alerts = currentOperationalAlerts();
+  const health = state.overview?.health || {};
+  const cameraCount = Number(health.camera_count || 0);
   const resources = [
     { name: "CPU Usage", pct: 42, color: "#2a78d6" },
     { name: "GPU Usage", pct: 67, color: "#7c3aed" },
@@ -1701,18 +1719,26 @@ function renderAnalytics(container, catalogMode = false) {
     <div class="chart-grid">${specs.map(chartCardHtml).join("")}</div>
     <div class="ov-grid">
       <section class="ov-card">
-        <h3>Recent Alerts</h3>
-        ${alerts
-          .map(
-            (alert) => `
+        <h3>Active Alerts</h3>
+        ${alerts.length
+          ? alerts
+              .map(
+                (alert) => `
               <div class="alert-row">
                 <span class="alert-dot" style="background:${alert.color}"></span>
-                <div class="alert-main"><strong>${alert.title}</strong><small>${alert.where}</small></div>
+                <div class="alert-main"><strong>${escapeHtml(alert.title)}</strong><small>${escapeHtml(alert.where)}</small></div>
                 <span class="sev-chip ${alert.sev}">${alert.sev.charAt(0).toUpperCase() + alert.sev.slice(1)}</span>
               </div>
             `
-          )
-          .join("")}
+              )
+              .join("")
+          : `<div class="alert-empty-state">
+              <span class="alert-dot" style="background:var(--good)"></span>
+              <div class="alert-main">
+                <strong>No active alerts</strong>
+                <small>Detector running · ${cameraCount} camera feed${cameraCount === 1 ? "" : "s"} connected</small>
+              </div>
+            </div>`}
       </section>
       <section class="ov-card">
         <h3>System Resources</h3>

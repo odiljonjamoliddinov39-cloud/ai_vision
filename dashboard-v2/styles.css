@@ -1554,6 +1554,14 @@ h3 .muted {
   border-top: none;
 }
 
+.alert-empty-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 10px 0;
+}
+
 .alert-dot {
   width: 8px;
   height: 8px;

@@ -207,4 +207,9 @@ def test_dashboard_exposes_multi_image_catalog_results_excel_and_3d_views():
     assert 'class="catalog-upload-help" data-image-count' in source
     assert ".catalog-form > button[type=\"submit\"]" in styles
     assert "grid-row: 1;" in styles
+    assert "function currentOperationalAlerts()" in source
+    assert "No active alerts" in source
+    assert "Camera Offline" not in source
+    assert "NVR Disconnected" not in source
+    assert "Low Production Rate" not in source
     assert 'CATALOG_RECOGNITION_INTERVAL_HOURS: "12"' in compose
