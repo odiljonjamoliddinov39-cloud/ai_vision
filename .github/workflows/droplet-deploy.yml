@@ -40,6 +40,9 @@ jobs:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
+          # Rebuilding the AI dependency layer can exceed the action's
+          # 10-minute default while Docker exports the final image layers.
+          command_timeout: 20m
           script: |
             set -euo pipefail
             if [ ! -d /opt/ai_vision/.git ]; then
