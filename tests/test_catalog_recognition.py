@@ -202,4 +202,6 @@ def test_dashboard_exposes_multi_image_catalog_results_excel_and_3d_views():
     assert "not recording continuous video" in source
     assert ".detected-list-head" in styles
     assert ".dimension-visual" in styles
+    assert '.catalog-form input:not([type="file"])' in styles
+    assert "appearance: none;" in styles
     assert 'CATALOG_RECOGNITION_INTERVAL_HOURS: "12"' in compose
