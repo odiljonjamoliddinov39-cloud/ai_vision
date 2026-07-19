@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -48,6 +49,7 @@ from webauthn.helpers.structs import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
+from database.catalog_db import CatalogDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
@@ -58,12 +60,14 @@ LOG_PATH = ROOT / "logs" / "events.log"
 SNAPSHOT_DIR = ROOT / "snapshots"
 INVENTORY_PATH = ROOT / "logs" / "inventory.json"
 INVENTORY_IMAGE_DIR = SNAPSHOT_DIR / "inventory"
+CATALOG_IMAGE_DIR = SNAPSHOT_DIR / "catalog"
 DASHBOARD_V2_DIR = ROOT / "dashboard-v2"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
 SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
+CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
@@ -97,8 +101,11 @@ _warehouse_db: WarehouseDB | None = None
 _camera_db: CameraDB | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _access_control_db: AccessControlDB | None = None
+_catalog_db: CatalogDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
+_catalog_recognition_task: asyncio.Task | None = None
+_catalog_run_lock: asyncio.Lock | None = None
 _manual_stop_requested = False
 _watchdog_last_start_attempt = 0.0
 
@@ -258,6 +265,13 @@ def _get_warehouse_db() -> WarehouseDB:
     if _warehouse_db is None:
         _warehouse_db = WarehouseDB(db_path=str(WAREHOUSE_DB_PATH))
     return _warehouse_db
+
+
+def _get_catalog_db() -> CatalogDB:
+    global _catalog_db
+    if _catalog_db is None:
+        _catalog_db = CatalogDB(db_path=str(CATALOG_DB_PATH))
+    return _catalog_db
 
 
 def _get_camera_db() -> CameraDB:
@@ -1074,6 +1088,162 @@ def _record_inventory_event(data: dict[str, Any], action: str, item_id: str, qua
     })
 
 
+def _catalog_interval_hours() -> int:
+    return max(1, int(os.getenv("CATALOG_RECOGNITION_INTERVAL_HOURS", "12")))
+
+
+def _catalog_scope(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip()).strip("-")
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="A valid catalog scope is required.")
+    return cleaned[:80]
+
+
+def _catalog_safe_name(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", value).strip("._")
+    return cleaned[:100] or "reference.jpg"
+
+
+def _catalog_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _catalog_schedule(scope_id: str) -> dict[str, Any]:
+    latest = _get_catalog_db().latest_run(scope_id)
+    interval = _catalog_interval_hours()
+    completed = _catalog_datetime(latest.get("completed_at")) if latest else None
+    next_run = completed + timedelta(hours=interval) if completed else datetime.now(timezone.utc)
+    return {
+        "interval_hours": interval,
+        "last_run_at": completed.isoformat() if completed else None,
+        "next_run_at": next_run.isoformat(),
+    }
+
+
+def _catalog_dimensions(obj: dict[str, Any] | None) -> tuple[float, float, float] | None:
+    if not obj:
+        return None
+    try:
+        values = (float(obj["width_m"]), float(obj["height_m"]), float(obj["depth_m"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return values if all(value > 0 for value in values) else None
+
+
+def _catalog_normalize_name(value: Any) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split())
+
+
+def _catalog_frame_embeddings(health: dict[str, Any]) -> dict[str, list[float]]:
+    try:
+        import cv2
+        from recognition.embedding import image_embedding
+    except ImportError:
+        return {}
+
+    embeddings: dict[str, list[float]] = {}
+    for camera in health.get("cameras") or []:
+        slot = camera.get("slot_number")
+        name = str(camera.get("name") or f"slot-{slot}")
+        if not slot:
+            continue
+        path = _live_feed_path(slot=int(slot))
+        frame = cv2.imread(str(path)) if path.exists() else None
+        if frame is not None:
+            embeddings[name] = image_embedding(frame)
+    return embeddings
+
+
+def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
+    """Create one immutable catalog-only count snapshot for a scope."""
+    from knowledge.similarity import cosine_similarity
+
+    db = _get_catalog_db()
+    items = db.list_items(scope_id, active_only=True)
+    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    cameras = health.get("cameras") or []
+    interval = _catalog_interval_hours()
+    run_id = db.start_run(scope_id, interval, len(cameras))
+    try:
+        by_camera = health.get("last_spatial_objects_by_camera") or {}
+        if not by_camera and health.get("last_spatial_objects"):
+            fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
+            by_camera = {fallback_name: health.get("last_spatial_objects") or []}
+        frame_embeddings = _catalog_frame_embeddings(health)
+        visual_threshold = float(os.getenv("CATALOG_VISUAL_SIMILARITY_THRESHOLD", "0.94"))
+
+        for item in items:
+            target = _catalog_normalize_name(item["name"])
+            matched_objects: list[dict[str, Any]] = []
+            for objects in by_camera.values():
+                matched_objects.extend(
+                    obj
+                    for obj in objects or []
+                    if _catalog_normalize_name(obj.get("inventory_name")) == target
+                )
+
+            confidence = 1.0 if matched_objects else 0.0
+            quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in matched_objects)
+            measurement = matched_objects[0] if matched_objects else None
+            method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
+
+            if not matched_objects:
+                references = db.list_images(str(item["id"]), include_embeddings=True)
+                best: tuple[float, str] | None = None
+                for camera_name, frame_embedding in frame_embeddings.items():
+                    score = max(
+                        (cosine_similarity(frame_embedding, ref.get("embedding") or []) for ref in references),
+                        default=0.0,
+                    )
+                    if best is None or score > best[0]:
+                        best = (score, camera_name)
+                if best and best[0] >= visual_threshold:
+                    confidence = best[0]
+                    camera_objects = by_camera.get(best[1]) or []
+                    quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in camera_objects) or 1
+                    measurement = camera_objects[0] if camera_objects else None
+                    method = "catalog-reference-and-3d"
+
+            db.add_result(
+                run_id=run_id,
+                item_id=str(item["id"]),
+                item_name=str(item["name"]),
+                quantity=quantity,
+                confidence=confidence,
+                dimensions_m=_catalog_dimensions(measurement),
+                measurement_method=method,
+            )
+        db.complete_run(run_id)
+    except Exception:
+        db.complete_run(run_id, status="failed")
+        raise
+    return {
+        "run": db.latest_run(scope_id),
+        "results": db.latest_results(scope_id),
+        "schedule": _catalog_schedule(scope_id),
+    }
+
+
+def _run_due_catalog_scopes() -> None:
+    now = datetime.now(timezone.utc)
+    for scope_id in _get_catalog_db().list_scopes():
+        schedule = _catalog_schedule(scope_id)
+        next_run = _catalog_datetime(schedule["next_run_at"])
+        if next_run is None or next_run <= now:
+            _run_catalog_recognition(scope_id)
+
+
 def _parse_event_log(limit: int = 40) -> list[dict[str, Any]]:
     if not LOG_PATH.exists():
         return []
@@ -1449,11 +1619,27 @@ async def _detection_watchdog() -> None:
         await asyncio.sleep(int(os.getenv("DETECTION_WATCHDOG_INTERVAL_SECONDS", "30")))
 
 
+async def _catalog_recognition_scheduler() -> None:
+    await asyncio.sleep(int(os.getenv("CATALOG_RECOGNITION_STARTUP_DELAY_SECONDS", "60")))
+    while _env_bool("CATALOG_RECOGNITION_SCHEDULER_ENABLED", True):
+        try:
+            await asyncio.to_thread(_run_due_catalog_scopes)
+        except Exception as exc:  # noqa: BLE001
+            _audit(
+                "catalog_recognition_scheduler_failed",
+                {"error": _redact_sensitive_text(str(exc))},
+                actor="scheduler",
+            )
+        await asyncio.sleep(int(os.getenv("CATALOG_RECOGNITION_POLL_SECONDS", "300")))
+
+
 @app.on_event("startup")
 async def start_detection_watchdog() -> None:
-    global _watchdog_task
+    global _catalog_recognition_task, _watchdog_task
     if _watchdog_task is None or _watchdog_task.done():
         _watchdog_task = asyncio.create_task(_detection_watchdog())
+    if _catalog_recognition_task is None or _catalog_recognition_task.done():
+        _catalog_recognition_task = asyncio.create_task(_catalog_recognition_scheduler())
 
 
 _HTML_NO_CACHE = {"Cache-Control": "no-cache"}
@@ -2487,6 +2673,230 @@ async def upload_inventory_image(item_id: str = Form(...), file: UploadFile = Fi
     contents = await file.read()
     path.write_bytes(contents)
     return {"url": f"/snapshots/inventory/{filename}", "name": filename}
+
+
+@app.get("/api/catalog/items")
+def catalog_items(scope_id: str) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    db = _get_catalog_db()
+    return {
+        "items": db.list_items(scope),
+        "schedule": _catalog_schedule(scope),
+        "latest_run": db.latest_run(scope),
+    }
+
+
+@app.post("/api/catalog/items")
+async def create_catalog_item(
+    scope_id: str = Form(...),
+    name: str = Form(...),
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+    from recognition.embedding import image_embedding
+
+    scope = _catalog_scope(scope_id)
+    item_name = " ".join(name.split()).strip()
+    if not item_name:
+        raise HTTPException(status_code=400, detail="Item name is required.")
+    if len(files) < 2:
+        raise HTTPException(status_code=400, detail="Upload at least two reference images.")
+    if len(files) > 12:
+        raise HTTPException(status_code=400, detail="Upload no more than twelve reference images.")
+
+    decoded: list[tuple[str, bytes, Any, list[float]]] = []
+    for upload in files:
+        if not (upload.content_type or "").startswith("image/"):
+            raise HTTPException(status_code=400, detail=f"{upload.filename or 'File'} is not an image.")
+        contents = await upload.read()
+        if not contents or len(contents) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Each image must be between 1 byte and 8 MB.")
+        frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise HTTPException(status_code=400, detail=f"{upload.filename or 'File'} could not be decoded.")
+        decoded.append(
+            (
+                _catalog_safe_name(upload.filename or "reference.jpg"),
+                contents,
+                frame,
+                image_embedding(frame),
+            )
+        )
+
+    db = _get_catalog_db()
+    if any(_catalog_normalize_name(item["name"]) == _catalog_normalize_name(item_name) for item in db.list_items(scope)):
+        raise HTTPException(status_code=409, detail="An item with this name already exists.")
+    item = db.create_item(scope, item_name)
+    item_dir = CATALOG_IMAGE_DIR / scope / str(item["id"])
+    item_dir.mkdir(parents=True, exist_ok=True)
+    for index, (original_name, contents, frame, embedding) in enumerate(decoded, start=1):
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            suffix = ".jpg"
+        filename = f"reference_{index:02d}{suffix}"
+        path = item_dir / filename
+        path.write_bytes(contents)
+        url = f"/snapshots/catalog/{quote(scope)}/{quote(str(item['id']))}/{quote(filename)}"
+        db.add_image(
+            item_id=str(item["id"]),
+            filename=filename,
+            url=url,
+            embedding=embedding,
+            width_px=int(frame.shape[1]),
+            height_px=int(frame.shape[0]),
+        )
+    _audit(
+        "catalog_item_created",
+        {"scope_id": scope, "item_id": item["id"], "name": item_name, "image_count": len(decoded)},
+    )
+    recognition = await asyncio.to_thread(_run_catalog_recognition, scope)
+    return {
+        "item": db.get_item(str(item["id"])),
+        "schedule": recognition["schedule"],
+        "recognition": recognition,
+    }
+
+
+@app.delete("/api/catalog/items/{item_id}")
+def delete_catalog_item(item_id: str, scope_id: str) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    db = _get_catalog_db()
+    item = db.get_item(item_id)
+    if not item or item["scope_id"] != scope:
+        raise HTTPException(status_code=404, detail="Catalog item not found.")
+    filenames = db.delete_item(item_id)
+    item_dir = (CATALOG_IMAGE_DIR / scope / item_id).resolve()
+    catalog_root = CATALOG_IMAGE_DIR.resolve()
+    if item_dir.is_relative_to(catalog_root):
+        for filename in filenames:
+            path = (item_dir / filename).resolve()
+            if path.is_relative_to(item_dir) and path.exists():
+                path.unlink()
+        try:
+            item_dir.rmdir()
+        except OSError:
+            pass
+    _audit("catalog_item_deleted", {"scope_id": scope, "item_id": item_id, "name": item["name"]})
+    return {"deleted": True, "item_id": item_id}
+
+
+@app.get("/api/catalog/results")
+def catalog_results(scope_id: str) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    db = _get_catalog_db()
+    return {
+        "run": db.latest_run(scope),
+        "results": db.latest_results(scope, detected_only=True),
+        "schedule": _catalog_schedule(scope),
+    }
+
+
+@app.post("/api/catalog/recognition/run")
+async def run_catalog_recognition(scope_id: str) -> dict[str, Any]:
+    global _catalog_run_lock
+    scope = _catalog_scope(scope_id)
+    if _catalog_run_lock is None:
+        _catalog_run_lock = asyncio.Lock()
+    if _catalog_run_lock.locked():
+        raise HTTPException(status_code=409, detail="A catalog recognition run is already active.")
+    async with _catalog_run_lock:
+        result = await asyncio.to_thread(_run_catalog_recognition, scope)
+    _audit("catalog_recognition_completed", {"scope_id": scope, "run_id": result["run"]["id"]})
+    return result
+
+
+def _catalog_export_workbook(scope_id: str) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    db = _get_catalog_db()
+    run = db.latest_run(scope_id)
+    results = db.latest_results(scope_id, detected_only=True)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Detected Items"
+    sheet.sheet_view.showGridLines = False
+    sheet.freeze_panes = "A6"
+    sheet.merge_cells("A1:G1")
+    sheet["A1"] = "AI Vision — Detected Item Count"
+    sheet["A1"].font = Font(size=18, bold=True, color="FFFFFF")
+    sheet["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
+    sheet["A1"].alignment = Alignment(vertical="center")
+    sheet.row_dimensions[1].height = 30
+    sheet["A3"] = "Recognition run"
+    sheet["B3"] = str((run or {}).get("completed_at") or "No completed run")
+    sheet["D3"] = "Schedule"
+    sheet["E3"] = f"Every {_catalog_interval_hours()} hours"
+    sheet["A4"] = "Scope"
+    sheet["B4"] = scope_id
+    sheet["D4"] = "Detected item types"
+    sheet["E4"] = len(results)
+    headers = ["Item", "Count", "Confidence", "Width (cm)", "Height (cm)", "Depth (cm)", "3D method"]
+    sheet.append(headers)
+    header_fill = PatternFill("solid", fgColor="2563EB")
+    for cell in sheet[5]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for result in results:
+        sheet.append(
+            [
+                result["item_name"],
+                int(result["quantity"]),
+                float(result["confidence"]),
+                round(float(result["width_m"]) * 100, 1) if result.get("width_m") else None,
+                round(float(result["height_m"]) * 100, 1) if result.get("height_m") else None,
+                round(float(result["depth_m"]) * 100, 1) if result.get("depth_m") else None,
+                result.get("measurement_method") or "Not measured",
+            ]
+        )
+    if results:
+        table = Table(displayName="DetectedItems", ref=f"A5:G{5 + len(results)}")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        sheet.add_table(table)
+    sheet.column_dimensions["A"].width = 30
+    sheet.column_dimensions["B"].width = 12
+    sheet.column_dimensions["C"].width = 14
+    sheet.column_dimensions["D"].width = 14
+    sheet.column_dimensions["E"].width = 14
+    sheet.column_dimensions["F"].width = 14
+    sheet.column_dimensions["G"].width = 30
+    for row in sheet.iter_rows(min_row=6, max_row=5 + len(results), min_col=2, max_col=6):
+        for cell in row:
+            cell.alignment = Alignment(horizontal="center")
+    for cell in sheet["C"][5:]:
+        cell.number_format = "0.0%"
+    for column in ("D", "E", "F"):
+        for cell in sheet[column][5:]:
+            cell.number_format = "0.0"
+    sheet.auto_filter.ref = f"A5:G{max(5, 5 + len(results))}"
+    sheet.print_title_rows = "1:5"
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+@app.get("/api/catalog/results/export.xlsx")
+def export_catalog_results(scope_id: str) -> Response:
+    scope = _catalog_scope(scope_id)
+    content = _catalog_export_workbook(scope)
+    filename = f"detected-items-{datetime.now(timezone.utc).date().isoformat()}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/logs/stream")

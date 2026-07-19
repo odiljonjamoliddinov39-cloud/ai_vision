@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 
 from knowledge.product_database import ProductDatabase
+from database.catalog_db import CatalogDB
+from knowledge.similarity import top_matches
 from recognition.cache import RecognitionCache
 from recognition.embedding import image_embedding, image_hash
 from recognition.gemini_client import GeminiClient
@@ -102,6 +104,8 @@ class ProductRecognizer:
         cache_enabled: bool = True,
         cache_expiration: int = 1800,
         max_workers: int = 2,
+        catalog_only: bool = False,
+        catalog_db: CatalogDB | None = None,
     ):
         self.enabled = enabled
         self.provider = provider
@@ -111,6 +115,8 @@ class ProductRecognizer:
         self.cache_enabled = cache_enabled
         self.cache = RecognitionCache(cache_expiration)
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
+        self.catalog_only = bool(catalog_only)
+        self.catalog_db = catalog_db or (CatalogDB() if self.catalog_only else None)
         self._pending: dict[tuple[str, int], Future] = {}
         self._results: dict[tuple[str, int], ProductRecognition] = {}
         self._track_hashes: dict[tuple[str, int], str] = {}
@@ -139,6 +145,10 @@ class ProductRecognizer:
             cache_enabled=bool(config.get("cache_enabled", True)),
             cache_expiration=int(config.get("cache_expiration", 1800)),
             max_workers=int(config.get("max_workers", 2)),
+            catalog_only=bool(config.get("catalog_only", False)),
+            catalog_db=CatalogDB(config.get("catalog_db_path", "database/catalog.db"))
+            if config.get("catalog_only", False)
+            else None,
         )
 
     def submit_for_track(self, camera_name: str, track_id: int, frame, box, force_refresh: bool = False) -> None:
@@ -202,6 +212,9 @@ class ProductRecognizer:
         fingerprint = image_hash(image)
         embedding = image_embedding(image)
 
+        if self.catalog_only:
+            return self._recognize_catalog(fingerprint, embedding, start)
+
         if not force_refresh:
             local = self._recognize_local(fingerprint, embedding, start)
             if local is not None:
@@ -237,6 +250,9 @@ class ProductRecognizer:
         start = time.perf_counter()
         fingerprint = image_hash(image)
         embedding = image_embedding(image)
+        if self.catalog_only:
+            result = self._recognize_catalog(fingerprint, embedding, start)
+            return result if result.name != "Unknown Product" else None
         return self._recognize_local(fingerprint, embedding, start)
 
     def close(self) -> None:
@@ -273,6 +289,34 @@ class ProductRecognizer:
             self._log_result(result, "local_similarity", start)
             return result
         return None
+
+    def _recognize_catalog(
+        self,
+        fingerprint: str,
+        embedding: list[float],
+        start: float,
+    ) -> ProductRecognition:
+        if self.cache_enabled:
+            cached = self.cache.get(fingerprint)
+            if cached is not None:
+                self._log_result(cached, "catalog_cache", start)
+                return cached
+        candidates = self.catalog_db.reference_candidates() if self.catalog_db else []
+        matches = top_matches(embedding, candidates, limit=1)
+        if not matches or float(matches[0].get("similarity") or 0.0) < self.similarity_threshold:
+            result = ProductRecognition.unknown(source="catalog_only")
+            self._log_result(result, "catalog_only", start)
+            return result
+        match = matches[0]
+        result = ProductRecognition(
+            id=None,
+            name=str(match["name"]),
+            confidence=float(match["similarity"]),
+            source="catalog_reference",
+        )
+        self._cache(fingerprint, result)
+        self._log_result(result, result.source, start)
+        return result
 
     def _log_result(self, result: ProductRecognition, source: str, start: float) -> None:
         latency_ms = (time.perf_counter() - start) * 1000

@@ -228,6 +228,7 @@ def main():
     last_tracked_count = 0
     last_frame_at = None
     last_spatial_objects = []
+    last_spatial_objects_by_camera = {}
 
     prev_time = time.time()
     frame_number = 0
@@ -269,6 +270,9 @@ def main():
                     last_tracked_count = 0
 
                 last_detection_count = len(detections)
+                if product_recognizer is not None:
+                    product_recognizer.annotate(cam.name, frame, detections)
+
                 if spatial_analyzer is not None:
                     measurements = spatial_analyzer.enrich(frame, detections)
                     last_spatial_objects = [
@@ -278,9 +282,7 @@ def main():
                         }
                         for measurement in measurements
                     ]
-
-                if product_recognizer is not None:
-                    product_recognizer.annotate(cam.name, frame, detections)
+                    last_spatial_objects_by_camera[cam.name] = last_spatial_objects
 
                 draw_detections(frame, detections, box_thickness, font_scale)
                 if display_cfg.get("show_fps", True):
@@ -371,6 +373,7 @@ def main():
                     else None,
                     "spatial_analysis_enabled": spatial_analyzer is not None,
                     "last_spatial_objects": last_spatial_objects,
+                    "last_spatial_objects_by_camera": last_spatial_objects_by_camera,
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
