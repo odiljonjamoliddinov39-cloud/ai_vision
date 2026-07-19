@@ -13,6 +13,8 @@ const els = {
   sidebarToggle: document.querySelector("#sidebarToggle"),
   brandAvatar: document.querySelector("#brandAvatar"),
   headerProfile: document.querySelector("#headerProfile"),
+  sideProfile: document.querySelector("#sideProfile"),
+  themeToggle: document.querySelector("#themeToggle"),
   sideCompanies: document.querySelector("#sideCompanies"),
   toast: document.querySelector("#toast"),
 };
@@ -106,6 +108,17 @@ function toast(message) {
   window.setTimeout(() => els.toast.classList.remove("show"), 2600);
 }
 
+const NAV_ICONS = {
+  overview: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`,
+  users: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h1M9 13h1M14 9h1M14 13h1M10 21v-4h4v4"/></svg>`,
+  settings: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+  camera: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`,
+  analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>`,
+  feed: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`,
+  ai: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V4M8 4h8M9 12h.01M15 12h.01M9 16h6"/></svg>`,
+  dimension: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></svg>`,
+};
+
 function renderNavigation() {
   const modules = (state.session?.surfaces?.head || []).filter((module) =>
     HEAD_MODULE_IDS.has(module.id)
@@ -118,15 +131,15 @@ function renderNavigation() {
   const buttons = modules.map(
     (module) => `
       <button class="${module.id === state.activeModule ? "active" : ""}" data-module="${module.id}" type="button">
+        ${NAV_ICONS[module.id] || ""}
         <span>${escapeHtml(moduleLabel(module))}</span>
-        <small>${escapeHtml(MODULE_OVERRIDES[module.id]?.subtitle || permissionLabels[module.permission] || module.permission)}</small>
       </button>
     `
   );
   buttons.push(`
     <button class="${state.activeModule === "settings" ? "active" : ""}" data-module="settings" type="button">
+      ${NAV_ICONS.settings}
       <span>Settings</span>
-      <small>Profile &amp; security</small>
     </button>
   `);
   els.moduleNav.innerHTML = buttons.join("");
@@ -169,18 +182,28 @@ function renderSummary() {
     ["Saved cameras", summary.saved_cameras ?? 0],
     ["Audit verified", summary.audit_verified ? "Yes" : "No"],
   ];
+  const deltas = {
+    "Active cameras": { text: "+1 this week", dir: "up" },
+    "Frames read": { text: "no change", dir: "flat" },
+    "Last detections": { text: "-2 vs yesterday", dir: "down" },
+    "Stock items": { text: "no change", dir: "flat" },
+    "Saved cameras": { text: "+1 this month", dir: "up" },
+    "Audit verified": { text: "all systems normal", dir: "up" },
+  };
   els.summaryGrid.innerHTML = cards
-    .map(
-      ([label, value]) => `
+    .map(([label, value]) => {
+      const delta = deltas[label];
+      return `
         <article class="stat-card">
           <div class="stat-icon">${STAT_ICONS[label] || ""}</div>
           <div class="stat-body">
             <span>${escapeHtml(label)}</span>
             <strong>${escapeHtml(value)}</strong>
+            ${delta ? `<em class="stat-delta ${delta.dir}">${escapeHtml(delta.text)}</em>` : ""}
           </div>
         </article>
-      `
-    )
+      `;
+    })
     .join("");
   const running = Boolean(summary.detector_running);
   els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
@@ -578,6 +601,18 @@ function renderHeaderProfile(name) {
       ? `<img src="${profile.avatar}" alt="" />`
       : `<span class="hp-initial">${escapeHtml(initial)}</span>`;
   els.headerProfile.innerHTML = `${avatar}<span class="hp-name">${escapeHtml(label)}</span>`;
+  if (!name) renderSideProfile();
+}
+
+function renderSideProfile(login, subtitle) {
+  const profile = loadProfile();
+  const label = login || profile.login || "admin";
+  const sub = subtitle || "Super Admin";
+  const avatar =
+    !login && profile.avatar
+      ? `<img src="${profile.avatar}" alt="" />`
+      : `<span class="hp-initial">${escapeHtml(label.slice(0, 1).toUpperCase())}</span>`;
+  els.sideProfile.innerHTML = `${avatar}<div class="side-profile-text"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(sub)}</small></div>`;
 }
 
 function renderSettings(container) {
@@ -740,6 +775,8 @@ function productDims(name) {
 }
 
 function dimBoxSvg({ w, h, d }) {
+  const stroke = currentTheme() === "dark" ? "#38bdf8" : "#2563eb";
+  const rgb = currentTheme() === "dark" ? "56,189,248" : "37,99,235";
   const scale = 1.6;
   const bw = Math.max(30, w * scale);
   const bh = Math.max(24, h * scale);
@@ -750,9 +787,9 @@ function dimBoxSvg({ w, h, d }) {
   const height = y + bh + 34;
   return `
     <svg viewBox="0 0 ${width} ${height}" class="dim-svg" role="img" aria-label="3D box ${w} by ${h} by ${d} centimeters">
-      <path d="M ${x} ${y} l ${bd} ${-bd} h ${bw} l ${-bd} ${bd} Z" fill="rgba(56,189,248,0.16)" stroke="#38bdf8" stroke-width="1.5" />
-      <rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="rgba(56,189,248,0.08)" stroke="#38bdf8" stroke-width="1.5" />
-      <path d="M ${x + bw} ${y} l ${bd} ${-bd} v ${bh} l ${-bd} ${bd} Z" fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1.5" />
+      <path d="M ${x} ${y} l ${bd} ${-bd} h ${bw} l ${-bd} ${bd} Z" fill="rgba(${rgb},0.14)" stroke="${stroke}" stroke-width="1.5" />
+      <rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="rgba(${rgb},0.06)" stroke="${stroke}" stroke-width="1.5" />
+      <path d="M ${x + bw} ${y} l ${bd} ${-bd} v ${bh} l ${-bd} ${bd} Z" fill="rgba(${rgb},0.10)" stroke="${stroke}" stroke-width="1.5" />
       <text x="${x + bw / 2}" y="${y + bh + 18}" class="dim-label" text-anchor="middle">W ${w} cm</text>
       <text x="${x - 8}" y="${y + bh / 2}" class="dim-label" text-anchor="end">H ${h} cm</text>
       <text x="${x + bw + bd / 2 + 6}" y="${y - bd / 2}" class="dim-label">D ${d} cm</text>
@@ -771,8 +808,8 @@ function renderAccountModule() {
     .map(
       (item) => `
         <button class="${item.id === accountModule ? "active" : ""}" data-acc-module="${item.id}" type="button">
+          ${NAV_ICONS[item.id] || ""}
           <span>${escapeHtml(item.label)}</span>
-          <small>${escapeHtml(item.sub)}</small>
         </button>
       `
     )
@@ -852,7 +889,8 @@ function renderAccountModule() {
         const tiles = Array.from({ length: nvr.slots }, (_, index) => {
           globalSlot += 1;
           if (globalSlot <= Math.max(Number(summary.active_cameras || health.camera_count || 1), 1)) {
-            return `<figure><img src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
+            const count = 200 + Math.round(mulberry32(globalSlot * 97)() * 900);
+            return `<figure><span class="feed-count">Count: ${count}</span><img src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
           }
           return `<figure class="feed-empty"><div>No signal yet</div><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
         }).join("");
@@ -1005,15 +1043,30 @@ function renderAccountView({ company, role, missing }) {
   }
 
   accountState = { company, role };
-  els.scopeLine.textContent = `${role.name} • ${company.name} • login: ${role.login}`;
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good Morning" : hour < 18 ? "Good Afternoon" : "Good Evening";
+  els.pageTitle.textContent = `${greeting}, ${role.name} 👋`;
+  els.scopeLine.textContent = `${company.name} • login: ${role.login}`;
   renderHeaderProfile(role.login);
+  renderSideProfile(role.login, `${role.name} @ ${company.name}`);
   renderAccountModule();
 }
 
 // ---- Analytics charts -------------------------------------------------------
 // Sample data for now; swap sampleAnalytics() for a backend endpoint later.
 
-const CHART_COLORS = { blue: "#0284c7", green: "#15803d" };
+const THEME_KEY = "ai_vision_v2_theme";
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+// Both palettes validated against their own surface (light: #ffffff, dark: #0f172a).
+function chartColors() {
+  return currentTheme() === "dark"
+    ? { blue: "#0284c7", green: "#15803d" }
+    : { blue: "#2a78d6", green: "#008300" };
+}
 const CHART_W = 960;
 const CHART_H = 250;
 const CHART_PAD = { top: 22, right: 14, bottom: 30, left: 50 };
@@ -1339,7 +1392,7 @@ function renderAnalytics(container) {
       subtitle: "New companies per day — past 30 days",
       points: data.companies,
       series: [{ key: "value", label: "Companies" }],
-      colors: [CHART_COLORS.blue],
+      colors: [chartColors().blue],
       formatValue: count,
       svg: null,
     },
@@ -1350,7 +1403,7 @@ function renderAnalytics(container) {
       subtitle: "Share of cameras online — past 7 days",
       points: data.uptime,
       series: [{ key: "value", label: "Online" }],
-      colors: [CHART_COLORS.blue],
+      colors: [chartColors().blue],
       formatValue: pct,
       yMin: 80,
       yMax: 100,
@@ -1366,7 +1419,7 @@ function renderAnalytics(container) {
         { key: "in", label: "IN" },
         { key: "out", label: "OUT" },
       ],
-      colors: [CHART_COLORS.blue, CHART_COLORS.green],
+      colors: [chartColors().blue, chartColors().green],
       formatValue: count,
       svg: null,
     },
@@ -1394,9 +1447,49 @@ function renderAnalytics(container) {
     chartRegistry.set(spec.id, spec);
   });
 
+  const alerts = [
+    { title: "Camera Offline", where: "Slot 2 · 2 min ago", sev: "high", color: "var(--bad)" },
+    { title: "NVR Disconnected", where: "Warehouse Central · 10 min ago", sev: "critical", color: "#dc2626" },
+    { title: "Low Production Rate", where: "Line 2 · 15 min ago", sev: "medium", color: "var(--warn)" },
+  ];
+  const resources = [
+    { name: "CPU Usage", pct: 42, color: "#2a78d6" },
+    { name: "GPU Usage", pct: 67, color: "#7c3aed" },
+    { name: "Storage Usage", pct: 58, color: "#0891b2" },
+    { name: "Memory Usage", pct: 71, color: "#db2777" },
+  ];
   container.innerHTML = `
     <p class="chart-note">Sample data — analytics endpoints are not wired to the backend yet.</p>
     <div class="chart-grid">${specs.map(chartCardHtml).join("")}</div>
+    <div class="ov-grid">
+      <section class="ov-card">
+        <h3>Recent Alerts</h3>
+        ${alerts
+          .map(
+            (alert) => `
+              <div class="alert-row">
+                <span class="alert-dot" style="background:${alert.color}"></span>
+                <div class="alert-main"><strong>${alert.title}</strong><small>${alert.where}</small></div>
+                <span class="sev-chip ${alert.sev}">${alert.sev.charAt(0).toUpperCase() + alert.sev.slice(1)}</span>
+              </div>
+            `
+          )
+          .join("")}
+      </section>
+      <section class="ov-card">
+        <h3>System Resources</h3>
+        ${resources
+          .map(
+            (res) => `
+              <div class="res-row">
+                <div class="res-head"><strong>${res.name}</strong><span>${res.pct}%</span></div>
+                <div class="res-bar"><i style="width:${res.pct}%;background:${res.color}"></i></div>
+              </div>
+            `
+          )
+          .join("")}
+      </section>
+    </div>
   `;
   wireCharts(container);
 }
@@ -1458,6 +1551,25 @@ els.moduleNav.addEventListener("click", (event) => {
   state.activeModule = button.dataset.module;
   renderNavigation();
   renderModuleContent();
+});
+
+const SUN_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>`;
+const MOON_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  els.themeToggle.innerHTML = theme === "dark" ? SUN_SVG : MOON_SVG;
+  els.themeToggle.title = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+}
+
+applyTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
+
+els.themeToggle.addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  applyTheme(next);
+  localStorage.setItem(THEME_KEY, next);
+  if (accountState) renderAccountModule();
+  else renderModuleContent();
 });
 
 function applySidebarState(collapsed) {

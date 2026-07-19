@@ -1442,14 +1442,17 @@ async def start_detection_watchdog() -> None:
         _watchdog_task = asyncio.create_task(_detection_watchdog())
 
 
+_HTML_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def dashboard() -> FileResponse:
-    return FileResponse(DASHBOARD_V2_DIR / "index.html")
+    return FileResponse(DASHBOARD_V2_DIR / "index.html", headers=_HTML_NO_CACHE)
 
 
 @app.get("/dashboard-v2")
 def dashboard_v2() -> FileResponse:
-    return FileResponse(DASHBOARD_V2_DIR / "index.html")
+    return FileResponse(DASHBOARD_V2_DIR / "index.html", headers=_HTML_NO_CACHE)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
