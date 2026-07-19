@@ -1376,6 +1376,11 @@ h3 .muted {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
+  transition: opacity 160ms ease;
+}
+
+.live-preview img.feed-stale {
+  opacity: 0.72;
 }
 
 .live-preview figcaption {

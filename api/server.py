@@ -534,7 +534,15 @@ def _rate_limit(request: Request) -> JSONResponse | None:
         return None
     actor = _request_actor(request)
     window = int(time.time() // 60)
-    key = (actor, request.url.path, window)
+    rate_path = request.url.path
+    # Live camera frames are polled independently per slot. Keep the existing
+    # per-route limit, but isolate each feed so ten healthy cameras do not
+    # exhaust one shared 120-request bucket.
+    if rate_path == "/api/live_frame":
+        slot = request.query_params.get("slot", "")
+        camera = request.query_params.get("camera", "")
+        rate_path = f"{rate_path}?slot={slot}&camera={camera}"
+    key = (actor, rate_path, window)
     _rate_limits[key] = _rate_limits.get(key, 0) + 1
     if len(_rate_limits) > 5000:
         stale_windows = {window - 2, window - 1, window}
