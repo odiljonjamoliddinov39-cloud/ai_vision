@@ -50,6 +50,13 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
     assert 'AUTO_START_DETECTION: "${AUTO_START_DETECTION:-true}"' not in compose
 
 
+def test_dashboard_asset_version_loads_the_continuous_feed_release():
+    html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
+
+    assert "/dashboard-v2/assets/app.js?v=20" in html
+    assert "/dashboard-v2/assets/styles.css?v=20" in html
+
+
 def test_live_frame_rate_limits_are_isolated_per_camera_slot(monkeypatch):
     monkeypatch.setenv("SECURITY_RATE_LIMIT_PER_MINUTE", "1")
     server._rate_limits.clear()
