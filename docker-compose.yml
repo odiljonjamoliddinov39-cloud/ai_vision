@@ -13,6 +13,8 @@ services:
       # container/server restart even if an older persistent .env disabled it.
       AUTO_START_DETECTION: "true"
       DETECTION_WATCHDOG_ENABLED: "true"
+      CATALOG_RECOGNITION_SCHEDULER_ENABLED: "true"
+      CATALOG_RECOGNITION_INTERVAL_HOURS: "12"
     ports:
       - "${AI_VISION_PORT:-8080}:8080"
     volumes:

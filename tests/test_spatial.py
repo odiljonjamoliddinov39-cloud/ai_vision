@@ -67,3 +67,17 @@ def test_spatial_analyzer_enriches_detection_contract():
     assert detection.inventory_name == "cardboard box"
     assert detection.object_type == "cuboid"
     assert detection.quantity == 8
+
+
+def test_spatial_analyzer_preserves_catalog_inventory_name():
+    measurement = _analyzer().measure(
+        frame_shape=(720, 1280, 3),
+        class_name="box",
+        box=(420, 220, 820, 650),
+        inventory_name="Checked-in blue crate",
+    )
+
+    assert measurement.inventory_name == "Checked-in blue crate"
+    assert measurement.width_m > 0
+    assert measurement.height_m > 0
+    assert measurement.depth_m > 0

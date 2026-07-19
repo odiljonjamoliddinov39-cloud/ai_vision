@@ -874,6 +874,165 @@ function dimBoxSvg({ w, h, d }) {
   `;
 }
 
+function catalogScopeId() {
+  return accountState?.company?.id || "default";
+}
+
+function catalogApiPath(path) {
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}scope_id=${encodeURIComponent(catalogScopeId())}`;
+}
+
+async function catalogRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, options);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const payload = await response.json();
+      detail = payload.detail || detail;
+    } catch {
+      detail = await response.text();
+    }
+    throw new Error(detail || "Catalog request failed.");
+  }
+  return response.json();
+}
+
+function formatCatalogTime(value) {
+  if (!value) return "Pending first recognition run";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+}
+
+function catalogDimensions(result) {
+  if (!result?.width_m || !result?.height_m || !result?.depth_m) return null;
+  return {
+    w: Math.round(Number(result.width_m) * 1000) / 10,
+    h: Math.round(Number(result.height_m) * 1000) / 10,
+    d: Math.round(Number(result.depth_m) * 1000) / 10,
+  };
+}
+
+async function renderCatalogEnrollment(container) {
+  try {
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/items"));
+    if (!container.isConnected || accountModule !== "ai") return;
+    const rows = payload.items
+      .map(
+        (item) => `
+          <article class="cc-role ai-product catalog-product">
+            <div class="cc-role-head">
+              <div><strong>${escapeHtml(item.name)}</strong><small>${item.image_count} reference images</small></div>
+              <button type="button" class="cc-remove" data-acc-action="remove-catalog-item" data-product="${item.id}" aria-label="Remove ${escapeHtml(item.name)}">✕</button>
+            </div>
+            <div class="catalog-thumbs">
+              ${item.images.map((image) => `<img src="${API_BASE}${image.url}" alt="${escapeHtml(item.name)} reference" />`).join("")}
+            </div>
+            <span class="cc-chip cc-chip-small on">Catalog recognition enabled ✓</span>
+          </article>
+        `
+      )
+      .join("");
+    container.innerHTML = `
+      <p class="chart-note">Add only the items the AI is allowed to recognize. Every item requires multiple reference images; anything outside this catalog is ignored by scheduled recognition.</p>
+      <form class="catalog-form" data-acc-form="catalog-product">
+        <label>
+          <span>Item name</span>
+          <input name="name" placeholder="e.g. Bread crate" required maxlength="60" autocomplete="off" />
+        </label>
+        <label class="catalog-upload">
+          <span>Reference images</span>
+          <input name="images" type="file" accept="image/*" multiple required />
+          <small data-image-count>Choose at least 2 clear images from different angles.</small>
+        </label>
+        <button type="submit">Add item to AI catalog</button>
+      </form>
+      <div class="recognition-schedule">
+        <strong>Automatic recognition every ${payload.schedule.interval_hours} hours</strong>
+        <span>Last: ${escapeHtml(formatCatalogTime(payload.schedule.last_run_at))}</span>
+        <span>Next: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</span>
+      </div>
+      <div class="cc-list ai-list">${rows || `<p class="empty">No catalog items yet. Add an item name and at least two images above.</p>`}</div>
+    `;
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function renderCatalogResults(container) {
+  try {
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/results"));
+    if (!container.isConnected || accountModule !== "analytics") return;
+    const rows = payload.results
+      .map((result) => {
+        const dims = catalogDimensions(result);
+        return `
+          <tr>
+            <td><strong>${escapeHtml(result.item_name)}</strong></td>
+            <td class="count-cell">${Number(result.quantity).toLocaleString()}</td>
+            <td>${Math.round(Number(result.confidence) * 100)}%</td>
+            <td>${dims ? `${dims.w} × ${dims.h} × ${dims.d} cm` : "Pending 3D measurement"}</td>
+          </tr>
+        `;
+      })
+      .join("");
+    container.innerHTML = `
+      <section class="detected-list">
+        <header class="detected-list-head">
+          <div>
+            <h3>Detected catalog items</h3>
+            <p>Latest 12-hour recognition run: ${escapeHtml(formatCatalogTime(payload.run?.completed_at))}</p>
+          </div>
+          <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
+        </header>
+        ${
+          rows
+            ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
+            : `<p class="empty">No checked-in catalog item was detected in the latest run yet.</p>`
+        }
+        <p class="catalog-next-run">Next automatic recognition: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</p>
+      </section>
+    `;
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function renderCatalogDimensions(container) {
+  try {
+    const [catalog, recognition] = await Promise.all([
+      catalogRequest(catalogApiPath("/api/catalog/items")),
+      catalogRequest(catalogApiPath("/api/catalog/results")),
+    ]);
+    if (!container.isConnected || accountModule !== "dimension") return;
+    const items = new Map(catalog.items.map((item) => [item.id, item]));
+    const cards = recognition.results
+      .map((result) => {
+        const dims = catalogDimensions(result);
+        if (!dims) return "";
+        const item = items.get(result.item_id);
+        return `
+          <article class="cc-company dim-card">
+            <header class="cc-company-head"><h3>${escapeHtml(result.item_name)}</h3><span class="cc-chip cc-chip-small on">Recognized ×${result.quantity}</span></header>
+            <div class="dimension-visual">
+              ${item?.images?.[0] ? `<img src="${API_BASE}${item.images[0].url}" alt="${escapeHtml(result.item_name)} reference" />` : ""}
+              ${dimBoxSvg(dims)}
+            </div>
+            <p class="cc-cred"><em>Measured:</em> ${dims.w} × ${dims.h} × ${dims.d} cm</p>
+            <p class="cc-cred"><em>Volume:</em> ${((dims.w * dims.h * dims.d) / 1000).toFixed(1)} L · ${escapeHtml(result.measurement_method || "3D vision")}</p>
+          </article>
+        `;
+      })
+      .join("");
+    container.innerHTML = `
+      <p class="chart-note">3D drawings are created only for checked-in catalog items that receive a spatial measurement during recognition.</p>
+      ${cards ? `<div class="cc-list dim-list">${cards}</div>` : `<p class="empty">No recognized item has a 3D measurement yet. The next recognition runs at ${escapeHtml(formatCatalogTime(recognition.schedule.next_run_at))}.</p>`}
+    `;
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
 function renderAccountModule() {
   const { company, role } = accountState;
   companyConfig(company);
@@ -950,8 +1109,9 @@ function renderAccountModule() {
   }
 
   if (menu.id === "analytics") {
-    els.moduleContent.innerHTML = `<div id="accCharts"></div>`;
-    renderAnalytics(els.moduleContent.querySelector("#accCharts"));
+    els.moduleContent.innerHTML = `<div id="accCharts"></div><div id="catalogResults" class="catalog-results-loading"><p class="empty">Loading detected items…</p></div>`;
+    renderAnalytics(els.moduleContent.querySelector("#accCharts"), true);
+    void renderCatalogResults(els.moduleContent.querySelector("#catalogResults"));
     return;
   }
 
@@ -966,8 +1126,7 @@ function renderAccountModule() {
         const tiles = Array.from({ length: nvr.slots }, (_, index) => {
           globalSlot += 1;
           if (globalSlot <= Math.max(Number(summary.active_cameras || health.camera_count || 1), 1)) {
-            const count = 200 + Math.round(mulberry32(globalSlot * 97)() * 900);
-            return `<figure><span class="feed-count">Count: ${count}</span><img data-live-frame data-live-slot="${globalSlot}" src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
+            return `<figure><span class="feed-transmitting">Transmitting live</span><img data-live-frame data-live-slot="${globalSlot}" src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
           }
           return `<figure class="feed-empty"><div>No signal yet</div><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
         }).join("");
@@ -975,80 +1134,57 @@ function renderAccountModule() {
       })
       .join("");
     els.moduleContent.innerHTML = `
-      <p class="chart-note">Streaming at ${escapeHtml((QUALITY_OPTIONS.find((option) => option.id === config.quality) || QUALITY_OPTIONS[2]).label)} quality.</p>
+      <p class="chart-note">Live transmission at ${escapeHtml((QUALITY_OPTIONS.find((option) => option.id === config.quality) || QUALITY_OPTIONS[2]).label)} quality. This view is not recording continuous video.</p>
       ${sections}
     `;
     return;
   }
 
   if (menu.id === "ai") {
-    const rows = ai.products
-      .map(
-        (product) => `
-          <div class="cc-role ai-product">
-            <div class="cc-role-head">
-              <strong>${escapeHtml(product.name)}</strong>
-              <button type="button" class="cc-remove" data-acc-action="remove-product" data-product="${product.id}" aria-label="Remove product">✕</button>
-            </div>
-            <div class="cc-access">
-              <button type="button" class="cc-chip ${product.counting ? "on" : ""}" data-acc-action="toggle-product" data-product="${product.id}">
-                ${product.counting ? "Counting ✓" : "Not counting"}
-              </button>
-              ${product.dims ? `<span class="cc-cred"><em>Measured once:</em> ${product.dims.w}×${product.dims.h}×${product.dims.d} cm</span>` : ""}
-            </div>
-          </div>
-        `
-      )
-      .join("");
-    els.moduleContent.innerHTML = `
-      <p class="chart-note">Check in the products the AI should count — everything else is ignored.</p>
-      <form class="cc-add" data-acc-form="product">
-        <input name="name" placeholder="Product name (e.g. Bread crate)" required maxlength="60" autocomplete="off" />
-        <button type="submit">Check in product</button>
-      </form>
-      <div class="cc-list ai-list">${rows || `<p class="empty">No products checked in yet.</p>`}</div>
-      <section class="acc-block">
-        <h3>Recognition mode</h3>
-        <div class="cc-access">
-          <button type="button" class="cc-chip ${ai.mode === "once" ? "on" : ""}" data-acc-action="mode" data-mode="once">Count &amp; dimension once</button>
-          <button type="button" class="cc-chip ${ai.mode === "interval" ? "on" : ""}" data-acc-action="mode" data-mode="interval">Re-check every 5 minutes</button>
-        </div>
-        <p class="chart-note">${ai.mode === "once" ? "Each item is counted and measured a single time at first detection — no repeat scans." : "Items are re-recognized on a 5-minute cycle."}</p>
-      </section>
-    `;
+    els.moduleContent.innerHTML = `<p class="empty">Loading AI catalog…</p>`;
+    void renderCatalogEnrollment(els.moduleContent);
     return;
   }
 
   if (menu.id === "dimension") {
-    const measured = ai.products.filter((product) => product.counting && product.dims);
-    els.moduleContent.innerHTML = `
-      <p class="chart-note">What the AI draws when it looks at your checked-in items. ${ai.mode === "once" ? "Measured once at first detection — never re-measured on the 5-minute cycle." : "Re-measured every 5 minutes."}</p>
-      ${
-        measured.length
-          ? `<div class="cc-list dim-list">${measured
-              .map(
-                (product) => `
-                  <article class="cc-company dim-card">
-                    <header class="cc-company-head"><h3>${escapeHtml(product.name)}</h3><span class="cc-chip cc-chip-small on">Counted once ✓</span></header>
-                    ${dimBoxSvg(product.dims)}
-                    <p class="cc-cred"><em>Volume:</em> ${((product.dims.w * product.dims.h * product.dims.d) / 1000).toFixed(1)} L</p>
-                  </article>
-                `
-              )
-              .join("")}</div>`
-          : `<p class="empty">No measured items yet — check in a product in AI Check-in and enable counting.</p>`
-      }
-    `;
+    els.moduleContent.innerHTML = `<p class="empty">Loading 3D recognition results…</p>`;
+    void renderCatalogDimensions(els.moduleContent);
     return;
   }
 }
 
-function handleAccountSubmit(event) {
+async function handleAccountSubmit(event) {
   const form = event.target.closest("[data-acc-form]");
   if (!form || !accountState) return;
   event.preventDefault();
   const { company } = accountState;
   companyConfig(company);
+
+  if (form.dataset.accForm === "catalog-product") {
+    const name = form.elements.name.value.trim();
+    const files = Array.from(form.elements.images.files || []);
+    if (!name || files.length < 2) {
+      toast("Add an item name and at least two reference images.");
+      return;
+    }
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = "Adding item…";
+    const payload = new FormData();
+    payload.append("scope_id", catalogScopeId());
+    payload.append("name", name);
+    files.forEach((file) => payload.append("files", file));
+    try {
+      await catalogRequest("/api/catalog/items", { method: "POST", body: payload });
+      toast(`"${name}" added with ${files.length} reference images.`);
+      renderAccountModule();
+    } catch (error) {
+      toast(error.message);
+      submit.disabled = false;
+      submit.textContent = "Add item to AI catalog";
+    }
+    return;
+  }
 
   if (form.dataset.accForm === "nvr") {
     if (company.cameraConfig.nvrs.length >= MAX_NVRS) return;
@@ -1071,12 +1207,27 @@ function handleAccountSubmit(event) {
   renderAccountModule();
 }
 
-function handleAccountClick(event) {
+async function handleAccountClick(event) {
   const button = event.target.closest("[data-acc-action]");
   if (!button || !accountState) return;
   const { company } = accountState;
   companyConfig(company);
   const action = button.dataset.accAction;
+
+  if (action === "remove-catalog-item") {
+    button.disabled = true;
+    try {
+      await catalogRequest(catalogApiPath(`/api/catalog/items/${encodeURIComponent(button.dataset.product)}`), {
+        method: "DELETE",
+      });
+      toast("Catalog item removed.");
+      renderAccountModule();
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+    }
+    return;
+  }
 
   if (action === "remove-nvr") {
     company.cameraConfig.nvrs = company.cameraConfig.nvrs.filter((nvr) => nvr.id !== button.dataset.nvr);
@@ -1095,6 +1246,15 @@ function handleAccountClick(event) {
 
   persistAccountCompany();
   renderAccountModule();
+}
+
+function handleCatalogImageChange(event) {
+  const input = event.target.closest('input[name="images"][multiple]');
+  if (!input) return;
+  const label = input.closest("label")?.querySelector("[data-image-count]");
+  if (!label) return;
+  const count = input.files?.length || 0;
+  label.textContent = count ? `${count} images selected${count < 2 ? " — add at least one more" : " ✓"}` : "Choose at least 2 clear images from different angles.";
 }
 
 function renderAccountView({ company, role, missing }) {
@@ -1457,7 +1617,7 @@ function wireCharts(root) {
   });
 }
 
-function renderAnalytics(container) {
+function renderAnalytics(container, catalogMode = false) {
   const data = sampleAnalytics();
   const count = (value) => String(Math.round(value));
   const pct = (value) => `${value}%`;
@@ -1537,7 +1697,7 @@ function renderAnalytics(container) {
     { name: "Memory Usage", pct: 71, color: "#db2777" },
   ];
   container.innerHTML = `
-    <p class="chart-note">Sample data — analytics endpoints are not wired to the backend yet.</p>
+    <p class="chart-note">${catalogMode ? "Operational overview with scheduled catalog recognition results below." : "Sample data — analytics endpoints are not wired to the backend yet."}</p>
     <div class="chart-grid">${specs.map(chartCardHtml).join("")}</div>
     <div class="ov-grid">
       <section class="ov-card">
@@ -1604,6 +1764,7 @@ els.moduleContent.addEventListener("click", (event) => {
 });
 els.moduleContent.addEventListener("input", handleCompanyInput);
 els.moduleContent.addEventListener("change", handleSettingsChange);
+els.moduleContent.addEventListener("change", handleCatalogImageChange);
 
 els.sideCompanies.addEventListener("click", (event) => {
   const button = event.target.closest("[data-edit-company]");

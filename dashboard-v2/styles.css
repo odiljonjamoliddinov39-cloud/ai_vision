@@ -941,9 +941,216 @@ input {
   font-weight: 600;
 }
 
+.feed-transmitting {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(5, 46, 22, 0.86);
+  color: #bbf7d0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(6px);
+}
+
+.feed-transmitting::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.2);
+}
+
 .ai-list,
 .dim-list {
   margin-top: 16px;
+}
+
+.catalog-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-strong);
+}
+
+.catalog-form label,
+.catalog-upload {
+  display: grid;
+  gap: 7px;
+  color: var(--heading);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.catalog-upload small,
+.catalog-product small {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.catalog-upload input[type="file"] {
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel);
+}
+
+.recognition-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--good-border);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--good-soft);
+  font-size: 12.5px;
+}
+
+.catalog-product .cc-role-head > div {
+  min-width: 0;
+}
+
+.catalog-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.catalog-thumbs img {
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--panel-strong);
+}
+
+.catalog-results-loading,
+.detected-list {
+  margin-top: 24px;
+}
+
+.detected-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.detected-list-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.detected-list-head h3,
+.detected-list-head p {
+  margin: 0;
+}
+
+.detected-list-head h3 {
+  color: var(--heading);
+  font-size: 16px;
+}
+
+.detected-list-head p,
+.catalog-next-run {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.export-button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  color: var(--on-primary);
+  background: var(--primary);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.export-button:hover {
+  background: var(--primary-strong);
+}
+
+.detected-table-wrap {
+  overflow-x: auto;
+}
+
+.detected-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.detected-table th,
+.detected-table td {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.detected-table th {
+  color: var(--muted);
+  background: var(--panel-strong);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.count-cell {
+  color: var(--primary);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.catalog-next-run {
+  padding: 0 20px 14px;
+}
+
+.dimension-visual {
+  display: grid;
+  grid-template-columns: minmax(100px, 150px) minmax(220px, 1fr);
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+}
+
+.dimension-visual > img {
+  width: 100%;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  object-fit: cover;
 }
 
 .dim-card {
@@ -954,6 +1161,25 @@ input {
   width: 100%;
   max-width: 260px;
   height: auto;
+}
+
+@media (max-width: 760px) {
+  .catalog-form {
+    grid-template-columns: 1fr;
+  }
+
+  .detected-list-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .export-button {
+    align-self: flex-start;
+  }
+
+  .dimension-visual {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dim-label {

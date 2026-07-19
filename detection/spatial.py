@@ -62,7 +62,12 @@ class SpatialAnalyzer:
     def enrich(self, frame, detections) -> list[SpatialMeasurement]:
         measurements = []
         for detection in detections:
-            measurement = self.measure(frame.shape, detection.class_name, detection.box)
+            measurement = self.measure(
+                frame.shape,
+                detection.class_name,
+                detection.box,
+                inventory_name=getattr(detection, "inventory_name", None),
+            )
             for field, value in measurement.__dict__.items():
                 setattr(detection, field, value)
             measurements.append(measurement)
@@ -73,6 +78,7 @@ class SpatialAnalyzer:
         frame_shape,
         class_name: str,
         box: tuple[int, int, int, int],
+        inventory_name: str | None = None,
     ) -> SpatialMeasurement:
         frame_height, frame_width = frame_shape[:2]
         x1, y1, x2, y2 = box
@@ -89,11 +95,12 @@ class SpatialAnalyzer:
 
         width_m = pixel_width * distance_m / focal_px
         height_m = pixel_height * distance_m / focal_px
-        object_type, inventory_name, depth_ratio = _class_profile(class_name)
+        object_type, default_inventory_name, depth_ratio = _class_profile(class_name)
+        inventory_name = inventory_name or default_inventory_name
         depth_m = max(0.05, width_m * depth_ratio)
         quantity, grid = self._estimate_quantity(
             class_name=class_name,
-            inventory_name=inventory_name,
+            inventory_name=default_inventory_name,
             width_m=width_m,
             height_m=height_m,
             depth_m=depth_m,
