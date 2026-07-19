@@ -12,6 +12,7 @@ const els = {
   shell: document.querySelector(".v2-shell"),
   sidebarToggle: document.querySelector("#sidebarToggle"),
   brandAvatar: document.querySelector("#brandAvatar"),
+  headerProfile: document.querySelector("#headerProfile"),
   sideCompanies: document.querySelector("#sideCompanies"),
   toast: document.querySelector("#toast"),
 };
@@ -149,6 +150,15 @@ function renderSideCompanies() {
     : `<li class="side-empty">No companies yet</li>`;
 }
 
+const STAT_ICONS = {
+  "Active cameras": `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`,
+  "Frames read": `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="2.2"/><path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5"/></svg>`,
+  "Last detections": `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>`,
+  "Stock items": `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></svg>`,
+  "Saved cameras": `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>`,
+  "Audit verified": `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>`,
+};
+
 function renderSummary() {
   const summary = state.overview?.summary || {};
   const cards = [
@@ -160,7 +170,17 @@ function renderSummary() {
     ["Audit verified", summary.audit_verified ? "Yes" : "No"],
   ];
   els.summaryGrid.innerHTML = cards
-    .map(([label, value]) => `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`)
+    .map(
+      ([label, value]) => `
+        <article class="stat-card">
+          <div class="stat-icon">${STAT_ICONS[label] || ""}</div>
+          <div class="stat-body">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value)}</strong>
+          </div>
+        </article>
+      `
+    )
     .join("");
   const running = Boolean(summary.detector_running);
   els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
@@ -546,6 +566,18 @@ function updateBrandAvatar() {
     els.brandAvatar.hidden = true;
     els.brandAvatar.removeAttribute("src");
   }
+  renderHeaderProfile();
+}
+
+function renderHeaderProfile(name) {
+  const profile = loadProfile();
+  const label = name || profile.login || "admin";
+  const initial = label.slice(0, 1).toUpperCase();
+  const avatar =
+    !name && profile.avatar
+      ? `<img src="${profile.avatar}" alt="" />`
+      : `<span class="hp-initial">${escapeHtml(initial)}</span>`;
+  els.headerProfile.innerHTML = `${avatar}<span class="hp-name">${escapeHtml(label)}</span>`;
 }
 
 function renderSettings(container) {
@@ -974,6 +1006,7 @@ function renderAccountView({ company, role, missing }) {
 
   accountState = { company, role };
   els.scopeLine.textContent = `${role.name} • ${company.name} • login: ${role.login}`;
+  renderHeaderProfile(role.login);
   renderAccountModule();
 }
 
