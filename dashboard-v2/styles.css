@@ -983,6 +983,27 @@ input {
   background: var(--panel-strong);
 }
 
+.catalog-name-field {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.catalog-upload {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.catalog-form > button[type="submit"] {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.catalog-upload-help {
+  grid-column: 2;
+  grid-row: 2;
+  margin-top: -5px;
+}
+
 .catalog-form label,
 .catalog-upload {
   display: grid;
@@ -1013,7 +1034,7 @@ input {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
-.catalog-upload small,
+.catalog-upload-help,
 .catalog-product small {
   display: block;
   color: var(--muted);
@@ -1187,6 +1208,18 @@ input {
 @media (max-width: 760px) {
   .catalog-form {
     grid-template-columns: 1fr;
+  }
+
+  .catalog-name-field,
+  .catalog-upload,
+  .catalog-upload-help,
+  .catalog-form > button[type="submit"] {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .catalog-upload-help {
+    margin-top: -5px;
   }
 
   .detected-list-head {
