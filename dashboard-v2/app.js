@@ -39,6 +39,81 @@ const state = {
   overview: null,
 };
 
+// The backend intentionally exposes stable JPEG snapshots instead of one
+// long-lived MJPEG connection per camera. Refresh only the images that are
+// currently mounted so camera pages stay live without rebuilding any module.
+const LIVE_FRAME_REFRESH_MS = 1000;
+let liveFrameTimer = null;
+
+function liveFrameUrl(slot) {
+  const url = new URL(`${API_BASE}/api/live_frame`);
+  url.searchParams.set("slot", slot);
+  url.searchParams.set("v", Date.now());
+  return url.toString();
+}
+
+async function refreshLiveFrameImage(image) {
+  if (image.dataset.liveLoading === "true") return;
+  const slot = image.dataset.liveSlot;
+  if (!slot) return;
+
+  image.dataset.liveLoading = "true";
+  try {
+    const response = await fetch(liveFrameUrl(slot), { cache: "no-store" });
+    if (!response.ok) throw new Error(`Live frame request failed: ${response.status}`);
+    const frame = await response.blob();
+    if (!image.isConnected) return;
+
+    const previousObjectUrl = image.dataset.liveObjectUrl;
+    const nextObjectUrl = URL.createObjectURL(frame);
+    image.onload = () => {
+      if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
+      image.classList.remove("feed-stale");
+      image.removeAttribute("title");
+      image.dataset.liveLastUpdate = new Date().toISOString();
+      delete image.dataset.liveLoading;
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(nextObjectUrl);
+      image.classList.add("feed-stale");
+      image.title = "Waiting for a fresh camera frame";
+      delete image.dataset.liveLoading;
+    };
+    image.dataset.liveObjectUrl = nextObjectUrl;
+    image.src = nextObjectUrl;
+  } catch {
+    if (image.isConnected) {
+      image.classList.add("feed-stale");
+      image.title = "Waiting for a fresh camera frame";
+    }
+    delete image.dataset.liveLoading;
+  }
+}
+
+function refreshLiveFrames() {
+  if (document.hidden) return;
+  els.moduleContent.querySelectorAll("img[data-live-frame]").forEach(refreshLiveFrameImage);
+}
+
+function stopLiveFrameRefresh() {
+  if (liveFrameTimer !== null) {
+    window.clearInterval(liveFrameTimer);
+    liveFrameTimer = null;
+  }
+}
+
+function syncLiveFrameRefresh() {
+  const hasLiveFrames = Boolean(els.moduleContent.querySelector("img[data-live-frame]"));
+  if (document.hidden || !hasLiveFrames) {
+    stopLiveFrameRefresh();
+    return;
+  }
+  refreshLiveFrames();
+  if (liveFrameTimer === null) {
+    liveFrameTimer = window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS);
+  }
+}
+
 const HEAD_MODULE_IDS = new Set(["overview", "users"]);
 
 const MODULE_OVERRIDES = {
@@ -245,7 +320,7 @@ function renderModuleContent() {
       <div class="live-preview">
         ${Array.from({ length: Math.min(Number(summary.active_cameras || health.camera_count || 10), 10) }, (_, index) => {
           const slot = index + 1;
-          return `<figure><img src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+          return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
         }).join("")}
       </div>
     `;
@@ -719,7 +794,7 @@ function livePreviewHtml(summary, health) {
     <div class="live-preview">
       ${Array.from({ length: slots }, (_, index) => {
         const slot = index + 1;
-        return `<figure><img src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+        return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
       }).join("")}
     </div>
   `;
@@ -890,7 +965,7 @@ function renderAccountModule() {
           globalSlot += 1;
           if (globalSlot <= Math.max(Number(summary.active_cameras || health.camera_count || 1), 1)) {
             const count = 200 + Math.round(mulberry32(globalSlot * 97)() * 900);
-            return `<figure><span class="feed-count">Count: ${count}</span><img src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
+            return `<figure><span class="feed-count">Count: ${count}</span><img data-live-frame data-live-slot="${globalSlot}" src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
           }
           return `<figure class="feed-empty"><div>No signal yet</div><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
         }).join("");
@@ -1043,6 +1118,7 @@ function renderAccountView({ company, role, missing }) {
   }
 
   accountState = { company, role };
+  if (!accountModule && role.access?.camera) accountModule = "feed";
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good Morning" : hour < 18 ? "Good Afternoon" : "Good Evening";
   els.pageTitle.textContent = `${greeting}, ${role.name} 👋`;
@@ -1590,6 +1666,11 @@ els.refreshBtn.addEventListener("click", () => {
 });
 
 window.addEventListener("hashchange", () => window.location.reload());
+
+const liveFrameObserver = new MutationObserver(syncLiveFrameRefresh);
+liveFrameObserver.observe(els.moduleContent, { childList: true, subtree: true });
+document.addEventListener("visibilitychange", syncLiveFrameRefresh);
+window.addEventListener("beforeunload", stopLiveFrameRefresh);
 
 renderSideCompanies();
 updateBrandAvatar();

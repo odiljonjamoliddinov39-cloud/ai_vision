@@ -1,0 +1,53 @@
+from pathlib import Path
+
+from starlette.requests import Request
+
+from api import server
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _live_frame_request(slot: int) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "https",
+            "path": "/api/live_frame",
+            "query_string": f"slot={slot}".encode(),
+            "headers": [],
+            "client": ("127.0.0.1", 5000),
+            "server": ("testserver", 443),
+        }
+    )
+
+
+def test_dashboard_continuously_refreshes_mounted_live_frames():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert source.count("data-live-frame data-live-slot") == 3
+    assert "window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS)" in source
+    assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
+    assert "new MutationObserver(syncLiveFrameRefresh)" in source
+    assert 'fetch(liveFrameUrl(slot), { cache: "no-store" })' in source
+    assert "URL.revokeObjectURL(previousObjectUrl)" in source
+
+
+def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'if (!accountModule && role.access?.camera) accountModule = "feed"' in source
+    assert 'menus.push({ id: "camera", label: "Camera Control"' in source
+    assert 'menus.push({ id: "feed", label: "Camera Feed"' in source
+
+
+def test_live_frame_rate_limits_are_isolated_per_camera_slot(monkeypatch):
+    monkeypatch.setenv("SECURITY_RATE_LIMIT_PER_MINUTE", "1")
+    server._rate_limits.clear()
+
+    assert server._rate_limit(_live_frame_request(1)) is None
+    assert server._rate_limit(_live_frame_request(2)) is None
+    assert server._rate_limit(_live_frame_request(1)).status_code == 429
+
+    server._rate_limits.clear()
