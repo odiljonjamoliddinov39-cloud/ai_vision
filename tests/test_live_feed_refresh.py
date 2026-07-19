@@ -42,6 +42,14 @@ def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
     assert 'menus.push({ id: "feed", label: "Camera Feed"' in source
 
 
+def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert 'AUTO_START_DETECTION: "true"' in compose
+    assert 'DETECTION_WATCHDOG_ENABLED: "true"' in compose
+    assert 'AUTO_START_DETECTION: "${AUTO_START_DETECTION:-true}"' not in compose
+
+
 def test_live_frame_rate_limits_are_isolated_per_camera_slot(monkeypatch):
     monkeypatch.setenv("SECURITY_RATE_LIMIT_PER_MINUTE", "1")
     server._rate_limits.clear()
