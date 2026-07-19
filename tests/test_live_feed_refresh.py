@@ -34,6 +34,13 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
     assert "URL.revokeObjectURL(previousObjectUrl)" in source
 
 
+def test_dashboard_targets_two_live_frame_updates_per_second():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "const LIVE_FRAME_REFRESH_MS = 500;" in source
+    assert 'if (image.dataset.liveLoading === "true") return;' in source
+
+
 def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
@@ -53,16 +60,29 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=20" in html
-    assert "/dashboard-v2/assets/styles.css?v=20" in html
+    assert "/dashboard-v2/assets/app.js?v=21" in html
+    assert "/dashboard-v2/assets/styles.css?v=21" in html
 
 
 def test_live_frame_rate_limits_are_isolated_per_camera_slot(monkeypatch):
     monkeypatch.setenv("SECURITY_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("LIVE_FRAME_RATE_LIMIT_PER_MINUTE", "1")
     server._rate_limits.clear()
 
     assert server._rate_limit(_live_frame_request(1)) is None
     assert server._rate_limit(_live_frame_request(2)) is None
+    assert server._rate_limit(_live_frame_request(1)).status_code == 429
+
+    server._rate_limits.clear()
+
+
+def test_live_frames_have_a_dedicated_higher_rate_limit(monkeypatch):
+    monkeypatch.setenv("SECURITY_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("LIVE_FRAME_RATE_LIMIT_PER_MINUTE", "2")
+    server._rate_limits.clear()
+
+    assert server._rate_limit(_live_frame_request(1)) is None
+    assert server._rate_limit(_live_frame_request(1)) is None
     assert server._rate_limit(_live_frame_request(1)).status_code == 429
 
     server._rate_limits.clear()

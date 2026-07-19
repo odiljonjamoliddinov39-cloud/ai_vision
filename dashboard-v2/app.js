@@ -42,7 +42,9 @@ const state = {
 // The backend intentionally exposes stable JPEG snapshots instead of one
 // long-lived MJPEG connection per camera. Refresh only the images that are
 // currently mounted so camera pages stay live without rebuilding any module.
-const LIVE_FRAME_REFRESH_MS = 1000;
+// Target two updates per second. The per-image loading guard below makes this
+// self-throttling on slower links instead of stacking duplicate requests.
+const LIVE_FRAME_REFRESH_MS = 500;
 let liveFrameTimer = null;
 
 function liveFrameUrl(slot) {

@@ -529,15 +529,21 @@ def _require_permission(request: Request, permission: str) -> dict[str, Any]:
 
 
 def _rate_limit(request: Request) -> JSONResponse | None:
-    limit = int(os.getenv("SECURITY_RATE_LIMIT_PER_MINUTE", "120"))
+    rate_path = request.url.path
+    if rate_path == "/api/live_frame":
+        # Live snapshots are intentionally requested more frequently than the
+        # control API. This remains isolated per camera below, so one feed
+        # cannot consume another feed's allowance.
+        limit = int(os.getenv("LIVE_FRAME_RATE_LIMIT_PER_MINUTE", "300"))
+    else:
+        limit = int(os.getenv("SECURITY_RATE_LIMIT_PER_MINUTE", "120"))
     if limit <= 0:
         return None
     actor = _request_actor(request)
     window = int(time.time() // 60)
-    rate_path = request.url.path
     # Live camera frames are polled independently per slot. Keep the existing
     # per-route limit, but isolate each feed so ten healthy cameras do not
-    # exhaust one shared 120-request bucket.
+    # exhaust one shared request bucket.
     if rate_path == "/api/live_frame":
         slot = request.query_params.get("slot", "")
         camera = request.query_params.get("camera", "")
