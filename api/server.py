@@ -93,7 +93,16 @@ app.add_middleware(
     allow_origins=_env_list("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS),
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-AI-User-Email", "X-Requested-With"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-AI-Company",
+        "X-AI-Role",
+        "X-AI-User-Email",
+        "X-AI-User-Name",
+        "X-Requested-With",
+    ],
 )
 
 _tracking_db: TrackingDB | None = None

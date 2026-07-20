@@ -6,6 +6,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import api.server as server  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 from api.server import (  # noqa: E402
     _authorized_modules,
     _rbac_context,
@@ -24,6 +25,25 @@ class FakeRequest:
         self.headers = headers or {}
         self.query_params = query_params or {}
         self.client = SimpleNamespace(host="127.0.0.1")
+
+
+def test_vercel_dashboard_preflight_allows_identity_headers():
+    client = TestClient(server.app)
+
+    response = client.options(
+        "/api/v2/rbac/me",
+        headers={
+            "Origin": "https://ai-vision-dashboard-phi.vercel.app",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-ai-role,x-ai-user-name,x-ai-company",
+        },
+    )
+
+    assert response.status_code == 200
+    allowed_headers = response.headers["access-control-allow-headers"].lower()
+    assert "x-ai-role" in allowed_headers
+    assert "x-ai-user-name" in allowed_headers
+    assert "x-ai-company" in allowed_headers
 
 
 def test_security_status_reflects_api_key_enabled(monkeypatch):
