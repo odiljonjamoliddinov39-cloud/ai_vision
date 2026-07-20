@@ -405,6 +405,107 @@ let ccEditingCompany = null;
 let ccEditValues = null;
 let ccPasswordEditRole = null;
 
+// One-time recovery for companies/roles created before the server-side
+// database existed (they were only ever in this browser's localStorage).
+// Matches by company name / role login so re-visiting from the same browser
+// doesn't create duplicates. Old account links from that era point at ids
+// that only existed locally, so they can never resolve — this migration
+// gives every recovered role a new, working server-backed link.
+const LEGACY_COMPANIES_KEY = "ai_vision_v2_companies";
+const LEGACY_MIGRATED_KEY = "ai_vision_v2_companies_migrated_at";
+const LEGACY_BACKUP_KEY = "ai_vision_v2_companies_legacy_backup";
+
+async function migrateLegacyLocalStorage() {
+  const raw = localStorage.getItem(LEGACY_COMPANIES_KEY);
+  if (!raw) return null;
+  if (localStorage.getItem(LEGACY_MIGRATED_KEY)) {
+    localStorage.removeItem(LEGACY_COMPANIES_KEY);
+    return null;
+  }
+
+  let legacyCompanies;
+  try {
+    legacyCompanies = JSON.parse(raw);
+  } catch {
+    legacyCompanies = null;
+  }
+  if (!Array.isArray(legacyCompanies) || !legacyCompanies.length) {
+    localStorage.removeItem(LEGACY_COMPANIES_KEY);
+    return null;
+  }
+
+  let existing;
+  try {
+    existing = await ensureCompaniesLoaded();
+  } catch {
+    return null; // Server unreachable — leave the key in place and retry next load.
+  }
+
+  let companiesCreated = 0;
+  let rolesCreated = 0;
+  let failures = 0;
+
+  for (const oldCompany of legacyCompanies) {
+    const name = String(oldCompany?.name || "").trim();
+    if (!name) continue;
+
+    let company = existing.find((item) => item.name.toLowerCase() === name.toLowerCase());
+    if (!company) {
+      try {
+        company = await accountsApi("/api/v2/companies", { method: "POST", body: JSON.stringify({ name }) });
+        existing.push(company);
+        companiesCreated += 1;
+      } catch {
+        failures += 1;
+        continue;
+      }
+    }
+    company.roles = company.roles || [];
+
+    const oldCameraConfig = oldCompany?.cameraConfig;
+    if (oldCameraConfig?.nvrs?.length && !company.cameraConfig?.nvrs?.length) {
+      try {
+        company.cameraConfig = await accountsApi(`/api/v2/companies/${company.id}/camera-config`, {
+          method: "PUT",
+          body: JSON.stringify({ cameraConfig: oldCameraConfig }),
+        }).then(() => oldCameraConfig);
+      } catch {
+        // Non-fatal — camera setup can be redone from Company Control.
+      }
+    }
+
+    for (const oldRole of oldCompany?.roles || []) {
+      const roleName = String(oldRole?.name || "").trim();
+      const login = String(oldRole?.login || "").trim();
+      if (!roleName || !login) continue;
+      if (company.roles.some((role) => role.login.toLowerCase() === login.toLowerCase())) continue;
+
+      try {
+        const role = await accountsApi(`/api/v2/companies/${company.id}/roles`, {
+          method: "POST",
+          body: JSON.stringify({
+            name: roleName,
+            login,
+            password: oldRole.password || Math.random().toString(36).slice(2, 12),
+            access_camera: Boolean(oldRole.access?.camera),
+            access_analytics: Boolean(oldRole.access?.analytics),
+          }),
+        });
+        company.roles.push(role);
+        rolesCreated += 1;
+      } catch {
+        failures += 1;
+      }
+    }
+  }
+
+  localStorage.setItem(LEGACY_MIGRATED_KEY, new Date().toISOString());
+  localStorage.setItem(LEGACY_BACKUP_KEY, raw);
+  localStorage.removeItem(LEGACY_COMPANIES_KEY);
+
+  return { companiesCreated, rolesCreated, failures };
+}
+
 async function ensureCompaniesLoaded() {
   if (ccCompaniesCache) return ccCompaniesCache;
   const payload = await accountsApi("/api/v2/companies");
@@ -938,10 +1039,17 @@ async function resolveAccountFromHash() {
   const match = window.location.hash.match(/acc=([a-z0-9]+)/i);
   if (!match) return null;
   try {
-    const payload = await accountsApi(`/api/v2/accounts/${encodeURIComponent(match[1])}`);
-    return { company: payload.company, role: payload.role, missing: false };
-  } catch {
-    return { company: null, role: null, missing: true };
+    const response = await fetch(`${API_BASE}/api/v2/accounts/${encodeURIComponent(match[1])}`);
+    if (response.status === 404) {
+      return { company: null, role: null, missing: true, error: null };
+    }
+    if (!response.ok) {
+      throw new Error(`Account lookup failed (${response.status}).`);
+    }
+    const payload = await response.json();
+    return { company: payload.company, role: payload.role, missing: false, error: null };
+  } catch (error) {
+    return { company: null, role: null, missing: true, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -1396,7 +1504,7 @@ function handleCatalogImageChange(event) {
   label.textContent = count ? `${count} images selected${count < 2 ? " — add at least one more" : " ✓"}` : "Choose at least 2 clear images from different angles.";
 }
 
-function renderAccountView({ company, role, missing }) {
+function renderAccountView({ company, role, missing, error }) {
   els.pageTitle.textContent = "User Dashboard";
   els.companiesSection.hidden = true;
   els.summaryGrid.hidden = true;
@@ -1410,11 +1518,21 @@ function renderAccountView({ company, role, missing }) {
   if (missing) {
     els.moduleNav.innerHTML = "";
     els.scopeLine.textContent = "Account access";
-    els.activeModuleTitle.textContent = "Account not found";
-    els.moduleContent.innerHTML = `
-      <p class="empty">This account link isn't available on this device yet — account data is stored
-      in the browser where it was created until the backend hookup.</p>
-    `;
+    if (error) {
+      els.activeModuleTitle.textContent = "Couldn't load this account";
+      els.moduleContent.innerHTML = `
+        <p class="empty">${escapeHtml(error)} Check your connection and try refreshing — this is not
+        the same as the account being deleted.</p>
+        <button type="button" data-retry-dashboard>Try again</button>
+      `;
+    } else {
+      els.activeModuleTitle.textContent = "Account not found";
+      els.moduleContent.innerHTML = `
+        <p class="empty">This account link doesn't match any saved account. It may have been deleted,
+        mistyped, or created before this dashboard moved account storage to the server — ask an admin
+        to open Company Control and copy the current link for this account.</p>
+      `;
+    }
     return;
   }
 
@@ -2046,6 +2164,22 @@ liveFrameObserver.observe(els.moduleContent, { childList: true, subtree: true })
 document.addEventListener("visibilitychange", syncLiveFrameRefresh);
 window.addEventListener("beforeunload", stopLiveFrameRefresh);
 
-renderSideCompanies();
-updateBrandAvatar();
-loadDashboard();
+migrateLegacyLocalStorage()
+  .then((result) => {
+    if (!result) return;
+    if (result.companiesCreated || result.rolesCreated) {
+      const companyWord = result.companiesCreated === 1 ? "company" : "companies";
+      const accountWord = result.rolesCreated === 1 ? "account" : "accounts";
+      toast(
+        `Recovered ${result.companiesCreated} ${companyWord} and ${result.rolesCreated} ${accountWord} from this browser onto the server — open Company Control for the new links.`
+      );
+    } else if (result.failures) {
+      toast(`Could not automatically recover ${result.failures} saved item(s) from this browser. Recreate them in Company Control.`);
+    }
+  })
+  .catch(() => {})
+  .finally(() => {
+    renderSideCompanies();
+    updateBrandAvatar();
+    loadDashboard();
+  });
