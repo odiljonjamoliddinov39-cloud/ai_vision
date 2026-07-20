@@ -1095,6 +1095,59 @@ async function persistAccountCompany() {
   company.cameraConfig = updated.cameraConfig;
 }
 
+async function nextAvailableCameraSlot() {
+  const { cameras } = await accountsApi("/api/cameras");
+  const usedSlots = (cameras || [])
+    .filter((camera) => camera.is_active && camera.slot_number != null)
+    .map((camera) => Number(camera.slot_number));
+  return usedSlots.length ? Math.max(...usedSlots) + 1 : 1;
+}
+
+async function registerNvrController(fields) {
+  const startSlot = await nextAvailableCameraSlot();
+  const payload = {
+    name: fields.name,
+    host: fields.host,
+    protocol: fields.protocol,
+    channel_count: fields.channels,
+    channel_start: 1,
+    start_slot: startSlot,
+    make_active: true,
+    test_controller: true,
+    test_streams: false,
+  };
+  if (fields.port) payload.port = fields.port;
+  if (fields.username) payload.username = fields.username;
+  if (fields.password) payload.password = fields.password;
+  if (fields.streamPath) payload.stream_path_template = fields.streamPath;
+
+  const response = await accountsApi("/api/camera-controller", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  return {
+    port: response.controller.port,
+    controllerMessage: response.controller.public_reachability_warning || response.controller.message,
+    channelsDetail: response.results.map((result) => ({
+      camera_id: result.camera_id,
+      channel: result.channel,
+      slot_number: result.slot_number,
+      status: result.status,
+      message: result.message,
+    })),
+  };
+}
+
+async function deleteNvrCameras(nvr) {
+  const channels = nvr.channelsDetail || [];
+  await Promise.all(
+    channels.map((channel) =>
+      accountsApi(`/api/cameras/${channel.camera_id}`, { method: "DELETE" }).catch(() => null)
+    )
+  );
+}
+
 function accountMenus(role) {
   const menus = [];
   if (role.access?.camera) menus.push({ id: "camera", label: "Camera Control", sub: "NVR & vision quality" });
@@ -1314,32 +1367,56 @@ function renderAccountModule() {
   }
 
   const config = company.cameraConfig;
-  const summary = state.overview?.summary || {};
-  const health = state.overview?.health || {};
 
   if (menu.id === "camera") {
     const atLimit = config.nvrs.length >= MAX_NVRS;
     const nvrCards = config.nvrs
-      .map(
-        (nvr) => `
+      .map((nvr) => {
+        const channels = nvr.channelsDetail || [];
+        const connected = channels.filter((channel) => channel.status === "connected").length;
+        const overallOk = channels.length > 0 && connected > 0;
+        const channelRows = channels.length
+          ? `<ul class="nvr-channels">${channels
+              .map(
+                (channel) => `
+                  <li class="nvr-channel ${channel.status === "connected" ? "ok" : "bad"}">
+                    <span>Ch ${channel.channel} · slot ${channel.slot_number}</span>
+                    <span class="nvr-channel-status">${channel.status === "connected" ? "Connected" : "Not connected"}</span>
+                  </li>
+                `
+              )
+              .join("")}</ul>`
+          : "";
+        return `
           <article class="cc-company">
             <header class="cc-company-head">
               <h3>${escapeHtml(nvr.name)}</h3>
               <button type="button" class="cc-remove" data-acc-action="remove-nvr" data-nvr="${nvr.id}" aria-label="Remove NVR">✕</button>
             </header>
-            <p class="cc-cred"><em>RTSP:</em> <span class="nvr-rtsp" title="${escapeHtml(nvr.rtsp)}">${escapeHtml(nvr.rtsp)}</span></p>
-            <p class="cc-cred"><em>Camera slots:</em> ${nvr.slots} / ${MAX_NVR_SLOTS}</p>
+            <p class="cc-cred"><em>Address:</em> <span class="nvr-rtsp" title="${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}">${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}</span></p>
+            <p class="cc-cred"><em>Channels:</em> ${connected}/${channels.length || nvr.channels || 0} transmitting</p>
+            <p class="nvr-status ${overallOk ? "ok" : "bad"}">${escapeHtml(nvr.controllerMessage || "Not tested yet.")}</p>
+            ${channelRows}
           </article>
-        `
-      )
+        `;
+      })
       .join("");
     els.moduleContent.innerHTML = `
-      <p class="chart-note">NVR connections: ${config.nvrs.length}/${MAX_NVRS} — each NVR can expose up to ${MAX_NVR_SLOTS} camera slots.</p>
+      <p class="chart-note">NVR connections: ${config.nvrs.length}/${MAX_NVRS} — each NVR can expose up to ${MAX_NVR_SLOTS} camera channels. Cameras must be reachable from this server over the internet (a public IP, port-forward, or DDNS hostname) — local-only addresses like 192.168.x.x won't connect from the cloud.</p>
       <div class="cc-list">${nvrCards || `<p class="empty">No NVRs connected yet — add the first one below.</p>`}</div>
       <form class="cc-add cc-add-role nvr-form" data-acc-form="nvr" ${atLimit ? "hidden" : ""}>
         <input name="name" placeholder="NVR name (e.g. Warehouse North)" required maxlength="60" autocomplete="off" />
-        <input name="rtsp" placeholder="rtsp://user:pass@192.168.1.10:554/stream" required maxlength="200" autocomplete="off" />
-        <input name="slots" type="number" min="1" max="${MAX_NVR_SLOTS}" value="8" required aria-label="Camera slots" />
+        <input name="host" placeholder="Public IP or DDNS host (e.g. nvr.example.com)" required maxlength="200" autocomplete="off" />
+        <select name="protocol" aria-label="Stream protocol">
+          <option value="rtsp" selected>RTSP</option>
+          <option value="http">HTTP</option>
+          <option value="https">HTTPS</option>
+        </select>
+        <input name="port" type="number" min="1" max="65535" placeholder="Port (default 554)" />
+        <input name="username" placeholder="Username (optional)" autocomplete="off" />
+        <input name="password" type="password" placeholder="Password (optional)" autocomplete="new-password" />
+        <input name="channels" type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" required aria-label="Camera channels" />
+        <input name="streamPath" placeholder="Stream path template (optional, e.g. /Streaming/Channels/{channel}01)" maxlength="200" autocomplete="off" />
         <button type="submit">Add NVR</button>
       </form>
       ${atLimit ? `<p class="empty">NVR limit reached (${MAX_NVRS}). Remove one to add another.</p>` : ""}
@@ -1373,17 +1450,20 @@ function renderAccountModule() {
       els.moduleContent.innerHTML = `<p class="empty">No NVRs connected — set one up in Camera Control first.</p>`;
       return;
     }
-    let globalSlot = 0;
     const sections = config.nvrs
       .map((nvr) => {
-        const tiles = Array.from({ length: nvr.slots }, (_, index) => {
-          globalSlot += 1;
-          if (globalSlot <= Math.max(Number(summary.active_cameras || health.camera_count || 1), 1)) {
-            return `<figure><span class="feed-transmitting">Transmitting live</span><img data-live-frame data-live-slot="${globalSlot}" src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
-          }
-          return `<figure class="feed-empty"><div>No signal yet</div><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
-        }).join("");
-        return `<section class="acc-block"><h3>${escapeHtml(nvr.name)} <small class="muted">(${nvr.slots} slots)</small></h3><div class="live-preview">${tiles}</div></section>`;
+        const channels = nvr.channelsDetail || [];
+        const tiles = channels.length
+          ? channels
+              .map((channel) => {
+                if (channel.status === "connected") {
+                  return `<figure><span class="feed-transmitting">Transmitting live</span><img data-live-frame data-live-slot="${channel.slot_number}" src="${API_BASE}/api/live_frame?slot=${channel.slot_number}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
+                }
+                return `<figure class="feed-empty"><div>${escapeHtml(channel.message || "No signal yet")}</div><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
+              })
+              .join("")
+          : `<figure class="feed-empty"><div>Remove and re-add this NVR to reconnect it</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
+        return `<section class="acc-block"><h3>${escapeHtml(nvr.name)} <small class="muted">(${channels.length || nvr.channels || 0} channels)</small></h3><div class="live-preview">${tiles}</div></section>`;
       })
       .join("");
     els.moduleContent.innerHTML = `
@@ -1442,17 +1522,59 @@ async function handleAccountSubmit(event) {
   if (form.dataset.accForm !== "nvr") return;
   if (company.cameraConfig.nvrs.length >= MAX_NVRS) return;
   const name = form.elements.name.value.trim();
-  const rtsp = form.elements.rtsp.value.trim();
-  const slots = Math.min(MAX_NVR_SLOTS, Math.max(1, Number(form.elements.slots.value) || 1));
-  if (!name || !rtsp) return;
-  const previousNvrs = company.cameraConfig.nvrs;
-  company.cameraConfig.nvrs = [...previousNvrs, { id: newId(), name, rtsp, slots }];
+  const host = form.elements.host.value.trim();
+  const protocol = form.elements.protocol.value;
+  const port = Number(form.elements.port.value) || null;
+  const username = form.elements.username.value.trim();
+  const password = form.elements.password.value;
+  const channels = Math.min(MAX_NVR_SLOTS, Math.max(1, Number(form.elements.channels.value) || 1));
+  const streamPath = form.elements.streamPath.value.trim();
+  if (!name || !host) return;
+
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  submit.textContent = "Connecting…";
   try {
-    await persistAccountCompany();
-    toast(`NVR "${name}" connected with ${slots} slots.`);
+    const registration = await registerNvrController({
+      name,
+      host,
+      protocol,
+      port,
+      username,
+      password,
+      channels,
+      streamPath,
+    });
+    const previousNvrs = company.cameraConfig.nvrs;
+    const newNvr = {
+      id: newId(),
+      name,
+      host,
+      protocol,
+      port: registration.port,
+      channels,
+      controllerMessage: registration.controllerMessage,
+      channelsDetail: registration.channelsDetail,
+    };
+    company.cameraConfig.nvrs = [...previousNvrs, newNvr];
+    try {
+      await persistAccountCompany();
+      const connected = registration.channelsDetail.filter((channel) => channel.status === "connected").length;
+      if (connected > 0) {
+        toast(`NVR "${name}" connected — ${connected}/${channels} channels transmitting.`);
+      } else {
+        toast(`NVR "${name}" saved but not reachable: ${registration.controllerMessage}`);
+      }
+    } catch (error) {
+      company.cameraConfig.nvrs = previousNvrs;
+      await deleteNvrCameras(newNvr);
+      toast(error.message);
+    }
   } catch (error) {
-    company.cameraConfig.nvrs = previousNvrs;
     toast(error.message);
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Add NVR";
   }
   renderAccountModule();
 }
@@ -1481,13 +1603,16 @@ async function handleAccountClick(event) {
 
   if (action !== "remove-nvr" && action !== "quality") return;
   const previousConfig = { ...company.cameraConfig, nvrs: [...company.cameraConfig.nvrs] };
+  let removedNvr = null;
   if (action === "remove-nvr") {
+    removedNvr = company.cameraConfig.nvrs.find((nvr) => nvr.id === button.dataset.nvr) || null;
     company.cameraConfig.nvrs = company.cameraConfig.nvrs.filter((nvr) => nvr.id !== button.dataset.nvr);
   } else {
     company.cameraConfig.quality = button.dataset.quality;
   }
   try {
     await persistAccountCompany();
+    if (removedNvr) await deleteNvrCameras(removedNvr);
   } catch (error) {
     company.cameraConfig = previousConfig;
     toast(error.message);
