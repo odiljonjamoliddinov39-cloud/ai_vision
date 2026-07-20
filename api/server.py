@@ -52,6 +52,335 @@ from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
 
+
+# ============================================================
+# api/server.py — COPY/PASTE CHANGES
+# ============================================================
+
+# 1) Add this import next to the other database imports:
+
+from database.company_portal_db import CompanyPortalDB
+
+
+# 2) Add this constant next to the other DB paths:
+
+COMPANY_PORTAL_DB_PATH = ROOT / "database" / "company_portal.db"
+
+
+# 3) Add this global next to the other *_db globals:
+
+_company_portal_db: CompanyPortalDB | None = None
+
+
+# 4) Add this helper near _get_access_control_db():
+
+def _get_company_portal_db() -> CompanyPortalDB:
+    global _company_portal_db
+    if _company_portal_db is None:
+        _company_portal_db = CompanyPortalDB(
+            db_path=str(COMPANY_PORTAL_DB_PATH)
+        )
+    return _company_portal_db
+
+
+def _public_dashboard_url() -> str:
+    return os.getenv(
+        "PUBLIC_DASHBOARD_URL",
+        "https://ai-vision-dashboard-phi.vercel.app",
+    ).strip().rstrip("/")
+
+
+# 5) Add these Pydantic request models near the other BaseModel classes:
+/* ============================================================
+   dashboard-v2/app.js — COPY/PASTE REPLACEMENTS
+   ============================================================ */
+
+
+/* 1) ADD this helper immediately after the existing api(path) function. */
+
+async function apiJson(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "X-AI-Role": state.role,
+      "X-AI-User-Name": "Dashboard V2 Preview",
+      "X-AI-Company": "All Companies",
+      ...(options.headers || {}),
+    },
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || response.statusText);
+  }
+
+  return response.json();
+}
+
+
+/* 2) REPLACE the block beginning with:
+      const COMPANY_STORE_KEY = "ai_vision_v2_companies";
+   and including loadCompanies() and saveCompanies()
+   with this block. */
+
+let companyStore = [];
+let publicDashboardUrl = "https://ai-vision-dashboard-phi.vercel.app";
+
+function loadCompanies() {
+  return companyStore;
+}
+
+function saveCompanies(companies) {
+  companyStore = Array.isArray(companies) ? companies : [];
+}
+
+async function loadCompanyControl() {
+  const result = await api("/api/v2/company-control");
+  companyStore = Array.isArray(result.companies) ? result.companies : [];
+  publicDashboardUrl =
+    result.public_dashboard_url ||
+    "https://ai-vision-dashboard-phi.vercel.app";
+  return companyStore;
+}
+
+async function persistCompanyControl(companies) {
+  const result = await apiJson("/api/v2/company-control", {
+    method: "POST",
+    body: JSON.stringify({ companies }),
+  });
+
+  companyStore = Array.isArray(result.companies) ? result.companies : [];
+  publicDashboardUrl =
+    result.public_dashboard_url ||
+    "https://ai-vision-dashboard-phi.vercel.app";
+
+  return companyStore;
+}
+
+
+/* 3) REPLACE accountLink(role) with this version. */
+
+function accountLink(role) {
+  if (role.link) return role.link;
+  if (role.token) {
+    return `${publicDashboardUrl}/dashboard-v2#acc=${encodeURIComponent(
+      role.token
+    )}`;
+  }
+  return "";
+}
+
+
+/* 4) Change this function declaration:
+
+function handleCompanyClick(event) {
+
+   to:
+
+async function handleCompanyClick(event) {
+
+
+   Then REPLACE only the "save" action block with this version: */
+
+  if (button.dataset.ccAction === "save") {
+    try {
+      const companies = ccCompanies();
+      const saved = await persistCompanyControl(companies);
+      ccDraft = saved;
+      ccDirty = false;
+      ccEditingCompany = null;
+      toast("Changes saved on DigitalOcean — public links are ready.");
+      renderCompanyControl(els.moduleContent);
+      renderSideCompanies();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
+
+
+/* 5) REPLACE resolveAccountFromHash() with these two functions. */
+
+function accountTokenFromHash() {
+  const match = window.location.hash.match(/acc=([^&]+)/i);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function resolveAccountFromHash() {
+  const token = accountTokenFromHash();
+  if (!token) return null;
+
+  return apiJson(
+    `/api/v2/company-control/accounts/public/${encodeURIComponent(token)}`,
+    {
+      headers: {
+        "X-AI-Role": "viewer",
+        "X-AI-User-Name": "Public account",
+        "X-AI-Company": "Assigned company",
+      },
+    }
+  );
+}
+
+
+/* 6) REPLACE persistAccountCompany() with this async version. */
+
+async function persistAccountCompany() {
+  const token = accountTokenFromHash();
+  if (!token || !accountState?.company) return;
+
+  const result = await apiJson(
+    `/api/v2/company-control/accounts/public/${encodeURIComponent(token)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ company: accountState.company }),
+      headers: {
+        "X-AI-Role": "viewer",
+        "X-AI-User-Name": "Public account",
+        "X-AI-Company": accountState.company.name || "Assigned company",
+      },
+    }
+  );
+
+  accountState = result;
+}
+
+
+/* IMPORTANT:
+   Existing places that call persistAccountCompany() may remain as they are.
+   The request will run asynchronously. To display save failures visibly,
+   use:
+
+   persistAccountCompany().catch((error) =>
+     toast(error instanceof Error ? error.message : String(error))
+   );
+*/
+
+
+/* 7) REPLACE the complete load() function with this version. */
+
+async function load() {
+  const token = accountTokenFromHash();
+
+  if (token) {
+    const account = await resolveAccountFromHash();
+    renderAccountView(account);
+    return;
+  }
+
+  const [session, overview] = await Promise.all([
+    api("/api/v2/rbac/me"),
+    api("/api/v2/head/overview"),
+    loadCompanyControl(),
+  ]);
+
+  state.session = session;
+  state.overview = overview;
+
+  els.pageTitle.textContent = "Head Dashboard";
+  els.companiesSection.hidden = false;
+  renderNavigation();
+  renderSummary();
+  renderScope();
+  renderModuleContent();
+}
+
+
+/* 8) REPLACE these browser-only notes wherever they appear:
+
+   "Stored in this browser for now — backend hookup pending."
+
+   with:
+
+   "Stored securely on the DigitalOcean backend."
+*/
+
+class CompanyControlSaveRequest(BaseModel):
+    companies: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PublicCompanyUpdateRequest(BaseModel):
+    company: dict[str, Any]
+
+
+# 6) Replace _is_public_path() with this version:
+
+def _is_public_path(path: str) -> bool:
+    return (
+        path == "/"
+        or path == "/api/status"
+        or path.startswith("/assets/")
+        or path.startswith("/api/v2/company-control/accounts/public/")
+        or path in {"/favicon.ico", "/robots.txt"}
+    )
+
+
+# 7) Add these routes near the other /api/v2 routes:
+
+@app.get("/api/v2/company-control")
+def get_company_control(request: Request) -> dict[str, Any]:
+    _require_permission(request, "manage_users")
+    return {
+        "companies": _get_company_portal_db().list_companies(),
+        "public_dashboard_url": _public_dashboard_url(),
+    }
+
+
+@app.post("/api/v2/company-control")
+def save_company_control(
+    payload: CompanyControlSaveRequest,
+    request: Request,
+) -> dict[str, Any]:
+    _require_permission(request, "manage_users")
+    companies = _get_company_portal_db().save_companies(
+        payload.companies,
+        _public_dashboard_url(),
+    )
+    _audit(
+        "company_control_saved",
+        {
+            "company_count": len(companies),
+            "role_count": sum(
+                len(company.get("roles") or [])
+                for company in companies
+            ),
+        },
+        actor=_request_actor(request),
+    )
+    return {
+        "companies": companies,
+        "public_dashboard_url": _public_dashboard_url(),
+    }
+
+
+@app.get("/api/v2/company-control/accounts/public/{token}")
+def get_public_company_account(token: str) -> dict[str, Any]:
+    account = _get_company_portal_db().get_public_account(token)
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="This account link is invalid or has been removed.",
+        )
+    return account
+
+
+@app.put("/api/v2/company-control/accounts/public/{token}")
+def update_public_company_account(
+    token: str,
+    payload: PublicCompanyUpdateRequest,
+) -> dict[str, Any]:
+    account = _get_company_portal_db().update_public_company(
+        token,
+        payload.company,
+    )
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="This account link is invalid or has been removed.",
+        )
+    return account
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
 LOG_PATH = ROOT / "logs" / "events.log"
@@ -649,6 +978,7 @@ class CameraTestRequest(BaseModel):
 
 class CameraSlotRequest(BaseModel):
     slot_number: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
+
 
 
 class CameraControllerCreate(BaseModel):
