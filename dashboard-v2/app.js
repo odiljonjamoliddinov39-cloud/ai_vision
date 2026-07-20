@@ -1095,6 +1095,33 @@ async function persistAccountCompany() {
   company.cameraConfig = updated.cameraConfig;
 }
 
+function parseNvrConnectionInput(raw) {
+  const value = raw.trim();
+  const result = { host: value, port: null, username: null, password: null, path: null };
+  if (!value) return result;
+
+  if (value.includes("://")) {
+    try {
+      const url = new URL(value);
+      result.host = url.hostname || value;
+      if (url.port) result.port = Number(url.port);
+      if (url.username) result.username = decodeURIComponent(url.username);
+      if (url.password) result.password = decodeURIComponent(url.password);
+      if (url.pathname && url.pathname !== "/") result.path = url.pathname;
+      return result;
+    } catch {
+      return result;
+    }
+  }
+
+  const hostPortMatch = value.match(/^([^:/]+):(\d{1,5})$/);
+  if (hostPortMatch) {
+    result.host = hostPortMatch[1];
+    result.port = Number(hostPortMatch[2]);
+  }
+  return result;
+}
+
 async function nextAvailableCameraSlot() {
   const { cameras } = await accountsApi("/api/cameras");
   const usedSlots = (cameras || [])
@@ -1406,7 +1433,7 @@ function renderAccountModule() {
       <div class="cc-list">${nvrCards || `<p class="empty">No NVRs connected yet — add the first one below.</p>`}</div>
       <form class="cc-add cc-add-role nvr-form" data-acc-form="nvr" ${atLimit ? "hidden" : ""}>
         <input name="name" placeholder="NVR name (e.g. Warehouse North)" required maxlength="60" autocomplete="off" />
-        <input name="host" placeholder="Public IP or DDNS host (e.g. nvr.example.com)" required maxlength="200" autocomplete="off" />
+        <input name="host" placeholder="Host, host:port, or a full rtsp://user:pass@host:port/path URL" required maxlength="200" autocomplete="off" />
         <select name="protocol" aria-label="Stream protocol">
           <option value="rtsp" selected>RTSP</option>
           <option value="http">HTTP</option>
@@ -1522,13 +1549,18 @@ async function handleAccountSubmit(event) {
   if (form.dataset.accForm !== "nvr") return;
   if (company.cameraConfig.nvrs.length >= MAX_NVRS) return;
   const name = form.elements.name.value.trim();
-  const host = form.elements.host.value.trim();
-  const protocol = form.elements.protocol.value;
-  const port = Number(form.elements.port.value) || null;
-  const username = form.elements.username.value.trim();
-  const password = form.elements.password.value;
   const channels = Math.min(MAX_NVR_SLOTS, Math.max(1, Number(form.elements.channels.value) || 1));
-  const streamPath = form.elements.streamPath.value.trim();
+  // The host field also accepts "host:port" or a full rtsp://user:pass@host:port/path
+  // URL pasted straight from an NVR's spec sheet, so a port typed there (instead of the
+  // dedicated Port field) doesn't silently fall back to the protocol default.
+  const parsedHost = parseNvrConnectionInput(form.elements.host.value);
+  const host = parsedHost.host;
+  const protocol = form.elements.protocol.value;
+  const port = Number(form.elements.port.value) || parsedHost.port || null;
+  const username = form.elements.username.value.trim() || parsedHost.username || "";
+  const password = form.elements.password.value || parsedHost.password || "";
+  const streamPath =
+    form.elements.streamPath.value.trim() || (channels === 1 && parsedHost.path) || "";
   if (!name || !host) return;
 
   const submit = form.querySelector('button[type="submit"]');
