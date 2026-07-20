@@ -234,6 +234,22 @@ def main():
     frame_number = 0
     dummy_positions = {cam.name: 0 for cam in cameras}
 
+    # Real inference is the expensive part on a CPU-only droplet, not video
+    # capture. `target_fps` throttles how often each camera actually runs the
+    # model (reusing the last detections in between), and max_concurrent_cameras
+    # caps how many cameras run real inference at all - every camera still
+    # streams live video regardless of this cap.
+    target_detection_fps = float(det_cfg.get("target_fps", 0) or 0)
+    min_detection_interval = 1.0 / target_detection_fps if target_detection_fps > 0 else 0.0
+    max_concurrent_cameras = int(det_cfg.get("max_concurrent_cameras", 0) or 0)
+    inference_camera_names = (
+        {cam.name for cam in cameras[:max_concurrent_cameras]}
+        if max_concurrent_cameras > 0
+        else {cam.name for cam in cameras}
+    )
+    last_detection_at = {cam.name: 0.0 for cam in cameras}
+    last_detections: dict[str, list] = {cam.name: [] for cam in cameras}
+
     try:
         while True:
             now = time.time()
@@ -250,8 +266,21 @@ def main():
                 frames_read += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
 
+                should_infer = (
+                    cam.name in inference_camera_names
+                    and (
+                        min_detection_interval <= 0
+                        or now - last_detection_at.get(cam.name, 0.0) >= min_detection_interval
+                    )
+                )
+
                 if object_tracker is not None:
-                    detections = object_tracker.update(frame)
+                    if should_infer:
+                        detections = object_tracker.update(frame)
+                        last_detection_at[cam.name] = now
+                        last_detections[cam.name] = detections
+                    else:
+                        detections = last_detections.get(cam.name, [])
                     last_tracked_count = len(detections)
                     check_ins = presence_tracker.update(cam.name, detections, now)
                     for event in check_ins:
@@ -265,8 +294,13 @@ def main():
                     detections = _demo_tracked_objects(dummy_positions[cam.name])
                     dummy_positions[cam.name] += 1
                     last_tracked_count = len(detections)
-                else:
+                elif should_infer:
                     detections = detector.detect(frame)
+                    last_detection_at[cam.name] = now
+                    last_detections[cam.name] = detections
+                    last_tracked_count = 0
+                else:
+                    detections = last_detections.get(cam.name, [])
                     last_tracked_count = 0
 
                 last_detection_count = len(detections)

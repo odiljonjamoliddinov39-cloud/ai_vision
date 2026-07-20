@@ -3,11 +3,13 @@ cameras:
   source: dummy
   slot_number: 1
 detection:
-  model_path: dummy
+  model_path: yolov8s-world.pt
   confidence_threshold: 0.08
-  image_size: 960
+  image_size: 640
   class_agnostic_nms: true
   device: cpu
+  target_fps: 1.5
+  max_concurrent_cameras: 4
   classes: null
   class_prompts:
   - stack of cardboard boxes
