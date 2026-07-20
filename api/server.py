@@ -90,23 +90,6 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return values or default
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_env_list("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS),
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "X-API-Key",
-        "X-AI-Company",
-        "X-AI-Role",
-        "X-AI-User-Email",
-        "X-AI-User-Name",
-        "X-Requested-With",
-    ],
-)
-
 _tracking_db: TrackingDB | None = None
 _warehouse_db: WarehouseDB | None = None
 _camera_db: CameraDB | None = None
@@ -631,6 +614,16 @@ async def security_middleware(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     if path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    elif path.startswith("/dashboard-v2/"):
+        # StaticFiles never sets an explicit Cache-Control header for
+        # dashboard-v2/assets/*, which lets the Vercel edge (proxying via
+        # rewrites) apply its own default caching for asset-looking paths —
+        # independent of the ?v= query-string bump. That let a stale
+        # pre-migration app.js keep running in production and silently
+        # create client-only "accounts" that never reached the server. Force
+        # revalidation on every dashboard-v2 asset so a fresh deploy is
+        # always picked up.
+        response.headers["Cache-Control"] = "no-cache"
 
     if path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}:
         actor = _request_actor(request)
@@ -640,6 +633,35 @@ async def security_middleware(request: Request, call_next):
             actor=actor,
         )
     return response
+
+
+# Registered after security_middleware (not alongside the other
+# app.add_middleware calls near the top of the file) so that CORSMiddleware
+# ends up as the OUTERMOST layer — Starlette wraps in the order middleware is
+# added, last-added-wraps-outermost. With CORS registered before
+# security_middleware, an early 401 returned by security_middleware (e.g.
+# when ADMIN_API_KEY is set and no key is supplied) never reached
+# CORSMiddleware at all, so the response carried no
+# Access-Control-Allow-Origin header — the browser reported it as a CORS
+# failure instead of surfacing the real 401, which would silently break
+# every cross-origin caller (including the Vercel-hosted dashboard) the
+# moment API-key auth was turned on.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_env_list("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS),
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-AI-Company",
+        "X-AI-Role",
+        "X-AI-User-Email",
+        "X-AI-User-Name",
+        "X-Requested-With",
+    ],
+)
 
 _process: subprocess.Popen | None = None
 _started_at: float | None = None
