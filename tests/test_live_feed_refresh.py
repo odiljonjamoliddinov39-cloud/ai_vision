@@ -60,8 +60,17 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=25" in html
-    assert "/dashboard-v2/assets/styles.css?v=25" in html
+    assert "/dashboard-v2/assets/app.js?v=26" in html
+    assert "/dashboard-v2/assets/styles.css?v=26" in html
+
+
+def test_dashboard_startup_retries_and_exposes_a_visible_failure_state():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "LOAD_RETRY_DELAYS_MS = [500, 1000, 2000]" in source
+    assert "async function loadDashboard(attempt = 0)" in source
+    assert "Dashboard data could not be loaded" in source
+    assert "data-retry-dashboard" in source
 
 
 def test_live_frame_rate_limits_are_isolated_per_camera_slot(monkeypatch):

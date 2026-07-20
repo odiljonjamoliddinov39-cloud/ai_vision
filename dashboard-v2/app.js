@@ -39,6 +39,9 @@ const state = {
   overview: null,
 };
 
+const LOAD_RETRY_DELAYS_MS = [500, 1000, 2000];
+let loadRetryTimer = null;
+
 // The backend intentionally exposes stable JPEG snapshots instead of one
 // long-lived MJPEG connection per camera. Refresh only the images that are
 // currently mounted so camera pages stay live without rebuilding any module.
@@ -1778,12 +1781,50 @@ async function load() {
   renderModuleContent();
 }
 
+function renderLoadFailure(error, retrying) {
+  const message = error instanceof Error ? error.message : String(error || "Unknown error");
+  els.scopeLine.textContent = retrying ? "Dashboard service connection interrupted — retrying…" : "Unable to load dashboard data";
+  els.detectorState.textContent = retrying ? "Reconnecting…" : "Connection failed";
+  els.detectorState.dataset.state = retrying ? "" : "bad";
+  els.moduleContent.innerHTML = retrying
+    ? `<div class="module-placeholder"><h3>Reconnecting to the dashboard service…</h3><p>The dashboard will resume automatically.</p></div>`
+    : `<div class="module-placeholder">
+        <h3>Dashboard data could not be loaded</h3>
+        <p>${escapeHtml(message)}</p>
+        <button type="button" data-retry-dashboard>Try again</button>
+      </div>`;
+}
+
+async function loadDashboard(attempt = 0) {
+  if (loadRetryTimer !== null) {
+    window.clearTimeout(loadRetryTimer);
+    loadRetryTimer = null;
+  }
+  try {
+    await load();
+    return true;
+  } catch (error) {
+    const retrying = attempt < LOAD_RETRY_DELAYS_MS.length;
+    renderLoadFailure(error, retrying);
+    if (retrying) {
+      loadRetryTimer = window.setTimeout(() => loadDashboard(attempt + 1), LOAD_RETRY_DELAYS_MS[attempt]);
+    } else {
+      toast(error instanceof Error ? error.message : String(error));
+    }
+    return false;
+  }
+}
+
 els.moduleContent.addEventListener("submit", (event) => {
   handleCompanySubmit(event);
   handleSettingsSubmit(event);
   handleAccountSubmit(event);
 });
 els.moduleContent.addEventListener("click", (event) => {
+  if (event.target.closest("[data-retry-dashboard]")) {
+    loadDashboard();
+    return;
+  }
   handleCompanyClick(event);
   handleSettingsClick(event);
   handleAccountClick(event);
@@ -1851,7 +1892,9 @@ els.sidebarToggle.addEventListener("click", () => {
 });
 
 els.refreshBtn.addEventListener("click", () => {
-  load().then(() => toast("Dashboard V2 refreshed.")).catch((error) => toast(error.message));
+  loadDashboard().then((loaded) => {
+    if (loaded) toast("Dashboard V2 refreshed.");
+  });
 });
 
 window.addEventListener("hashchange", () => window.location.reload());
@@ -1863,4 +1906,4 @@ window.addEventListener("beforeunload", stopLiveFrameRefresh);
 
 renderSideCompanies();
 updateBrandAvatar();
-load().catch((error) => toast(error.message));
+loadDashboard();
