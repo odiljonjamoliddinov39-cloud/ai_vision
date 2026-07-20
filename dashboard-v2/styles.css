@@ -583,7 +583,8 @@ input {
   font: inherit;
 }
 
-.cc-add input {
+.cc-add input,
+.cc-add select {
   flex: 1;
   min-height: 38px;
   border: 1px solid var(--line-strong);
@@ -597,7 +598,8 @@ input {
   color: #94a3b8;
 }
 
-.cc-add input:focus {
+.cc-add input:focus,
+.cc-add select:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
@@ -626,7 +628,8 @@ input {
 }
 
 .cc-add-role input[name="name"],
-.cc-add-role input[name="rtsp"] {
+.cc-add-role input[name="host"],
+.cc-add-role input[name="streamPath"] {
   grid-column: 1 / -1;
 }
 
@@ -905,6 +908,49 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+}
+
+.nvr-status {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.nvr-status.ok {
+  color: var(--good);
+}
+
+.nvr-status.bad {
+  color: var(--bad);
+}
+
+.nvr-channels {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.nvr-channel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--panel-strong);
+  color: var(--muted);
+}
+
+.nvr-channel.ok .nvr-channel-status {
+  color: var(--good);
+  font-weight: 600;
+}
+
+.nvr-channel.bad .nvr-channel-status {
+  color: var(--bad);
 }
 
 .feed-empty div {
