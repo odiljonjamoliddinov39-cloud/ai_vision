@@ -209,6 +209,73 @@ def test_start_detection_syncs_config_from_active_camera_slots(monkeypatch, tmp_
     assert [camera["slot_number"] for camera in data["cameras"]] == [1, 2]
 
 
+def test_start_detection_clears_manual_stop_latch_even_when_validation_fails(monkeypatch):
+    monkeypatch.setattr(server, "_detector_pid", lambda: None)
+    monkeypatch.setattr(server, "_sync_config_active_cameras", lambda db: None)
+    monkeypatch.setattr(server, "_get_camera_db", lambda: None)
+
+    def _raise_validation_error():
+        raise server.HTTPException(status_code=400, detail="Camera slot not reachable yet.")
+
+    monkeypatch.setattr(server, "_validate_active_cameras_for_start", _raise_validation_error)
+    server._manual_stop_requested = True
+
+    try:
+        server.start_detection()
+        assert False, "expected start_detection to raise"
+    except server.HTTPException:
+        pass
+
+    # A start attempt that fails validation must still unblock the watchdog,
+    # otherwise a transient failure (e.g. a freshly reconnected RTSP stream
+    # that hasn't sent its first keyframe yet) permanently disables
+    # auto-recovery until someone restarts the container.
+    assert server._manual_stop_requested is False
+
+
+def test_camera_controller_registration_succeeds_even_if_detection_fails_to_start(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"cameras": [], "detection": {"model_path": "dummy"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_camera_db", None)
+    monkeypatch.setattr(server, "_detector_pid", lambda: None)
+
+    def _raise_validation_error(request=None):
+        raise server.HTTPException(status_code=400, detail="Camera slot not reachable yet.")
+
+    monkeypatch.setattr(server, "start_detection", _raise_validation_error)
+
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/camera-controller",
+        json={
+            "name": "Warehouse NVR",
+            "host": "8.8.8.8",
+            "protocol": "rtsp",
+            "channel_count": 2,
+            "make_active": True,
+            "test_controller": False,
+            "test_streams": False,
+        },
+    )
+
+    # The cameras were genuinely created and activated; a transient failure
+    # to (re)start detection right afterward shouldn't turn that into an
+    # error response.
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["created"]) == 2
+    assert len(body["active_cameras"]) == 2
+
+
 def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

@@ -2385,7 +2385,17 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
         _sync_config_active_cameras(db)
         if _status()["running"]:
             stop_detection()
+        # Always attempt a (re)start so newly added channels start
+        # transmitting immediately instead of waiting on the next NVR
+        # change to happen to restart detection. A freshly reconnected RTSP
+        # stream can fail the stricter start-time stream check (e.g. no
+        # keyframe yet) even though the endpoint itself is reachable; that
+        # shouldn't fail this request since the cameras were already saved
+        # and activated above — the watchdog retries shortly after.
+        try:
             start_detection(StartRequest())
+        except HTTPException:
+            pass
 
     cameras = db.list_cameras(include_secret=False)
     active_cameras = [row for row in cameras if row["is_active"]]
@@ -2503,13 +2513,19 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     request = request or StartRequest()
     if _detector_pid() is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
+    # Clear the manual-stop latch as soon as a start is attempted, not after
+    # validation succeeds. Otherwise a start that's triggered right after a
+    # stop (e.g. restarting to pick up a newly added camera) and then fails
+    # validation (a stream that hasn't sent its first keyframe yet, briefly
+    # unreachable, etc.) leaves _manual_stop_requested stuck True, which
+    # permanently blocks the watchdog from ever retrying.
+    _manual_stop_requested = False
     # Treat the camera database as the source of truth. This prevents a stale
     # config/config.yaml (for example the demo camera checked into the repo) from
     # making the detector process only slot 1 while the dashboard has many active
     # NVR/controller channels saved in SQLite.
     _sync_config_active_cameras(_get_camera_db())
     _validate_active_cameras_for_start()
-    _manual_stop_requested = False
     _clear_live_frames()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
