@@ -49,6 +49,7 @@ from webauthn.helpers.structs import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
+from database.accounts_db import AccountsDB  # noqa: E402
 from database.catalog_db import CatalogDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
@@ -68,6 +69,7 @@ CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
 SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
 CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
+ACCOUNTS_DB_PATH = ROOT / "database" / "accounts.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
@@ -111,6 +113,7 @@ _camera_db: CameraDB | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _access_control_db: AccessControlDB | None = None
 _catalog_db: CatalogDB | None = None
+_accounts_db: AccountsDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
 _catalog_recognition_task: asyncio.Task | None = None
@@ -281,6 +284,13 @@ def _get_catalog_db() -> CatalogDB:
     if _catalog_db is None:
         _catalog_db = CatalogDB(db_path=str(CATALOG_DB_PATH))
     return _catalog_db
+
+
+def _get_accounts_db() -> AccountsDB:
+    global _accounts_db
+    if _accounts_db is None:
+        _accounts_db = AccountsDB(db_path=str(ACCOUNTS_DB_PATH))
+    return _accounts_db
 
 
 def _get_camera_db() -> CameraDB:
@@ -658,6 +668,41 @@ class ConfigPatch(BaseModel):
     snapshot_cooldown_seconds: int | None = Field(default=None, ge=0)
     logging_enabled: bool | None = None
     recognition_model: str | None = Field(default=None, min_length=1)
+
+
+class CompanyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class CompanyRename(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class CameraConfigUpdate(BaseModel):
+    cameraConfig: dict[str, Any]  # noqa: N815 - matches the JS wire shape
+
+
+class RoleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    login: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+    access_camera: bool = False
+    access_analytics: bool = False
+
+
+class RoleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    login: str | None = Field(default=None, min_length=1, max_length=80)
+    password: str | None = Field(default=None, min_length=1, max_length=200)
+    access_camera: bool | None = None
+    access_analytics: bool | None = None
+
+
+class ProfileUpdate(BaseModel):
+    login: str | None = Field(default=None, min_length=1, max_length=80)
+    password: str | None = Field(default=None, min_length=1, max_length=200)
+    avatar: str | None = None
+    remove_avatar: bool = False
 
 
 class ItemCreate(BaseModel):
@@ -2905,6 +2950,124 @@ def export_catalog_results(scope_id: str) -> Response:
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/v2/companies")
+def list_companies() -> dict[str, Any]:
+    return {"companies": _get_accounts_db().list_companies()}
+
+
+@app.post("/api/v2/companies")
+def create_company(payload: CompanyCreate) -> dict[str, Any]:
+    company = _get_accounts_db().create_company(payload.name.strip())
+    _audit("company_created", {"company_id": company["id"], "name": company["name"]})
+    return company
+
+
+@app.put("/api/v2/companies/{company_id}")
+def rename_company(company_id: str, payload: CompanyRename) -> dict[str, Any]:
+    company = _get_accounts_db().rename_company(company_id, payload.name.strip())
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found.")
+    return company
+
+
+@app.delete("/api/v2/companies/{company_id}")
+def delete_company(company_id: str) -> dict[str, Any]:
+    deleted = _get_accounts_db().delete_company(company_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Company not found.")
+    _audit("company_deleted", {"company_id": company_id})
+    return {"deleted": True, "company_id": company_id}
+
+
+@app.put("/api/v2/companies/{company_id}/camera-config")
+def update_camera_config(company_id: str, payload: CameraConfigUpdate) -> dict[str, Any]:
+    nvrs = payload.cameraConfig.get("nvrs") or []
+    if len(nvrs) > 5:
+        raise HTTPException(status_code=400, detail="A company may connect at most 5 NVRs.")
+    for nvr in nvrs:
+        if int(nvr.get("slots") or 0) > 15:
+            raise HTTPException(status_code=400, detail="Each NVR may expose at most 15 camera slots.")
+    company = _get_accounts_db().set_camera_config(company_id, payload.cameraConfig)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found.")
+    return company
+
+
+@app.post("/api/v2/companies/{company_id}/roles")
+def create_role(company_id: str, payload: RoleCreate) -> dict[str, Any]:
+    if _get_accounts_db().get_company(company_id) is None:
+        raise HTTPException(status_code=404, detail="Company not found.")
+    try:
+        role = _get_accounts_db().create_role(
+            company_id,
+            payload.name.strip(),
+            payload.login.strip(),
+            payload.password,
+            access_camera=payload.access_camera,
+            access_analytics=payload.access_analytics,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _audit("role_created", {"company_id": company_id, "role_id": role["id"], "login": role["login"]})
+    return role
+
+
+@app.put("/api/v2/roles/{role_id}")
+def update_role(role_id: str, payload: RoleUpdate) -> dict[str, Any]:
+    if _get_accounts_db().get_role(role_id) is None:
+        raise HTTPException(status_code=404, detail="Role not found.")
+    try:
+        role = _get_accounts_db().update_role(
+            role_id,
+            name=payload.name.strip() if payload.name is not None else None,
+            login=payload.login.strip() if payload.login is not None else None,
+            password=payload.password,
+            access_camera=payload.access_camera,
+            access_analytics=payload.access_analytics,
+        )
+    except Exception as exc:  # duplicate login, etc.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return role  # type: ignore[return-value]
+
+
+@app.delete("/api/v2/roles/{role_id}")
+def delete_role(role_id: str) -> dict[str, Any]:
+    deleted = _get_accounts_db().delete_role(role_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Role not found.")
+    _audit("role_deleted", {"role_id": role_id})
+    return {"deleted": True, "role_id": role_id}
+
+
+@app.get("/api/v2/accounts/{role_id}")
+def get_account(role_id: str) -> dict[str, Any]:
+    account = _get_accounts_db().get_role_public(role_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return account
+
+
+@app.get("/api/v2/admin/profile")
+def get_admin_profile() -> dict[str, Any]:
+    return _get_accounts_db().get_profile()
+
+
+@app.put("/api/v2/admin/profile")
+def update_admin_profile(payload: ProfileUpdate) -> dict[str, Any]:
+    if payload.avatar and len(payload.avatar) > 3 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Profile picture is too large.")
+    avatar_value: str | None = "__unset__"
+    if payload.remove_avatar:
+        avatar_value = None
+    elif payload.avatar is not None:
+        avatar_value = payload.avatar
+    return _get_accounts_db().update_profile(
+        login=payload.login.strip() if payload.login else None,
+        password=payload.password,
+        avatar=avatar_value,
     )
 
 

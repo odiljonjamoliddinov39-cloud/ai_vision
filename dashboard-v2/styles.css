@@ -875,16 +875,6 @@ input {
   min-width: 0;
 }
 
-.cc-link-pending {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12.5px;
-}
-
-.cc-unsaved[hidden] {
-  display: none;
-}
-
 .acc-block {
   display: grid;
   gap: 12px;
@@ -1298,53 +1288,6 @@ h3 .muted {
 .settings-upload:hover {
   border-color: var(--primary);
   color: var(--primary);
-}
-
-.cc-save-row {
-  position: sticky;
-  bottom: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 18px;
-  pointer-events: none;
-}
-
-.cc-save-row > * {
-  pointer-events: auto;
-}
-
-.cc-unsaved {
-  color: var(--warn);
-  font-size: 13px;
-  padding: 6px 12px;
-  border: 1px solid var(--warn-border);
-  border-radius: 999px;
-  background: var(--warn-soft);
-}
-
-.cc-save {
-  border-color: var(--primary);
-  background: var(--primary);
-  color: var(--on-primary);
-  font-weight: 600;
-  padding: 0 22px;
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25);
-}
-
-.cc-save:hover:not(:disabled) {
-  background: var(--primary-strong);
-  border-color: var(--primary-strong);
-}
-
-.cc-save:disabled {
-  opacity: 0.5;
-  cursor: default;
-  border-color: var(--line-strong);
-  background: var(--panel);
-  color: var(--muted);
-  box-shadow: none;
 }
 
 .chart-note {
