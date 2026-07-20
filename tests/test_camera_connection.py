@@ -233,6 +233,70 @@ def test_start_detection_clears_manual_stop_latch_even_when_validation_fails(mon
     assert server._manual_stop_requested is False
 
 
+def test_validate_active_cameras_excludes_unreachable_cameras_instead_of_blocking_all(
+    monkeypatch, tmp_path
+):
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"cameras": [], "detection": {"model_path": "dummy"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_camera_db", None)
+
+    db = server._get_camera_db()
+    good = db.add_camera("Good Camera", "dummy", "unknown")
+    # A bare IP with no scheme fails _camera_stream_endpoint's validation
+    # immediately, with no real network call - a deterministic stand-in for
+    # a genuinely unreachable/misconfigured camera.
+    bad = db.add_camera("Bad Camera", "192.168.137.87", "unknown")
+    db.assign_slot(good["id"], 1)
+    db.assign_slot(bad["id"], 2)
+
+    # One unreachable camera used to make the whole call raise, blocking
+    # every other (working) camera from starting too.
+    server._validate_active_cameras_for_start()
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert [camera["name"] for camera in config["cameras"]] == ["Good Camera"]
+
+    statuses = {camera["name"]: camera["status"] for camera in db.list_cameras(include_secret=False)}
+    assert statuses["Good Camera"] == "connected"
+    assert statuses["Bad Camera"] == "failed"
+
+    # The bad camera stays active (so it keeps showing up and gets retried
+    # on the next start) - it's only excluded from the detector's config.
+    active_names = {
+        camera["name"] for camera in db.list_active_cameras(include_secret=False)
+    }
+    assert active_names == {"Good Camera", "Bad Camera"}
+
+
+def test_validate_active_cameras_still_raises_when_none_are_reachable(monkeypatch, tmp_path):
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"cameras": [], "detection": {"model_path": "dummy"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_camera_db", None)
+
+    db = server._get_camera_db()
+    bad = db.add_camera("Bad Camera", "192.168.137.87", "unknown")
+    db.assign_slot(bad["id"], 1)
+
+    try:
+        server._validate_active_cameras_for_start()
+        assert False, "expected HTTPException"
+    except server.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "none of the active camera slots are reachable" in exc.detail
+
+
 def test_camera_controller_registration_succeeds_even_if_detection_fails_to_start(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 

@@ -1599,22 +1599,33 @@ def _validate_active_cameras_for_start() -> None:
             detail="Assign at least one active camera slot before starting detection.",
         )
 
+    reachable_cameras: list[dict[str, Any]] = []
     failures: list[str] = []
     for camera in active_cameras:
         result = _test_camera_stream(str(camera["stream_url"]))
         db.set_status(camera["id"], result["status"])
-        if result["status"] != "connected":
+        if result["status"] == "connected":
+            reachable_cameras.append(camera)
+        else:
             slot = camera.get("slot_number") or "-"
             failures.append(f"Slot {slot} ({camera['name']}): {result['message']}")
 
-    if failures:
+    if not reachable_cameras:
         raise HTTPException(
             status_code=400,
-            detail="Cannot start detection until active camera slots are reachable. "
-            + " ".join(failures),
+            detail="Cannot start detection - none of the active camera slots are reachable "
+            "right now. " + " ".join(failures),
         )
 
-    _sync_config_active_cameras(db)
+    # One unreachable/misconfigured camera used to block every other camera
+    # from starting - the whole detection process would refuse to launch
+    # until every single active slot passed a real stream test. That
+    # contradicts main.py's own load_cameras(), which already tolerates a
+    # camera failing to open so one bad camera doesn't take down the app.
+    # Cameras that fail here stay active in the database (so they keep
+    # showing up and get retried on the next start) but are left out of the
+    # config the detector process actually opens.
+    _set_config_active_cameras(reachable_cameras)
 
 
 def _status() -> dict[str, Any]:
