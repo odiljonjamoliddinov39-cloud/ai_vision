@@ -1324,23 +1324,29 @@ async function renderCatalogEnrollment(container) {
   }
 }
 
+function catalogResultsTableHtml(results) {
+  const rows = (results || [])
+    .map((result) => {
+      const dims = catalogDimensions(result);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(result.item_name)}</strong></td>
+          <td class="count-cell">${Number(result.quantity).toLocaleString()}</td>
+          <td>${Math.round(Number(result.confidence) * 100)}%</td>
+          <td>${dims ? `${dims.w} × ${dims.h} × ${dims.d} cm` : "Pending 3D measurement"}</td>
+        </tr>
+      `;
+    })
+    .join("");
+  return rows
+    ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<p class="empty">No checked-in catalog item was detected in the latest run yet.</p>`;
+}
+
 async function renderCatalogResults(container) {
   try {
     const payload = await catalogRequest(catalogApiPath("/api/catalog/results"));
     if (!container.isConnected || accountModule !== "analytics") return;
-    const rows = payload.results
-      .map((result) => {
-        const dims = catalogDimensions(result);
-        return `
-          <tr>
-            <td><strong>${escapeHtml(result.item_name)}</strong></td>
-            <td class="count-cell">${Number(result.quantity).toLocaleString()}</td>
-            <td>${Math.round(Number(result.confidence) * 100)}%</td>
-            <td>${dims ? `${dims.w} × ${dims.h} × ${dims.d} cm` : "Pending 3D measurement"}</td>
-          </tr>
-        `;
-      })
-      .join("");
     container.innerHTML = `
       <section class="detected-list">
         <header class="detected-list-head">
@@ -1348,19 +1354,68 @@ async function renderCatalogResults(container) {
             <h3>Detected catalog items</h3>
             <p>Latest 12-hour recognition run: ${escapeHtml(formatCatalogTime(payload.run?.completed_at))}</p>
           </div>
-          <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
+          <div class="detected-list-actions">
+            <button type="button" class="export-button" data-run-live-recognition>Run recognition now</button>
+            <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
+          </div>
         </header>
-        ${
-          rows
-            ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
-            : `<p class="empty">No checked-in catalog item was detected in the latest run yet.</p>`
-        }
+        <div data-catalog-table>${catalogResultsTableHtml(payload.results)}</div>
         <p class="catalog-next-run">Next automatic recognition: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</p>
       </section>
     `;
+    const button = container.querySelector("[data-run-live-recognition]");
+    button?.addEventListener("click", () => startLiveCatalogRecognition(container, button));
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }
+}
+
+// Recognition only needs an instant snapshot of the detector's current
+// spatial objects, but a moving or briefly-occluded item can be missed by
+// any single frame. This samples repeatedly over a few minutes instead
+// (server-side: /api/catalog/recognition/run-live), polling for progress
+// and updating the results table live as matches come in - only ever
+// against items enrolled via AI Check-in, same catalog the scheduled
+// recognition already uses.
+async function startLiveCatalogRecognition(container, button) {
+  button.disabled = true;
+  button.textContent = "Recognizing…";
+  try {
+    const status = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live"), { method: "POST" });
+    pollLiveCatalogRecognition(container, button, status);
+  } catch (error) {
+    if (String(error.message || "").includes("already active")) {
+      pollLiveCatalogRecognition(container, button, { running: true });
+    } else {
+      button.disabled = false;
+      button.textContent = "Run recognition now";
+      toast(error.message);
+    }
+  }
+}
+
+function pollLiveCatalogRecognition(container, button, status) {
+  if (!container.isConnected) return;
+  if (status.results) {
+    const table = container.querySelector("[data-catalog-table]");
+    if (table) table.innerHTML = catalogResultsTableHtml(status.results);
+  }
+  if (!status.running) {
+    void renderCatalogResults(container);
+    return;
+  }
+  const remaining = Number.isFinite(status.remaining_seconds) ? `${status.remaining_seconds}s left` : "…";
+  button.textContent = `Recognizing… ${remaining}`;
+  window.setTimeout(async () => {
+    if (!container.isConnected) return;
+    try {
+      const next = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live/status"));
+      pollLiveCatalogRecognition(container, button, next);
+    } catch {
+      button.disabled = false;
+      button.textContent = "Run recognition now";
+    }
+  }, 3000);
 }
 
 async function renderCatalogDimensions(container) {

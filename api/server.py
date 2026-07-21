@@ -104,6 +104,15 @@ _catalog_run_lock: asyncio.Lock | None = None
 _manual_stop_requested = False
 _watchdog_last_start_attempt = 0.0
 
+# On-demand "run recognition for a few minutes" mode (POST
+# /api/catalog/recognition/run-live): in-memory only, keyed by scope_id.
+# Deliberately not persisted - if the server restarts mid-run the run is
+# simply gone, which is fine for an ephemeral progress indicator.
+_live_catalog_runs: dict[str, dict[str, Any]] = {}
+_live_catalog_tasks: dict[str, asyncio.Task] = {}
+CATALOG_LIVE_RUN_DURATION_SECONDS = 240
+CATALOG_LIVE_RUN_SAMPLE_INTERVAL_SECONDS = 8
+
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "super_admin": {
         "view_dashboard",
@@ -1280,65 +1289,80 @@ def _catalog_frame_embeddings(health: dict[str, Any]) -> dict[str, list[float]]:
     return embeddings
 
 
-def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
-    """Create one immutable catalog-only count snapshot for a scope."""
+def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
+    """One instantaneous pass: match catalog items (only items enrolled via
+    AI Check-in) against whatever the detector's current spatial-object
+    snapshot shows. Pure - reads live state but writes nothing, so both a
+    single scheduled run and a live-run's repeated sampling can share it."""
     from knowledge.similarity import cosine_similarity
 
     db = _get_catalog_db()
     items = db.list_items(scope_id, active_only=True)
     health = _read_json(DETECTION_HEALTH_PATH) or {}
     cameras = health.get("cameras") or []
+    by_camera = health.get("last_spatial_objects_by_camera") or {}
+    if not by_camera and health.get("last_spatial_objects"):
+        fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
+        by_camera = {fallback_name: health.get("last_spatial_objects") or []}
+    frame_embeddings = _catalog_frame_embeddings(health)
+    visual_threshold = float(os.getenv("CATALOG_VISUAL_SIMILARITY_THRESHOLD", "0.94"))
+
+    matches: list[dict[str, Any]] = []
+    for item in items:
+        target = _catalog_normalize_name(item["name"])
+        matched_objects: list[dict[str, Any]] = []
+        for objects in by_camera.values():
+            matched_objects.extend(
+                obj
+                for obj in objects or []
+                if _catalog_normalize_name(obj.get("inventory_name")) == target
+            )
+
+        confidence = 1.0 if matched_objects else 0.0
+        quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in matched_objects)
+        measurement = matched_objects[0] if matched_objects else None
+        method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
+
+        if not matched_objects:
+            references = db.list_images(str(item["id"]), include_embeddings=True)
+            best: tuple[float, str] | None = None
+            for camera_name, frame_embedding in frame_embeddings.items():
+                score = max(
+                    (cosine_similarity(frame_embedding, ref.get("embedding") or []) for ref in references),
+                    default=0.0,
+                )
+                if best is None or score > best[0]:
+                    best = (score, camera_name)
+            if best and best[0] >= visual_threshold:
+                confidence = best[0]
+                camera_objects = by_camera.get(best[1]) or []
+                quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in camera_objects) or 1
+                measurement = camera_objects[0] if camera_objects else None
+                method = "catalog-reference-and-3d"
+
+        matches.append(
+            {
+                "item_id": str(item["id"]),
+                "item_name": str(item["name"]),
+                "quantity": quantity,
+                "confidence": confidence,
+                "dimensions_m": _catalog_dimensions(measurement),
+                "measurement_method": method,
+            }
+        )
+    return matches
+
+
+def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
+    """Create one immutable catalog-only count snapshot for a scope."""
+    db = _get_catalog_db()
+    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    cameras = health.get("cameras") or []
     interval = _catalog_interval_hours()
     run_id = db.start_run(scope_id, interval, len(cameras))
     try:
-        by_camera = health.get("last_spatial_objects_by_camera") or {}
-        if not by_camera and health.get("last_spatial_objects"):
-            fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
-            by_camera = {fallback_name: health.get("last_spatial_objects") or []}
-        frame_embeddings = _catalog_frame_embeddings(health)
-        visual_threshold = float(os.getenv("CATALOG_VISUAL_SIMILARITY_THRESHOLD", "0.94"))
-
-        for item in items:
-            target = _catalog_normalize_name(item["name"])
-            matched_objects: list[dict[str, Any]] = []
-            for objects in by_camera.values():
-                matched_objects.extend(
-                    obj
-                    for obj in objects or []
-                    if _catalog_normalize_name(obj.get("inventory_name")) == target
-                )
-
-            confidence = 1.0 if matched_objects else 0.0
-            quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in matched_objects)
-            measurement = matched_objects[0] if matched_objects else None
-            method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
-
-            if not matched_objects:
-                references = db.list_images(str(item["id"]), include_embeddings=True)
-                best: tuple[float, str] | None = None
-                for camera_name, frame_embedding in frame_embeddings.items():
-                    score = max(
-                        (cosine_similarity(frame_embedding, ref.get("embedding") or []) for ref in references),
-                        default=0.0,
-                    )
-                    if best is None or score > best[0]:
-                        best = (score, camera_name)
-                if best and best[0] >= visual_threshold:
-                    confidence = best[0]
-                    camera_objects = by_camera.get(best[1]) or []
-                    quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in camera_objects) or 1
-                    measurement = camera_objects[0] if camera_objects else None
-                    method = "catalog-reference-and-3d"
-
-            db.add_result(
-                run_id=run_id,
-                item_id=str(item["id"]),
-                item_name=str(item["name"]),
-                quantity=quantity,
-                confidence=confidence,
-                dimensions_m=_catalog_dimensions(measurement),
-                measurement_method=method,
-            )
+        for match in _catalog_match_current_frame(scope_id):
+            db.add_result(run_id=run_id, **match)
         db.complete_run(run_id)
     except Exception:
         db.complete_run(run_id, status="failed")
@@ -1348,6 +1372,67 @@ def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
         "results": db.latest_results(scope_id),
         "schedule": _catalog_schedule(scope_id),
     }
+
+
+def _live_catalog_status_payload(scope_id: str) -> dict[str, Any]:
+    state = _live_catalog_runs.get(scope_id)
+    if not state:
+        return {"running": False}
+    running = state["status"] == "running"
+    remaining = 0
+    if running:
+        ends_at = _catalog_datetime(state["ends_at"])
+        if ends_at is not None:
+            remaining = max(0, int((ends_at - datetime.now(timezone.utc)).total_seconds()))
+    results = sorted(
+        state["items"].values(), key=lambda result: (-result["quantity"], result["item_name"])
+    )
+    return {
+        "running": running,
+        "status": state["status"],
+        "started_at": state["started_at"],
+        "ends_at": state["ends_at"],
+        "remaining_seconds": remaining,
+        "results": results,
+        "run_id": state.get("run_id"),
+    }
+
+
+async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> None:
+    global _catalog_run_lock
+    state = _live_catalog_runs[scope_id]
+    try:
+        while datetime.now(timezone.utc) < ends_at:
+            try:
+                matches = await asyncio.to_thread(_catalog_match_current_frame, scope_id)
+            except Exception as exc:  # keep sampling - one bad sample shouldn't end the run
+                state["error"] = str(exc)
+            else:
+                for match in matches:
+                    if match["quantity"] <= 0:
+                        continue
+                    existing = state["items"].get(match["item_id"])
+                    if existing is None or match["confidence"] > existing["confidence"]:
+                        state["items"][match["item_id"]] = match
+            remaining = (ends_at - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(CATALOG_LIVE_RUN_SAMPLE_INTERVAL_SECONDS, remaining))
+    finally:
+        if _catalog_run_lock is None:
+            _catalog_run_lock = asyncio.Lock()
+        async with _catalog_run_lock:
+            db = _get_catalog_db()
+            health = _read_json(DETECTION_HEALTH_PATH) or {}
+            run_id = db.start_run(
+                scope_id, _catalog_interval_hours(), len(health.get("cameras") or [])
+            )
+            for match in state["items"].values():
+                db.add_result(run_id=run_id, **match)
+            db.complete_run(run_id)
+        state["status"] = "completed"
+        state["run_id"] = run_id
+        _audit("catalog_recognition_completed", {"scope_id": scope_id, "run_id": run_id, "mode": "live"})
 
 
 def _run_due_catalog_scopes() -> None:
@@ -3046,6 +3131,36 @@ async def run_catalog_recognition(scope_id: str) -> dict[str, Any]:
         result = await asyncio.to_thread(_run_catalog_recognition, scope)
     _audit("catalog_recognition_completed", {"scope_id": scope, "run_id": result["run"]["id"]})
     return result
+
+
+@app.post("/api/catalog/recognition/run-live")
+async def start_live_catalog_recognition(scope_id: str) -> dict[str, Any]:
+    """Sample the catalog's items against the live camera feeds repeatedly
+    over CATALOG_LIVE_RUN_DURATION_SECONDS instead of a single instant
+    snapshot - a slow-moving or briefly-occluded item is more likely to be
+    caught. Only matches items enrolled via AI Check-in (same catalog the
+    scheduled/instant recognition uses)."""
+    scope = _catalog_scope(scope_id)
+    existing = _live_catalog_runs.get(scope)
+    if existing and existing["status"] == "running":
+        raise HTTPException(status_code=409, detail="A live recognition run is already active for this scope.")
+
+    started_at = datetime.now(timezone.utc)
+    ends_at = started_at + timedelta(seconds=CATALOG_LIVE_RUN_DURATION_SECONDS)
+    _live_catalog_runs[scope] = {
+        "status": "running",
+        "started_at": started_at.isoformat(),
+        "ends_at": ends_at.isoformat(),
+        "items": {},
+    }
+    _live_catalog_tasks[scope] = asyncio.create_task(_run_live_catalog_recognition(scope, ends_at))
+    return _live_catalog_status_payload(scope)
+
+
+@app.get("/api/catalog/recognition/run-live/status")
+def live_catalog_recognition_status(scope_id: str) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    return _live_catalog_status_payload(scope)
 
 
 def _catalog_export_workbook(scope_id: str) -> bytes:

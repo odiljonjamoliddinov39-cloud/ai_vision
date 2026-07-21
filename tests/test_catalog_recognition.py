@@ -213,3 +213,135 @@ def test_dashboard_exposes_multi_image_catalog_results_excel_and_3d_views():
     assert "NVR Disconnected" not in source
     assert "Low Production Rate" not in source
     assert 'CATALOG_RECOGNITION_INTERVAL_HOURS: "12"' in compose
+
+
+def test_live_catalog_recognition_samples_repeatedly_and_persists_a_completed_run(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Blue crate")
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [],
+                "last_spatial_objects_by_camera": {
+                    "Camera 1": [{"inventory_name": "Blue crate", "quantity": 3}]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+    monkeypatch.setattr(server, "CATALOG_LIVE_RUN_SAMPLE_INTERVAL_SECONDS", 0.05)
+    server._live_catalog_runs.clear()
+
+    started_at = server.datetime.now(server.timezone.utc)
+    ends_at = started_at + server.timedelta(seconds=0.2)
+    server._live_catalog_runs["warehouse-a"] = {
+        "status": "running",
+        "started_at": started_at.isoformat(),
+        "ends_at": ends_at.isoformat(),
+        "items": {},
+    }
+
+    asyncio.run(server._run_live_catalog_recognition("warehouse-a", ends_at))
+
+    state = server._live_catalog_runs["warehouse-a"]
+    assert state["status"] == "completed"
+    assert state["items"][item["id"]]["quantity"] == 3
+
+    run = db.latest_run("warehouse-a")
+    assert run is not None
+    assert run["status"] == "completed"
+    results = db.latest_results("warehouse-a")
+    assert results[0]["item_name"] == "Blue crate"
+    assert results[0]["quantity"] == 3
+
+
+def test_live_catalog_recognition_only_matches_catalog_items(tmp_path, monkeypatch):
+    # Confirms the requirement that a live run only ever recognizes items
+    # enrolled via AI Check-in - it reuses _catalog_match_current_frame,
+    # which is scoped to db.list_items(), not raw detector output.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, _ = _catalog_with_item(tmp_path, name="Blue crate")
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [],
+                "last_spatial_objects_by_camera": {
+                    "Camera 1": [
+                        {"inventory_name": "Blue crate", "quantity": 1},
+                        {"inventory_name": "Random forklift", "quantity": 5},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+
+    matches = server._catalog_match_current_frame("warehouse-a")
+
+    assert [match["item_name"] for match in matches] == ["Blue crate"]
+
+
+def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Blue crate")
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [],
+                "last_spatial_objects_by_camera": {
+                    "Camera 1": [{"inventory_name": "Blue crate", "quantity": 2}]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+    monkeypatch.setattr(server, "CATALOG_LIVE_RUN_DURATION_SECONDS", 0.2)
+    monkeypatch.setattr(server, "CATALOG_LIVE_RUN_SAMPLE_INTERVAL_SECONDS", 0.05)
+    server._live_catalog_runs.clear()
+
+    with TestClient(server.app) as client:
+        start = client.post("/api/catalog/recognition/run-live", params={"scope_id": "warehouse-a"})
+        assert start.status_code == 200
+        assert start.json()["running"] is True
+
+        again = client.post("/api/catalog/recognition/run-live", params={"scope_id": "warehouse-a"})
+        assert again.status_code == 409
+
+        import time
+
+        for _ in range(50):
+            status = client.get(
+                "/api/catalog/recognition/run-live/status", params={"scope_id": "warehouse-a"}
+            ).json()
+            if not status["running"]:
+                break
+            time.sleep(0.05)
+
+        assert status["running"] is False
+        assert status["results"][0]["item_name"] == "Blue crate"
+        assert status["results"][0]["quantity"] == 2
+
+        results = client.get("/api/catalog/results", params={"scope_id": "warehouse-a"}).json()
+        assert results["results"][0]["item_id"] == item["id"]
+
+
+def test_dashboard_has_a_run_recognition_now_button_that_polls_live_progress():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-run-live-recognition' in source
+    assert '"Run recognition now"' in source
+    assert 'catalogApiPath("/api/catalog/recognition/run-live")' in source
+    assert 'catalogApiPath("/api/catalog/recognition/run-live/status")' in source
+    assert "function pollLiveCatalogRecognition(container, button, status)" in source
+    assert '"already active"' in source
