@@ -751,6 +751,10 @@ class CameraSlotRequest(BaseModel):
     slot_number: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
 
 
+class CameraCleanupRequest(BaseModel):
+    name_prefix: str = Field(min_length=1)
+
+
 class CameraControllerCreate(BaseModel):
     name: str = Field(default="Camera Controller", min_length=1)
     host: str = Field(min_length=1)
@@ -2526,6 +2530,56 @@ def delete_saved_camera(camera_id: int) -> dict[str, Any]:
         "cameras": cameras,
         "active_cameras": active_cameras,
         "active_camera": active_cameras[0] if active_cameras else None,
+    }
+
+
+@app.post("/api/cameras/cleanup")
+def cleanup_cameras_by_name(request: CameraCleanupRequest) -> dict[str, Any]:
+    """Bulk-delete every camera whose name starts with the given prefix.
+
+    For clearing out stale rows left behind by the environment-based boot
+    seed (see _seed_cameras_from_environment) - those get created once with
+    whatever stream URL was correct/available at the time, stored as a
+    literal string, and never retroactively updated by a later code or env
+    var change. A camera named e.g. "Warehouse NVR Camera 7" with a wrong
+    URL baked in from months ago has to be deleted and re-added, not
+    patched.
+    """
+    prefix = request.name_prefix.strip()
+    if not prefix:
+        raise HTTPException(status_code=400, detail="name_prefix is required.")
+
+    db = _get_camera_db()
+    matches = [
+        camera
+        for camera in db.list_cameras(include_secret=False)
+        if str(camera.get("name", "")).startswith(prefix)
+    ]
+
+    deleted = []
+    any_active = False
+    for camera in matches:
+        if camera.get("is_active"):
+            any_active = True
+        if db.delete_camera(camera["id"]):
+            deleted.append({"id": camera["id"], "name": camera["name"]})
+
+    if any_active:
+        _sync_config_active_cameras(db)
+        if _status()["running"]:
+            stop_detection()
+        try:
+            start_detection(StartRequest())
+        except HTTPException:
+            pass
+
+    cameras = db.list_cameras(include_secret=False)
+    active_cameras = [row for row in cameras if row["is_active"]]
+    return {
+        "deleted": deleted,
+        "deleted_count": len(deleted),
+        "cameras": cameras,
+        "active_cameras": active_cameras,
     }
 
 
