@@ -109,6 +109,47 @@ def test_local_webcam_source_still_uses_opencv():
     run.assert_called_once()
 
 
+def test_camera_stream_check_falls_back_when_ffmpeg_backend_cant_open_by_name(
+    monkeypatch, tmp_path
+):
+    # Runs the real subprocess (not a mocked one) with a fake cv2 module on
+    # its PYTHONPATH so the actual embedded fallback logic executes, not a
+    # stand-in for it. The fake cv2.VideoCapture fails when called with an
+    # explicit backend (CAP_FFMPEG, what's tried first for rtsp://) and
+    # succeeds when called with no backend argument (the fallback).
+    fake_cv2 = tmp_path / "cv2.py"
+    fake_cv2.write_text(
+        r"""
+CAP_FFMPEG = 1
+CAP_DSHOW = 2
+
+class _Cap:
+    def __init__(self, opens):
+        self._opens = opens
+
+    def isOpened(self):
+        return self._opens
+
+    def read(self):
+        return True, "frame"
+
+    def release(self):
+        pass
+
+
+def VideoCapture(*args):
+    backend = args[1] if len(args) > 1 else None
+    return _Cap(opens=backend is None)
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    with patch("api.server.socket.create_connection"):
+        result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
+
+    assert result["status"] == "connected"
+
+
 def test_controller_stream_url_builds_channel_rtsp_url_with_credentials():
     controller = CameraControllerCreate(
         name="NVR",
