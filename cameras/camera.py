@@ -49,9 +49,31 @@ class Camera:
         self._frame_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._reader_thread: threading.Thread | None = None
-        self._open()
+        self._open_with_fallback()
         if self._is_network_stream:
             self._start_reader()
+
+    def _open_with_fallback(self) -> None:
+        # The first attempt (usually CAP_FFMPEG for RTSP) sometimes fails
+        # with an OpenCV-level "backend is generally available but can't
+        # be used to capture by name" error even though the exact same
+        # source opens fine elsewhere (a real, observed OpenCV quirk, not
+        # a network/credentials problem) - falling back to the other
+        # configured backend(s) before giving up on the initial connect
+        # resolves it. _try_reconnect() already does this for a connection
+        # that drops after a successful open; this covers the initial one.
+        last_error: ConnectionError | None = None
+        for index in range(len(self._backends)):
+            self._backend_index = index
+            try:
+                self._open()
+                return
+            except ConnectionError as exc:
+                last_error = exc
+                if index < len(self._backends) - 1:
+                    print(f"{exc} - trying next backend...")
+        if last_error is not None:
+            raise last_error
 
     def _open(self) -> None:
         if self._dummy:

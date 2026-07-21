@@ -1008,6 +1008,16 @@ input {
   box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.2);
 }
 
+.feed-transmitting.feed-stale-badge {
+  background: rgba(69, 10, 10, 0.86);
+  color: #fecaca;
+}
+
+.feed-transmitting.feed-stale-badge::before {
+  background: #f87171;
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.2);
+}
+
 .ai-list,
 .dim-list {
   margin-top: 16px;
