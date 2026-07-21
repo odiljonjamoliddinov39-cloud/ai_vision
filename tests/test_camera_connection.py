@@ -297,6 +297,69 @@ def test_validate_active_cameras_still_raises_when_none_are_reachable(monkeypatc
         assert "none of the active camera slots are reachable" in exc.detail
 
 
+def test_camera_controller_registers_more_channels_than_free_slots_without_failing(
+    monkeypatch, tmp_path
+):
+    from fastapi.testclient import TestClient
+
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"cameras": [], "detection": {"model_path": "dummy"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_camera_db", None)
+    monkeypatch.setattr(server, "_detector_pid", lambda: None)
+    # A small ceiling makes it easy to exceed deterministically instead of
+    # registering 50+ channels just to prove the same point.
+    monkeypatch.setattr(server, "MAX_CAMERA_SLOTS", 3)
+    monkeypatch.setattr(server, "start_detection", lambda request=None: None)
+
+    client = TestClient(server.app)
+    # The default seeded "Camera 1" already occupies slot 1, leaving 2 free
+    # slots (2 and 3) out of the lowered 3-slot ceiling.
+    response = client.post(
+        "/api/camera-controller",
+        json={
+            "name": "Big NVR",
+            "host": "8.8.8.8",
+            "protocol": "rtsp",
+            "channel_count": 5,
+            "make_active": True,
+            "test_controller": False,
+            "test_streams": False,
+        },
+    )
+
+    # Registering more channels than there's slot budget for must not fail
+    # the whole request - every channel still gets saved and tested.
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["created"]) == 5
+
+    results = body["results"]
+    activated = [result for result in results if result["active"]]
+    not_activated = [result for result in results if not result["active"]]
+
+    assert len(activated) == 2
+    assert {result["slot_number"] for result in activated} == {2, 3}
+    assert len(not_activated) == 3
+    for result in not_activated:
+        assert result["slot_number"] is None
+        assert result["status"] == "connected"
+        assert "no free camera slot" in result["message"]
+
+    # The channels that didn't get a slot still exist as registered cameras
+    # - they're just inactive, ready to be activated later once a slot
+    # frees up.
+    cameras = body["cameras"]
+    assert len(cameras) == 6  # default Camera 1 + 5 new channels
+    assert sum(1 for camera in cameras if camera["is_active"]) == 3
+
+
 def test_camera_controller_registration_succeeds_even_if_detection_fails_to_start(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
@@ -337,7 +400,11 @@ def test_camera_controller_registration_succeeds_even_if_detection_fails_to_star
     assert response.status_code == 200
     body = response.json()
     assert len(body["created"]) == 2
-    assert len(body["active_cameras"]) == 2
+    # 3, not 2: the default seeded "Camera 1" already occupies slot 1, and
+    # the new channels now land on the next genuinely free slots (2 and 3)
+    # instead of evicting it just because their requested start_slot (1)
+    # happened to collide with an already-active camera.
+    assert len(body["active_cameras"]) == 3
 
 
 def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_path):

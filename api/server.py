@@ -2325,14 +2325,6 @@ def save_camera(camera: CameraCreate) -> dict[str, Any]:
 
 @app.post("/api/camera-controller")
 def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]:
-    last_slot = controller.start_slot + controller.channel_count - 1
-    if last_slot > MAX_CAMERA_SLOTS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Controller channels would exceed slot {MAX_CAMERA_SLOTS}. "
-            f"Use fewer channels or a lower start slot.",
-        )
-
     endpoint = _controller_endpoint(controller)
     if not endpoint["host"]:
         raise HTTPException(status_code=400, detail="Controller IP/host is required.")
@@ -2352,9 +2344,24 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
     test_results = []
     controller_reachable = controller_error is None
 
+    # A camera can be registered (saved, tested, shown on the dashboard)
+    # without being active (occupying a real slot the detector actually
+    # opens a connection to). MAX_CAMERA_SLOTS bounds how many cameras can
+    # be active - i.e. actually connected - at once, to protect the
+    # droplet's CPU/memory/bandwidth; it does not bound how many cameras
+    # can be registered. A controller with more channels than there are
+    # free slots right now still saves and tests every channel - it just
+    # leaves the channels beyond the free-slot budget registered but
+    # inactive instead of rejecting the whole request.
+    used_slots = {
+        int(camera["slot_number"])
+        for camera in db.list_active_cameras(include_secret=False)
+        if camera.get("slot_number") is not None
+    }
+    next_slot = max(controller.start_slot, 1)
+
     for index in range(controller.channel_count):
         channel = controller.channel_start + index
-        slot = controller.start_slot + index
         stream_url = _controller_stream_url(controller, channel)
 
         if controller.test_streams and controller_reachable:
@@ -2371,23 +2378,37 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
             }
 
         saved = db.add_camera(
-            name=_controller_camera_name(controller, channel, slot),
+            name=_controller_camera_name(controller, channel, next_slot),
             stream_url=stream_url,
             status=test_result["status"],
         )
 
         active = None
+        assigned_slot = None
+        message = test_result["message"]
         if controller.make_active and test_result["status"] == "connected":
-            active = db.assign_slot(saved["id"], slot)
+            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+                next_slot += 1
+            if next_slot <= MAX_CAMERA_SLOTS:
+                active = db.assign_slot(saved["id"], next_slot)
+                used_slots.add(next_slot)
+                assigned_slot = next_slot
+                next_slot += 1
+            else:
+                message = (
+                    f"Reachable, but no free camera slot is available right now "
+                    f"({MAX_CAMERA_SLOTS} active slot limit reached). Deactivate "
+                    "another camera to free one up for this one."
+                )
 
         saved_cameras.append(db.get_camera(saved["id"], include_secret=False))
         test_results.append(
             {
                 "camera_id": saved["id"],
-                "slot_number": slot,
+                "slot_number": assigned_slot,
                 "channel": channel,
                 "status": test_result["status"],
-                "message": test_result["message"],
+                "message": message,
                 "active": active is not None,
             }
         )
