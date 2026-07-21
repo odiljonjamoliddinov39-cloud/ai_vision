@@ -1137,7 +1137,14 @@ async function nextAvailableCameraSlot() {
   const usedSlots = (cameras || [])
     .filter((camera) => camera.is_active && camera.slot_number != null)
     .map((camera) => Number(camera.slot_number));
-  return usedSlots.length ? Math.max(...usedSlots) + 1 : 1;
+  // Must stay within [1, MAX_NVR_SLOTS] - the backend's start_slot field
+  // rejects anything higher with a 422, even though it's perfectly able to
+  // register channels beyond the free-slot budget as inactive instead of
+  // failing the whole request (see _register_controller_channels). Without
+  // this clamp, once every slot up to MAX_NVR_SLOTS is in use, adding any
+  // new NVR fails outright instead of falling back to that behavior.
+  const next = usedSlots.length ? Math.max(...usedSlots) + 1 : 1;
+  return Math.min(next, MAX_NVR_SLOTS);
 }
 
 async function registerNvrController(fields) {
