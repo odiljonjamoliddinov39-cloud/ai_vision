@@ -57,6 +57,13 @@ function liveFrameUrl(slot) {
   return url.toString();
 }
 
+function setFeedBadgeLive(image, isLive) {
+  const badge = image.parentElement?.querySelector(".feed-transmitting");
+  if (!badge) return;
+  badge.textContent = isLive ? "Transmitting live" : "No signal";
+  badge.classList.toggle("feed-stale-badge", !isLive);
+}
+
 async function refreshLiveFrameImage(image) {
   if (image.dataset.liveLoading === "true") return;
   const slot = image.dataset.liveSlot;
@@ -76,12 +83,14 @@ async function refreshLiveFrameImage(image) {
       image.classList.remove("feed-stale");
       image.removeAttribute("title");
       image.dataset.liveLastUpdate = new Date().toISOString();
+      setFeedBadgeLive(image, true);
       delete image.dataset.liveLoading;
     };
     image.onerror = () => {
       URL.revokeObjectURL(nextObjectUrl);
       image.classList.add("feed-stale");
       image.title = "Waiting for a fresh camera frame";
+      setFeedBadgeLive(image, false);
       delete image.dataset.liveLoading;
     };
     image.dataset.liveObjectUrl = nextObjectUrl;
@@ -90,6 +99,7 @@ async function refreshLiveFrameImage(image) {
     if (image.isConnected) {
       image.classList.add("feed-stale");
       image.title = "Waiting for a fresh camera frame";
+      setFeedBadgeLive(image, false);
     }
     delete image.dataset.liveLoading;
   }

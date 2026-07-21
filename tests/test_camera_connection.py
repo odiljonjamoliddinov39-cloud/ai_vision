@@ -20,7 +20,7 @@ from api.server import (
     _redact_sensitive_text,
     _test_camera_stream,
 )
-from cameras.camera import _mask_source
+from cameras.camera import Camera, _mask_source
 from database.camera_db import CameraDB
 
 
@@ -478,3 +478,59 @@ def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tm
     assert [camera["slot_number"] for camera in active] == [1, 2, 3]
     assert [camera["slot_number"] for camera in config["cameras"]] == [1, 2, 3]
     assert config["cameras"][0]["source"].endswith("/Streaming/Channels/102")
+
+
+def test_camera_falls_back_to_the_next_backend_when_the_first_fails_to_open():
+    # A real, observed OpenCV quirk: CAP_FFMPEG sometimes fails to open a
+    # perfectly valid RTSP source with "backend is generally available but
+    # can't be used to capture by name", even though the same source opens
+    # fine via the unspecified/"Auto" backend. The initial connect should
+    # try every configured backend before giving up, the same way a
+    # dropped-connection reconnect already does.
+    class FakeCapture:
+        def __init__(self, opens: bool):
+            self._opens = opens
+
+        def isOpened(self):
+            return self._opens
+
+        def set(self, *args, **kwargs):
+            return True
+
+        def read(self):
+            return False, None
+
+        def release(self):
+            return None
+
+    calls = []
+
+    def fake_video_capture(source, backend=None):
+        calls.append(backend)
+        # CAP_FFMPEG (the first backend tried for rtsp://) fails; the
+        # fallback ("Auto", no backend argument) succeeds.
+        return FakeCapture(opens=backend is None)
+
+    with patch("cameras.camera.cv2.VideoCapture", side_effect=fake_video_capture):
+        camera = Camera(name="Gate Camera", source="rtsp://example.com/stream")
+        try:
+            assert len(calls) == 2
+            assert camera.cap.isOpened()
+        finally:
+            camera.release()
+
+
+def test_camera_raises_only_after_every_backend_fails():
+    class FakeCapture:
+        def isOpened(self):
+            return False
+
+        def release(self):
+            return None
+
+    with patch("cameras.camera.cv2.VideoCapture", return_value=FakeCapture()):
+        try:
+            Camera(name="Gate Camera", source="rtsp://example.com/stream")
+            assert False, "expected ConnectionError"
+        except ConnectionError as exc:
+            assert "Gate Camera" in str(exc)
