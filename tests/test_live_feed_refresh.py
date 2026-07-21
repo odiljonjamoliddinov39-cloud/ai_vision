@@ -89,7 +89,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=33" in html
+    assert "/dashboard-v2/assets/app.js?v=34" in html
     assert "/dashboard-v2/assets/styles.css?v=32" in html
 
 
@@ -124,3 +124,24 @@ def test_live_frames_have_a_dedicated_higher_rate_limit(monkeypatch):
     assert server._rate_limit(_live_frame_request(1)).status_code == 429
 
     server._rate_limits.clear()
+
+
+def test_analytics_movements_chart_is_wired_to_real_occupancy_events():
+    # The "Warehouse movements" chart used to render sampleAnalytics()'s
+    # random numbers forever - there's a real occupancy tracker
+    # (/api/occupancy/events) with actual check-in/check-out data that
+    # nothing in the dashboard ever displayed.
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'accountsApi("/api/occupancy/events?limit=200")' in source
+    assert "function aggregateMovements(events)" in source
+    assert 'movementsSpec.points = aggregateMovements(events);' in source
+    assert "points: emptyMovements()," in source
+
+
+def test_analytics_shows_a_recent_activity_card_from_real_events():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "data-recent-activity" in source
+    assert "function recentActivityHtml(events)" in source
+    assert "function timeAgo(timestamp)" in source
