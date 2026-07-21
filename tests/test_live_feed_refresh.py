@@ -29,7 +29,7 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
     assert source.count("data-live-frame data-live-slot") == 3
     assert "window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS)" in source
     assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
-    assert "new MutationObserver(syncLiveFrameRefresh)" in source
+    assert "new MutationObserver((mutations) => {" in source
     assert 'fetch(liveFrameUrl(slot), { cache: "no-store" })' in source
     assert "URL.revokeObjectURL(previousObjectUrl)" in source
 
@@ -39,6 +39,35 @@ def test_dashboard_targets_two_live_frame_updates_per_second():
 
     assert "const LIVE_FRAME_REFRESH_MS = 500;" in source
     assert 'if (image.dataset.liveLoading === "true") return;' in source
+
+
+def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
+    # setFeedBadgeLive() sets badge.textContent, which is itself a childList
+    # mutation - without filtering it out, the observer retriggers a refresh
+    # on every completed request (success or failure), forming a tight loop
+    # that ignores LIVE_FRAME_REFRESH_MS. Only structural mutations (feed
+    # elements actually added/removed) should call syncLiveFrameRefresh.
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert (
+        "return !(target instanceof Element && target.closest(\".feed-transmitting\"));"
+        in source
+    )
+    assert "if (structuralChange) syncLiveFrameRefresh();" in source
+
+
+def test_dashboard_backs_off_after_a_404_instead_of_retrying_every_tick():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "const LIVE_FRAME_404_BACKOFF_MS = 3000;" in source
+    assert 'if (response.status === 404) {' in source
+    assert (
+        "image.dataset.live404Until = String(Date.now() + LIVE_FRAME_404_BACKOFF_MS);"
+        in source
+    )
+    assert (
+        "if (backoffUntil && Date.now() < backoffUntil) return;" in source
+    )
 
 
 def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
@@ -60,7 +89,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=32" in html
+    assert "/dashboard-v2/assets/app.js?v=33" in html
     assert "/dashboard-v2/assets/styles.css?v=32" in html
 
 

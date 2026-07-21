@@ -50,6 +50,10 @@ let loadRetryTimer = null;
 const LIVE_FRAME_REFRESH_MS = 500;
 let liveFrameTimer = null;
 
+// A 404 means the slot has no live camera (nothing is misbehaving) - back off
+// instead of hammering the endpoint at the full 500ms cadence every tick.
+const LIVE_FRAME_404_BACKOFF_MS = 3000;
+
 function liveFrameUrl(slot) {
   const url = new URL(`${API_BASE}/api/live_frame`);
   url.searchParams.set("slot", slot);
@@ -68,11 +72,20 @@ async function refreshLiveFrameImage(image) {
   if (image.dataset.liveLoading === "true") return;
   const slot = image.dataset.liveSlot;
   if (!slot) return;
+  const backoffUntil = Number(image.dataset.live404Until || 0);
+  if (backoffUntil && Date.now() < backoffUntil) return;
 
   image.dataset.liveLoading = "true";
   try {
     const response = await fetch(liveFrameUrl(slot), { cache: "no-store" });
+    if (response.status === 404) {
+      // Expected for a slot with no active camera yet - back off instead of
+      // retrying every tick, which is what was flooding the console.
+      image.dataset.live404Until = String(Date.now() + LIVE_FRAME_404_BACKOFF_MS);
+      throw new Error("Live frame request failed: 404");
+    }
     if (!response.ok) throw new Error(`Live frame request failed: ${response.status}`);
+    delete image.dataset.live404Until;
     const frame = await response.blob();
     if (!image.isConnected) return;
 
@@ -2354,7 +2367,19 @@ els.refreshBtn.addEventListener("click", () => {
 
 window.addEventListener("hashchange", () => window.location.reload());
 
-const liveFrameObserver = new MutationObserver(syncLiveFrameRefresh);
+// setFeedBadgeLive() sets badge.textContent, which is itself a childList
+// mutation on the badge - without filtering, that retriggers this observer,
+// which calls refreshLiveFrames() immediately, which (on completion) sets
+// the badge again, forming a tight loop that ignores LIVE_FRAME_REFRESH_MS
+// entirely. Only structural changes (feed elements added/removed) should
+// resync; badge text updates are just a symptom of a refresh already run.
+const liveFrameObserver = new MutationObserver((mutations) => {
+  const structuralChange = mutations.some((mutation) => {
+    const target = mutation.target;
+    return !(target instanceof Element && target.closest(".feed-transmitting"));
+  });
+  if (structuralChange) syncLiveFrameRefresh();
+});
 liveFrameObserver.observe(els.moduleContent, { childList: true, subtree: true });
 document.addEventListener("visibilitychange", syncLiveFrameRefresh);
 window.addEventListener("beforeunload", stopLiveFrameRefresh);
