@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -1103,6 +1104,181 @@ def _parse_event_log(limit: int = 40) -> list[dict[str, Any]]:
     return entries[-limit:]
 
 
+def _parse_datetime_filter(value: str | None, *, end_of_day: bool = False) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if end_of_day and len(value) == 10:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed.astimezone(timezone.utc)
+
+
+def _coerce_log_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _status_class_for_code(status_code: int) -> str:
+    hundred = status_code // 100
+    if 1 <= hundred <= 5:
+        return f"{hundred}xx"
+    return "unknown"
+
+
+def _extract_status_code(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value if 100 <= value <= 599 else None
+    if isinstance(value, float):
+        code = int(value)
+        return code if 100 <= code <= 599 else None
+    text = str(value)
+    for match in re.finditer(r"\b([1-5]\d{2})\b", text):
+        code = int(match.group(1))
+        if 100 <= code <= 599:
+            return code
+    return None
+
+
+def _entry_status_code(entry: dict[str, Any]) -> int | None:
+    direct = _extract_status_code(entry.get("status_code"))
+    if direct is not None:
+        return direct
+    for key in ("details", "message"):
+        code = _extract_status_code(entry.get(key))
+        if code is not None:
+            return code
+    return None
+
+
+def _filter_log_entries(
+    entries: list[dict[str, Any]],
+    *,
+    status_case: str | None,
+    source: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    search: str | None,
+) -> list[dict[str, Any]]:
+    start_dt = _parse_datetime_filter(start_date)
+    end_dt = _parse_datetime_filter(end_date, end_of_day=True)
+    search_lower = (search or "").strip().lower()
+    filtered: list[dict[str, Any]] = []
+    for entry in entries:
+        status_code = _entry_status_code(entry)
+        status_class = _status_class_for_code(status_code) if status_code is not None else "unknown"
+        entry["status_code"] = status_code
+        entry["status_class"] = status_class
+        if status_case and status_case != "all":
+            status_case_normalized = status_case.strip().lower()
+            if status_case_normalized.endswith("xx"):
+                if status_class.lower() != status_case_normalized:
+                    continue
+            else:
+                expected_code = _extract_status_code(status_case_normalized)
+                if expected_code is None or status_code != expected_code:
+                    continue
+        if source and source != "all" and entry.get("source") != source:
+            continue
+        entry_dt = _coerce_log_datetime(entry.get("timestamp"))
+        if start_dt and (entry_dt is None or entry_dt < start_dt):
+            continue
+        if end_dt and (entry_dt is None or entry_dt > end_dt):
+            continue
+        if search_lower:
+            haystack = " ".join(
+                str(entry.get(key, ""))
+                for key in ("type", "source", "message", "actor", "action", "camera")
+            ).lower()
+            if search_lower not in haystack:
+                continue
+        filtered.append(entry)
+    return filtered
+
+
+def _aggregate_head_logs(limit: int = 200) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+
+    for event in _get_security_audit_db().recent_full(limit=limit):
+        payload_text = str(event.get("payload_json") or "")
+        payload: dict[str, Any] = {}
+        if payload_text:
+            try:
+                parsed_payload = json.loads(payload_text)
+                if isinstance(parsed_payload, dict):
+                    payload = parsed_payload
+            except (TypeError, ValueError):
+                payload = {}
+        status_code = _extract_status_code(payload.get("status_code"))
+        entries.append(
+            {
+                "id": f"audit-{event['id']}",
+                "type": "audit",
+                "source": "security_audit",
+                "timestamp": datetime.fromtimestamp(float(event["created_at"]), tz=timezone.utc).isoformat(),
+                "message": str(event["action"]),
+                "actor": str(event["actor"]),
+                "details": payload_text,
+                "status_code": status_code,
+            }
+        )
+
+    for event in _parse_event_log(limit):
+        entries.append(
+            {
+                "id": f"event-{event['timestamp']}-{event['camera']}-{event['class_name']}",
+                "type": "event",
+                "source": str(event.get("camera") or "detector"),
+                "timestamp": event.get("timestamp"),
+                "message": f"{event.get('class_name', 'object')} detected ({event.get('confidence', '')})",
+                "camera": str(event.get("camera") or ""),
+                "details": json.dumps(event),
+                "status_code": 200,
+            }
+        )
+
+    for source_name, path in (("detector_stdout", DETECTION_STDOUT_PATH), ("detector_stderr", DETECTION_STDERR_PATH)):
+        lines = _tail_file(path, limit)
+        timestamp = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat() if path.exists() else None
+        for index, line in enumerate(lines):
+            inferred_status = 500 if source_name == "detector_stderr" else _extract_status_code(line)
+            entries.append(
+                {
+                    "id": f"{source_name}-{index}",
+                    "type": "detector",
+                    "source": source_name,
+                    "timestamp": timestamp,
+                    "message": line,
+                    "details": line,
+                    "status_code": inferred_status,
+                }
+            )
+
+    entries.sort(key=lambda entry: _coerce_log_datetime(entry.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return entries[: max(1, min(limit, 500))]
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -1944,6 +2120,44 @@ def dashboard_v2_head_overview(request: Request) -> dict[str, Any]:
             "Multi-site Management",
             "API Integrations",
         ],
+    }
+
+
+@app.get("/api/v2/head/logs")
+def dashboard_v2_head_logs(
+    request: Request,
+    status_case: str | None = None,
+    log_type: str | None = None,
+    source: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    search: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    _require_permission(request, "view_audit_logs")
+    entries = _aggregate_head_logs(limit=max(1, min(limit, 500)))
+    effective_status_case = status_case or log_type
+    filtered = _filter_log_entries(
+        entries,
+        status_case=effective_status_case,
+        source=source,
+        start_date=start_date,
+        end_date=end_date,
+        search=search,
+    )
+    status_cases: set[str] = set()
+    for entry in entries:
+        code = _entry_status_code(entry)
+        if code is not None:
+            status_cases.add(str(code))
+            status_cases.add(_status_class_for_code(code))
+    return {
+        "entries": filtered,
+        "filters": {
+            "status_cases": sorted(status_cases, key=lambda item: (len(item), item)),
+            "sources": sorted({entry["source"] for entry in entries}),
+        },
+        "count": len(filtered),
     }
 
 

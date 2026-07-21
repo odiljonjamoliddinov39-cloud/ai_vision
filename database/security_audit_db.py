@@ -144,6 +144,21 @@ class SecurityAuditDB:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def recent_full(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                self._sql(
+                    """
+                    SELECT id, created_at, actor, action, payload_json, payload_hash, previous_hash, current_hash
+                    FROM security_audit_log
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """
+                ),
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def verify(self) -> dict[str, Any]:
         with self.db.connect() as conn:
             rows = conn.execute(

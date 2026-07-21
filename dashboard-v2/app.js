@@ -36,12 +36,15 @@ const state = {
   session: null,
   overview: null,
   cameraRegistry: null,
+  logsData: null,
+  logsFilters: { statusCase: "all", source: "all", startDate: "", endDate: "", search: "" },
 };
 
-const HEAD_MODULE_IDS = new Set(["overview", "users", "cameras"]);
+const HEAD_MODULE_IDS = new Set(["overview", "users", "cameras", "audit"]);
 
 const MODULE_OVERRIDES = {
   users: { label: "Company Control", subtitle: "Companies, roles & access" },
+  audit: { label: "Logs", subtitle: "Detection, audit, and runtime logs" },
 };
 
 function moduleLabel(module) {
@@ -306,6 +309,11 @@ function renderModuleContent() {
         </table>
       `
       : `<p class="empty">No cameras are stored in the database yet.</p>`;
+    return;
+  }
+
+  if (module.id === "audit") {
+    renderLogsModule(els.moduleContent);
     return;
   }
 
@@ -1580,6 +1588,84 @@ function renderAnalytics(container) {
   wireCharts(container);
 }
 
+function logFilterQuery() {
+  const params = new URLSearchParams();
+  const filters = state.logsFilters;
+  if (filters.statusCase && filters.statusCase !== "all") params.set("status_case", filters.statusCase);
+  if (filters.source && filters.source !== "all") params.set("source", filters.source);
+  if (filters.startDate) params.set("start_date", filters.startDate);
+  if (filters.endDate) params.set("end_date", filters.endDate);
+  if (filters.search) params.set("search", filters.search);
+  params.set("limit", "200");
+  return params.toString();
+}
+
+async function loadLogsData() {
+  const query = logFilterQuery();
+  state.logsData = await api(`/api/v2/head/logs${query ? `?${query}` : ""}`);
+  return state.logsData;
+}
+
+function renderLogsModule(container) {
+  const filters = state.logsFilters;
+  container.innerHTML = `<p class="chart-note">Loading logs...</p>`;
+  loadLogsData()
+    .then((payload) => {
+      const entries = payload.entries || [];
+      const statusCaseOptions = ["all", ...(payload.filters?.status_cases || [])];
+      const sourceOptions = ["all", ...(payload.filters?.sources || [])];
+      container.innerHTML = `
+        <form class="logs-filters" data-logs-form>
+          <select name="statusCase">
+            ${statusCaseOptions.map((option) => `<option value="${escapeHtml(option)}" ${filters.statusCase === option ? "selected" : ""}>${escapeHtml(option === "all" ? "All statuses" : option)}</option>`).join("")}
+          </select>
+          <select name="source">
+            ${sourceOptions.map((option) => `<option value="${escapeHtml(option)}" ${filters.source === option ? "selected" : ""}>${escapeHtml(option === "all" ? "All sources" : option)}</option>`).join("")}
+          </select>
+          <input type="date" name="startDate" value="${escapeHtml(filters.startDate)}" />
+          <input type="date" name="endDate" value="${escapeHtml(filters.endDate)}" />
+          <input type="search" name="search" value="${escapeHtml(filters.search)}" placeholder="Search logs" />
+          <button type="submit">Apply</button>
+        </form>
+        <p class="chart-note">${escapeHtml(payload.count)} matching log entries.</p>
+        <div class="logs-list">
+          ${entries.length ? entries.map((entry) => `
+            <article class="log-entry">
+              <div class="log-entry-head">
+                <strong>${escapeHtml(entry.message)}</strong>
+                <span>${escapeHtml(entry.timestamp || "No timestamp")}</span>
+              </div>
+              <div class="log-entry-meta">
+                <span>${escapeHtml(entry.status_code ? String(entry.status_code) : (entry.status_class || "unknown"))}</span>
+                <span>${escapeHtml(entry.type)}</span>
+                <span>${escapeHtml(entry.source)}</span>
+                ${entry.actor ? `<span>${escapeHtml(entry.actor)}</span>` : ""}
+              </div>
+              ${entry.details ? `<pre>${escapeHtml(entry.details)}</pre>` : ""}
+            </article>
+          `).join("") : `<p class="empty">No logs match the current filters.</p>`}
+        </div>
+      `;
+    })
+    .catch((error) => {
+      container.innerHTML = `<p class="empty">${escapeHtml(error.message || String(error))}</p>`;
+    });
+}
+
+function handleLogsSubmit(event) {
+  const form = event.target.closest("[data-logs-form]");
+  if (!form) return;
+  event.preventDefault();
+  state.logsFilters = {
+    statusCase: form.elements.statusCase.value,
+    source: form.elements.source.value,
+    startDate: form.elements.startDate.value,
+    endDate: form.elements.endDate.value,
+    search: form.elements.search.value.trim(),
+  };
+  renderLogsModule(els.moduleContent);
+}
+
 async function load() {
   const token = accountTokenFromHash();
   if (token) {
@@ -1607,6 +1693,7 @@ async function load() {
 }
 
 els.moduleContent.addEventListener("submit", (event) => {
+  handleLogsSubmit(event);
   handleCompanySubmit(event);
   handleSettingsSubmit(event);
   handleAccountSubmit(event);

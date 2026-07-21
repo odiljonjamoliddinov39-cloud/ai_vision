@@ -224,6 +224,55 @@ button,
   opacity: 1;
 }
 
+.logs-filters {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.logs-list {
+  display: grid;
+  gap: 12px;
+}
+
+.log-entry {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+.log-entry-head,
+.log-entry-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.log-entry-head strong {
+  color: var(--heading);
+}
+
+.log-entry-meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log-entry pre {
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
 .module-nav small {
   display: none;
 }
