@@ -1066,7 +1066,7 @@ function livePreviewHtml(summary, health) {
 }
 
 const MAX_NVRS = 5;
-const MAX_NVR_SLOTS = 15;
+const MAX_NVR_SLOTS = 50;
 let accountState = null;
 let accountModule = null;
 
@@ -1162,6 +1162,7 @@ async function registerNvrController(fields) {
       slot_number: result.slot_number,
       status: result.status,
       message: result.message,
+      active: result.active,
     })),
   };
 }
@@ -1400,18 +1401,25 @@ function renderAccountModule() {
     const nvrCards = config.nvrs
       .map((nvr) => {
         const channels = nvr.channelsDetail || [];
-        const connected = channels.filter((channel) => channel.status === "connected").length;
-        const overallOk = channels.length > 0 && connected > 0;
+        const transmitting = channels.filter((channel) => channel.active).length;
+        const overallOk = channels.length > 0 && transmitting > 0;
         const channelRows = channels.length
           ? `<ul class="nvr-channels">${channels
-              .map(
-                (channel) => `
-                  <li class="nvr-channel ${channel.status === "connected" ? "ok" : "bad"}">
-                    <span>Ch ${channel.channel} · slot ${channel.slot_number}</span>
-                    <span class="nvr-channel-status">${channel.status === "connected" ? "Connected" : "Not connected"}</span>
+              .map((channel) => {
+                const stateClass = channel.active ? "ok" : channel.status === "connected" ? "pending" : "bad";
+                const label = channel.active
+                  ? "Transmitting"
+                  : channel.status === "connected"
+                    ? "Waiting for a free slot"
+                    : "Not connected";
+                const slotLabel = channel.slot_number != null ? `slot ${channel.slot_number}` : "no slot yet";
+                return `
+                  <li class="nvr-channel ${stateClass}">
+                    <span>Ch ${channel.channel} · ${slotLabel}</span>
+                    <span class="nvr-channel-status">${label}</span>
                   </li>
-                `
-              )
+                `;
+              })
               .join("")}</ul>`
           : "";
         return `
@@ -1421,7 +1429,7 @@ function renderAccountModule() {
               <button type="button" class="cc-remove" data-acc-action="remove-nvr" data-nvr="${nvr.id}" aria-label="Remove NVR">✕</button>
             </header>
             <p class="cc-cred"><em>Address:</em> <span class="nvr-rtsp" title="${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}">${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}</span></p>
-            <p class="cc-cred"><em>Channels:</em> ${connected}/${channels.length || nvr.channels || 0} transmitting</p>
+            <p class="cc-cred"><em>Channels:</em> ${transmitting}/${channels.length || nvr.channels || 0} transmitting</p>
             <p class="nvr-status ${overallOk ? "ok" : "bad"}">${escapeHtml(nvr.controllerMessage || "Not tested yet.")}</p>
             ${channelRows}
           </article>
@@ -1483,7 +1491,7 @@ function renderAccountModule() {
         const tiles = channels.length
           ? channels
               .map((channel) => {
-                if (channel.status === "connected") {
+                if (channel.active && channel.slot_number != null) {
                   return `<figure><span class="feed-transmitting">Transmitting live</span><img data-live-frame data-live-slot="${channel.slot_number}" src="${API_BASE}/api/live_frame?slot=${channel.slot_number}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
                 }
                 return `<figure class="feed-empty"><div>${escapeHtml(channel.message || "No signal yet")}</div><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
@@ -1591,9 +1599,22 @@ async function handleAccountSubmit(event) {
     company.cameraConfig.nvrs = [...previousNvrs, newNvr];
     try {
       await persistAccountCompany();
-      const connected = registration.channelsDetail.filter((channel) => channel.status === "connected").length;
-      if (connected > 0) {
-        toast(`NVR "${name}" connected — ${connected}/${channels} channels transmitting.`);
+      const transmitting = registration.channelsDetail.filter((channel) => channel.active).length;
+      const waiting = registration.channelsDetail.filter(
+        (channel) => !channel.active && channel.status === "connected"
+      ).length;
+      if (transmitting > 0 && waiting > 0) {
+        toast(
+          `NVR "${name}" connected — ${transmitting}/${channels} channels transmitting, ` +
+            `${waiting} registered but waiting for a free slot.`
+        );
+      } else if (transmitting > 0) {
+        toast(`NVR "${name}" connected — ${transmitting}/${channels} channels transmitting.`);
+      } else if (waiting > 0) {
+        toast(
+          `NVR "${name}" reachable, but no free camera slots are available right now — ` +
+            `${waiting} channels are registered and will activate once a slot frees up.`
+        );
       } else {
         toast(`NVR "${name}" saved but not reachable: ${registration.controllerMessage}`);
       }

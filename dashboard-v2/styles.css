@@ -949,6 +949,11 @@ input {
   font-weight: 600;
 }
 
+.nvr-channel.pending .nvr-channel-status {
+  color: var(--warn);
+  font-weight: 600;
+}
+
 .nvr-channel.bad .nvr-channel-status {
   color: var(--bad);
 }
