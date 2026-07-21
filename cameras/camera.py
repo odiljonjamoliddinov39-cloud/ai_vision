@@ -79,6 +79,17 @@ class Camera:
             "ffmpeg",
             "-rtsp_transport",
             "tcp",
+            # RTSP-over-TCP sessions commonly start mid-GOP - the demuxer
+            # doesn't wait for a keyframe boundary before delivering
+            # packets. That's harmless for H.264 but HEVC decoders are far
+            # less tolerant of it (confirmed live: "PPS id out of range",
+            # "Could not find ref with POC" against a real Hikvision NVR
+            # streaming H.265). Keyframes are self-contained and need no
+            # missing reference frames to decode, so restricting decode to
+            # keyframes only sidesteps the problem entirely instead of just
+            # tolerating the errors.
+            "-skip_frame",
+            "nokey",
             "-i",
             self.source,
             "-f",
