@@ -700,6 +700,27 @@ def test_camera_opens_rtsp_via_a_real_ffmpeg_subprocess_and_decodes_frames(monke
         assert fake_process.terminated
 
 
+def test_camera_ffmpeg_command_only_decodes_keyframes():
+    # RTSP-over-TCP sessions commonly start mid-GOP, which HEVC decoders
+    # tolerate far worse than H.264 - confirmed live against a real
+    # Hikvision NVR streaming H.265 ("PPS id out of range", "Could not
+    # find ref with POC"). Keyframes are self-contained and need no
+    # missing reference frames, so restricting decode to keyframes only
+    # sidesteps the problem instead of just tolerating the errors.
+    camera = Camera(name="Gate Camera", source="dummy")
+    command = camera._ffmpeg_command()
+    assert "-skip_frame" in command
+    assert command[command.index("-skip_frame") + 1] == "nokey"
+    assert command.index("-skip_frame") < command.index("-i")
+
+
+def test_camera_stream_check_only_decodes_keyframes():
+    server_path = os.path.join(os.path.dirname(__file__), "..", "api", "server.py")
+    with open(server_path, encoding="utf-8") as handle:
+        source = handle.read()
+    assert '"-rtsp_transport", "tcp", "-skip_frame", "nokey", "-i", url,' in source
+
+
 def test_camera_raises_when_ffmpeg_exits_immediately(monkeypatch):
     class FakeProcess:
         def __init__(self):

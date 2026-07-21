@@ -1061,16 +1061,16 @@ def try_open(cap_args):
     return cap, opened, ok
 
 def try_ffmpeg(url, timeout_seconds):
-    # Mirrors cameras/camera.py's Camera._open_ffmpeg(): OpenCV's bundled
-    # FFMPEG backend can refuse to open a perfectly valid RTSP source with
-    # an OpenCV-level "can't be used to capture by name" error, with no
-    # other OpenCV backend available to fall back to on a minimal Linux
-    # image. Shelling out to a real ffmpeg binary sidesteps that entirely -
-    # this pre-flight check has to use the exact same method the real
+    # Mirrors cameras/camera.py's Camera._open_ffmpeg(), including
+    # -skip_frame nokey (RTSP-over-TCP sessions commonly start mid-GOP,
+    # which HEVC decoders tolerate far worse than H.264 - confirmed live
+    # against a real Hikvision NVR streaming H.265 - so only decoding
+    # self-contained keyframes sidesteps that instead of erroring out).
+    # This pre-flight check has to use the exact same method the real
     # detector process does, or a camera that would actually work could
     # still get wrongly rejected here before it's ever tried for real.
     command = [
-        "ffmpeg", "-rtsp_transport", "tcp", "-i", url,
+        "ffmpeg", "-rtsp_transport", "tcp", "-skip_frame", "nokey", "-i", url,
         "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
         "-an", "-threads", "1", "-loglevel", "error", "-frames:v", "1", "-",
     ]
