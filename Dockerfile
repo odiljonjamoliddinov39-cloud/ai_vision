@@ -7,11 +7,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # System packages change rarely and should stay in an early cached layer.
+# ffmpeg: RTSP cameras are captured via a real ffmpeg subprocess instead of
+# OpenCV's bundled FFMPEG backend, which has a known packaging quirk where
+# it can refuse to open a perfectly valid RTSP source ("backend is
+# generally available but can't be used to capture by name") with no other
+# OpenCV backend available on this image to fall back to.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     libgl1 \
     libglib2.0-0 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Python dependency install is the expensive AI layer. Keep it before app code

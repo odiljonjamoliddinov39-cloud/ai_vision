@@ -1042,11 +1042,13 @@ def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str,
     code = r"""
 import json
 import os
+import subprocess
 import sys
 import cv2
 
 raw = sys.argv[1].strip()
 source = int(raw) if raw.isdigit() else raw
+inner_timeout = max(1, int(sys.argv[2]) - 1)
 
 def try_open(cap_args):
     cap = cv2.VideoCapture(*cap_args)
@@ -1058,39 +1060,57 @@ def try_open(cap_args):
         cap.release()
     return cap, opened, ok
 
+def try_ffmpeg(url, timeout_seconds):
+    # Mirrors cameras/camera.py's Camera._open_ffmpeg(): OpenCV's bundled
+    # FFMPEG backend can refuse to open a perfectly valid RTSP source with
+    # an OpenCV-level "can't be used to capture by name" error, with no
+    # other OpenCV backend available to fall back to on a minimal Linux
+    # image. Shelling out to a real ffmpeg binary sidesteps that entirely -
+    # this pre-flight check has to use the exact same method the real
+    # detector process does, or a camera that would actually work could
+    # still get wrongly rejected here before it's ever tried for real.
+    command = [
+        "ffmpeg", "-rtsp_transport", "tcp", "-i", url,
+        "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
+        "-an", "-threads", "1", "-loglevel", "error", "-frames:v", "1", "-",
+    ]
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return False, False
+    try:
+        data, _ = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.communicate(timeout=2.0)
+        except Exception:
+            pass
+        return True, False
+    return True, (b"\xff\xd8" in data and b"\xff\xd9" in data)
+
 try:
     if isinstance(source, int) and os.name == "nt":
-        attempts = [(source, cv2.CAP_DSHOW), (source,)]
+        cap = None
+        opened = False
+        ok = False
+        for cap_args in [(source, cv2.CAP_DSHOW), (source,)]:
+            cap, opened, ok = try_open(cap_args)
+            if opened and ok:
+                break
+        cap.release()
     elif isinstance(source, str) and source.lower().startswith("rtsp://"):
-        os.environ.setdefault(
-            "OPENCV_FFMPEG_CAPTURE_OPTIONS",
-            "rtsp_transport;tcp|stimeout;8000000|max_delay;500000|buffer_size;102400",
-        )
-        # CAP_FFMPEG occasionally fails to open a perfectly valid RTSP
-        # source with an OpenCV-level "backend is generally available but
-        # can't be used to capture by name" error, even though the same
-        # source opens fine via the unspecified/default backend - try both
-        # before reporting a failure, matching what the real detector
-        # process (cameras/camera.py) already does.
-        attempts = [(source, cv2.CAP_FFMPEG), (source,)]
+        opened, ok = try_ffmpeg(source, inner_timeout)
     else:
-        attempts = [(source,)]
-
-    cap = None
-    opened = False
-    ok = False
-    for cap_args in attempts:
-        cap, opened, ok = try_open(cap_args)
-        if opened and ok:
-            break
-    cap.release()
+        cap, opened, ok = try_open((source,))
+        cap.release()
     print(json.dumps({"ok": bool(opened and ok), "opened": opened, "frame_read": bool(ok)}))
 except Exception as exc:
     print(json.dumps({"ok": False, "error": str(exc)}))
 """
     try:
         result = subprocess.run(
-            [sys.executable, "-c", code, stream_url],
+            [sys.executable, "-c", code, stream_url, str(timeout_seconds)],
             cwd=ROOT,
             capture_output=True,
             text=True,

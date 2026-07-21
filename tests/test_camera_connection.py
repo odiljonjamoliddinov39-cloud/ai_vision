@@ -1,6 +1,9 @@
+import io
 import os
 import subprocess
 import sys
+import threading
+import time
 from unittest.mock import patch
 
 import yaml
@@ -109,45 +112,37 @@ def test_local_webcam_source_still_uses_opencv():
     run.assert_called_once()
 
 
-def test_camera_stream_check_falls_back_when_ffmpeg_backend_cant_open_by_name(
-    monkeypatch, tmp_path
-):
-    # Runs the real subprocess (not a mocked one) with a fake cv2 module on
-    # its PYTHONPATH so the actual embedded fallback logic executes, not a
-    # stand-in for it. The fake cv2.VideoCapture fails when called with an
-    # explicit backend (CAP_FFMPEG, what's tried first for rtsp://) and
-    # succeeds when called with no backend argument (the fallback).
-    fake_cv2 = tmp_path / "cv2.py"
-    fake_cv2.write_text(
-        r"""
-CAP_FFMPEG = 1
-CAP_DSHOW = 2
-
-class _Cap:
-    def __init__(self, opens):
-        self._opens = opens
-
-    def isOpened(self):
-        return self._opens
-
-    def read(self):
-        return True, "frame"
-
-    def release(self):
-        pass
-
-
-def VideoCapture(*args):
-    backend = args[1] if len(args) > 1 else None
-    return _Cap(opens=backend is None)
-""",
+def test_camera_stream_check_uses_a_real_ffmpeg_subprocess_for_rtsp(monkeypatch, tmp_path):
+    # Runs the real subprocess (not a mocked one), with a fake `ffmpeg`
+    # executable on PATH so the actual embedded validation logic executes
+    # end to end, not a stand-in for it. Mirrors what Camera._open_ffmpeg()
+    # does in cameras/camera.py: OpenCV's bundled FFMPEG backend can refuse
+    # a perfectly valid RTSP source with no other OpenCV backend to fall
+    # back to, so this pre-flight check shells out to ffmpeg directly too -
+    # it has to agree with what the real detector can actually achieve.
+    fake_ffmpeg = tmp_path / "ffmpeg"
+    fake_ffmpeg.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdout.buffer.write(b'\\xff\\xd8fake-jpeg-data\\xff\\xd9')\n"
+        "sys.stdout.buffer.flush()\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    fake_ffmpeg.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+
     with patch("api.server.socket.create_connection"):
         result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
 
     assert result["status"] == "connected"
+
+
+def test_camera_stream_check_reports_failure_when_ffmpeg_is_not_installed(monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent-empty-bin-dir")
+    with patch("api.server.socket.create_connection"):
+        result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
+
+    assert result["status"] == "failed"
 
 
 def test_controller_stream_url_builds_channel_rtsp_url_with_credentials():
@@ -573,12 +568,13 @@ def test_environment_camera_controller_seed_does_not_activate_unreachable_channe
 
 
 def test_camera_falls_back_to_the_next_backend_when_the_first_fails_to_open():
-    # A real, observed OpenCV quirk: CAP_FFMPEG sometimes fails to open a
-    # perfectly valid RTSP source with "backend is generally available but
-    # can't be used to capture by name", even though the same source opens
-    # fine via the unspecified/"Auto" backend. The initial connect should
-    # try every configured backend before giving up, the same way a
-    # dropped-connection reconnect already does.
+    # This backend-cycling path (_open_with_fallback / _camera_backends) is
+    # no longer used for RTSP sources at all - those go through a real
+    # ffmpeg subprocess now (see the ffmpeg-specific tests below) - but it's
+    # still real, live code for non-RTSP sources (webcams, Windows capture
+    # devices). Force a multi-backend list regardless of platform so this
+    # exercises the fallback logic itself without depending on os.name or
+    # a real webcam being present.
     class FakeCapture:
         def __init__(self, opens: bool):
             self._opens = opens
@@ -599,17 +595,19 @@ def test_camera_falls_back_to_the_next_backend_when_the_first_fails_to_open():
 
     def fake_video_capture(source, backend=None):
         calls.append(backend)
-        # CAP_FFMPEG (the first backend tried for rtsp://) fails; the
-        # fallback ("Auto", no backend argument) succeeds.
         return FakeCapture(opens=backend is None)
 
-    with patch("cameras.camera.cv2.VideoCapture", side_effect=fake_video_capture):
-        camera = Camera(name="Gate Camera", source="rtsp://example.com/stream")
-        try:
-            assert len(calls) == 2
-            assert camera.cap.isOpened()
-        finally:
-            camera.release()
+    with patch(
+        "cameras.camera.Camera._camera_backends",
+        return_value=[("Primary", 111), ("Auto", None)],
+    ):
+        with patch("cameras.camera.cv2.VideoCapture", side_effect=fake_video_capture):
+            camera = Camera(name="Dock Camera", source=0)
+            try:
+                assert len(calls) == 2
+                assert camera.cap.isOpened()
+            finally:
+                camera.release()
 
 
 def test_camera_raises_only_after_every_backend_fails():
@@ -620,12 +618,120 @@ def test_camera_raises_only_after_every_backend_fails():
         def release(self):
             return None
 
-    with patch("cameras.camera.cv2.VideoCapture", return_value=FakeCapture()):
-        try:
-            Camera(name="Gate Camera", source="rtsp://example.com/stream")
-            assert False, "expected ConnectionError"
-        except ConnectionError as exc:
-            assert "Gate Camera" in str(exc)
+    with patch(
+        "cameras.camera.Camera._camera_backends",
+        return_value=[("Primary", 111), ("Auto", None)],
+    ):
+        with patch("cameras.camera.cv2.VideoCapture", return_value=FakeCapture()):
+            try:
+                Camera(name="Dock Camera", source=0)
+                assert False, "expected ConnectionError"
+            except ConnectionError as exc:
+                assert "Dock Camera" in str(exc)
+
+
+def test_camera_opens_rtsp_via_a_real_ffmpeg_subprocess_and_decodes_frames(monkeypatch):
+    # OpenCV's bundled FFMPEG backend can refuse a perfectly valid RTSP
+    # source ("backend is generally available but can't be used to capture
+    # by name") with no other OpenCV backend available to fall back to on
+    # a minimal Linux image - confirmed against a real, VLC-reachable NVR.
+    # RTSP sources are captured via a real ffmpeg subprocess instead,
+    # sidestepping OpenCV's video I/O layer for RTSP entirely.
+    import cv2
+    import numpy as np
+
+    ok, encoded = cv2.imencode(".jpg", np.zeros((4, 4, 3), dtype=np.uint8))
+    assert ok
+    jpeg_bytes = encoded.tobytes()
+
+    class FakeStdout:
+        """One frame, then blocks - like a real pipe on a still-alive
+        process with no new data yet, unlike io.BytesIO which would
+        spuriously return EOF (b"") once exhausted and trigger the
+        reconnect path even though nothing actually went wrong."""
+
+        def __init__(self, data: bytes):
+            self._data = data
+            self._served = False
+            self._unblock = threading.Event()
+
+        def read(self, size=-1):
+            if not self._served:
+                self._served = True
+                return self._data
+            self._unblock.wait()
+            return b""
+
+        def stop(self):
+            self._unblock.set()
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = FakeStdout(jpeg_bytes)
+            self.stderr = io.BytesIO(b"")
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    fake_process = FakeProcess()
+    monkeypatch.setattr("cameras.camera.subprocess.Popen", lambda *a, **k: fake_process)
+
+    camera = Camera(name="Gate Camera", source="rtsp://admin:secret@203.0.113.10:554/stream")
+    try:
+        assert camera.is_opened()
+        frame = None
+        for _ in range(50):
+            frame = camera.read()
+            if frame is not None:
+                break
+            time.sleep(0.02)
+        assert frame is not None
+    finally:
+        fake_process.stdout.stop()
+        camera.release()
+        assert fake_process.terminated
+
+
+def test_camera_raises_when_ffmpeg_exits_immediately(monkeypatch):
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = None
+            self.stderr = io.BytesIO(b"Connection refused\n")
+            self.returncode = 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("cameras.camera.subprocess.Popen", lambda *a, **k: FakeProcess())
+    monkeypatch.setattr("cameras.camera.time.sleep", lambda seconds: None)
+
+    try:
+        Camera(name="Gate Camera", source="rtsp://admin:secret@203.0.113.10:554/stream")
+        assert False, "expected ConnectionError"
+    except ConnectionError as exc:
+        assert "Gate Camera" in str(exc)
+        assert "Connection refused" in str(exc)
+
+
+def test_camera_raises_when_ffmpeg_is_not_installed(monkeypatch):
+    def raise_not_found(*args, **kwargs):
+        raise FileNotFoundError("ffmpeg not found")
+
+    monkeypatch.setattr("cameras.camera.subprocess.Popen", raise_not_found)
+
+    try:
+        Camera(name="Gate Camera", source="rtsp://admin:secret@203.0.113.10:554/stream")
+        assert False, "expected ConnectionError"
+    except ConnectionError as exc:
+        assert "ffmpeg is not installed" in str(exc)
 
 
 def test_cameras_cleanup_deletes_only_matching_name_prefix(monkeypatch, tmp_path):
