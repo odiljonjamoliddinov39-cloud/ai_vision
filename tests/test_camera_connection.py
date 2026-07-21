@@ -511,6 +511,17 @@ def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tm
     monkeypatch.setenv("CAMERA_CONTROLLER_PASSWORD", "secret")
     monkeypatch.setenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "3")
     monkeypatch.setenv("CAMERA_CONTROLLER_STREAM_TEMPLATE", "/Streaming/Channels/{channel}02")
+    # The seed path now actually tests connectivity/streams before
+    # activating a channel (it used to activate every channel
+    # unconditionally, which is exactly what let stale env-var credentials
+    # silently occupy real slots forever). Fake both checks as passing so
+    # this test exercises the seeding logic without a real network call.
+    monkeypatch.setattr(server, "_check_camera_endpoint", lambda endpoint, timeout_seconds=2.0: None)
+    monkeypatch.setattr(
+        server,
+        "_test_camera_stream",
+        lambda stream_url, timeout_seconds=10: {"status": "connected", "message": "ok"},
+    )
 
     db = server._get_camera_db()
     active = db.list_active_cameras(include_secret=False)
@@ -519,6 +530,46 @@ def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tm
     assert [camera["slot_number"] for camera in active] == [1, 2, 3]
     assert [camera["slot_number"] for camera in config["cameras"]] == [1, 2, 3]
     assert config["cameras"][0]["source"].endswith("/Streaming/Channels/102")
+
+
+def test_environment_camera_controller_seed_does_not_activate_unreachable_channels(
+    monkeypatch, tmp_path
+):
+    # This is the actual bug: the seed path used to build a
+    # CameraControllerCreate with test_controller/test_streams fields that
+    # were never consulted by its own hand-rolled activation loop, so a
+    # stale or wrong CAMERA_CONTROLLER_* credential baked into the droplet's
+    # environment would silently occupy real slots forever, with nothing
+    # ever having actually verified it worked.
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "cameras": [{"name": "Demo Camera", "source": "dummy", "slot_number": 1}],
+                "detection": {"model_path": "dummy"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_camera_db", None)
+    monkeypatch.setenv("CAMERA_CONTROLLER_HOST", "203.0.113.10")
+    monkeypatch.setenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "3")
+    monkeypatch.setattr(
+        server,
+        "_check_camera_endpoint",
+        lambda endpoint, timeout_seconds=2.0: "connection refused",
+    )
+
+    db = server._get_camera_db()
+
+    assert db.list_active_cameras(include_secret=False) == []
+    # The channels are still saved (visible, inspectable) - they're just
+    # never activated, since nothing ever confirmed they actually work.
+    assert len(db.list_cameras(include_secret=False)) == 3
 
 
 def test_camera_falls_back_to_the_next_backend_when_the_first_fails_to_open():

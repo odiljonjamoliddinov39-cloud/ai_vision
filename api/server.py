@@ -333,31 +333,27 @@ def _seed_cameras_from_environment(db: CameraDB) -> None:
         start_slot=max(1, min(start_slot, MAX_CAMERA_SLOTS)),
         stream_path_template=os.getenv(
             "CAMERA_CONTROLLER_STREAM_TEMPLATE",
-            "/Streaming/Channels/{channel}02",
+            "/Streaming/Channels/{channel}01",
         ),
         camera_name_template=os.getenv(
             "CAMERA_CONTROLLER_CAMERA_NAME_TEMPLATE",
             "{controller} Camera {channel}",
         ),
         make_active=True,
-        test_controller=False,
-        test_streams=False,
+        # Unlike the dashboard's Add NVR flow, this seed path used to skip
+        # every connectivity check and activate channels unconditionally -
+        # stale or wrong credentials baked into old environment variables
+        # could silently occupy real slots forever without ever actually
+        # working, since nothing ever tested them.
+        test_controller=True,
+        test_streams=True,
         require_public=False,
     )
 
-    last_slot = controller.start_slot + controller.channel_count - 1
-    if last_slot > MAX_CAMERA_SLOTS:
-        return
-
-    for index in range(controller.channel_count):
-        channel = controller.channel_start + index
-        slot = controller.start_slot + index
-        saved = db.add_camera(
-            name=_controller_camera_name(controller, channel, slot),
-            stream_url=_controller_stream_url(controller, channel),
-            status="connected",
-        )
-        db.assign_slot(saved["id"], slot)
+    try:
+        _register_controller_channels(controller, db)
+    except HTTPException as exc:
+        print(f"WARNING: environment camera seed skipped: {exc.detail}")
 
     _sync_config_active_cameras(db)
 
@@ -2342,8 +2338,17 @@ def save_camera(camera: CameraCreate) -> dict[str, Any]:
     }
 
 
-@app.post("/api/camera-controller")
-def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]:
+def _register_controller_channels(
+    controller: CameraControllerCreate, db: CameraDB
+) -> dict[str, Any]:
+    """Test and save/activate every channel on a controller.
+
+    Shared by the Add NVR endpoint and the environment-based boot-time seed
+    so both paths apply the exact same validation instead of drifting apart
+    - the seed path used to have its own separate, untested activation loop
+    that could silently occupy real slots with channels that had never
+    actually been checked.
+    """
     endpoint = _controller_endpoint(controller)
     if not endpoint["host"]:
         raise HTTPException(status_code=400, detail="Controller IP/host is required.")
@@ -2358,7 +2363,6 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
         if controller_error:
             controller_error = _redact_sensitive_text(controller_error)
 
-    db = _get_camera_db()
     saved_cameras = []
     test_results = []
     controller_reachable = controller_error is None
@@ -2431,6 +2435,27 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
                 "active": active is not None,
             }
         )
+
+    return {
+        "endpoint": endpoint,
+        "private_host_message": private_host_message,
+        "controller_error": controller_error,
+        "controller_reachable": controller_reachable,
+        "saved_cameras": saved_cameras,
+        "test_results": test_results,
+    }
+
+
+@app.post("/api/camera-controller")
+def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]:
+    db = _get_camera_db()
+    registration = _register_controller_channels(controller, db)
+    endpoint = registration["endpoint"]
+    private_host_message = registration["private_host_message"]
+    controller_error = registration["controller_error"]
+    controller_reachable = registration["controller_reachable"]
+    saved_cameras = registration["saved_cameras"]
+    test_results = registration["test_results"]
 
     if controller.make_active and any(result["active"] for result in test_results):
         _sync_config_active_cameras(db)
