@@ -1048,22 +1048,41 @@ import cv2
 raw = sys.argv[1].strip()
 source = int(raw) if raw.isdigit() else raw
 
+def try_open(cap_args):
+    cap = cv2.VideoCapture(*cap_args)
+    opened = bool(cap.isOpened())
+    ok = False
+    if opened:
+        ok, _ = cap.read()
+    if not (opened and ok):
+        cap.release()
+    return cap, opened, ok
+
 try:
     if isinstance(source, int) and os.name == "nt":
-        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        attempts = [(source, cv2.CAP_DSHOW), (source,)]
     elif isinstance(source, str) and source.lower().startswith("rtsp://"):
         os.environ.setdefault(
             "OPENCV_FFMPEG_CAPTURE_OPTIONS",
             "rtsp_transport;tcp|stimeout;8000000|max_delay;500000|buffer_size;102400",
         )
-        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+        # CAP_FFMPEG occasionally fails to open a perfectly valid RTSP
+        # source with an OpenCV-level "backend is generally available but
+        # can't be used to capture by name" error, even though the same
+        # source opens fine via the unspecified/default backend - try both
+        # before reporting a failure, matching what the real detector
+        # process (cameras/camera.py) already does.
+        attempts = [(source, cv2.CAP_FFMPEG), (source,)]
     else:
-        cap = cv2.VideoCapture(source)
+        attempts = [(source,)]
 
-    opened = bool(cap.isOpened())
+    cap = None
+    opened = False
     ok = False
-    if opened:
-        ok, _ = cap.read()
+    for cap_args in attempts:
+        cap, opened, ok = try_open(cap_args)
+        if opened and ok:
+            break
     cap.release()
     print(json.dumps({"ok": bool(opened and ok), "opened": opened, "frame_read": bool(ok)}))
 except Exception as exc:
