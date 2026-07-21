@@ -626,3 +626,58 @@ def test_camera_raises_only_after_every_backend_fails():
             assert False, "expected ConnectionError"
         except ConnectionError as exc:
             assert "Gate Camera" in str(exc)
+
+
+def test_cameras_cleanup_deletes_only_matching_name_prefix(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    camera_db_path = tmp_path / "cameras.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"cameras": [], "detection": {"model_path": "dummy"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_camera_db", None)
+    monkeypatch.setattr(server, "_detector_pid", lambda: None)
+    # Isolate the cleanup logic itself - the detection-restart side effect
+    # (and its own real connectivity re-test of every active camera) is
+    # already covered elsewhere.
+    monkeypatch.setattr(server, "start_detection", lambda request=None: None)
+
+    db = server._get_camera_db()  # also seeds a default "Camera 1" (source=0)
+    stale_one = db.add_camera("Warehouse NVR Camera 1", "rtsp://a/1", "connected")
+    stale_two = db.add_camera("Warehouse NVR Camera 2", "rtsp://a/2", "connected")
+    keep = db.add_camera("NVR Next 1 Camera 1", "rtsp://b/1", "connected")
+    db.assign_slot(stale_one["id"], 10)
+    db.assign_slot(stale_two["id"], 11)
+    db.assign_slot(keep["id"], 12)
+
+    client = TestClient(server.app)
+    response = client.post("/api/cameras/cleanup", json={"name_prefix": "Warehouse NVR"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_count"] == 2
+    assert {entry["name"] for entry in body["deleted"]} == {
+        "Warehouse NVR Camera 1",
+        "Warehouse NVR Camera 2",
+    }
+
+    remaining_names = {camera["name"] for camera in db.list_cameras(include_secret=False)}
+    assert remaining_names == {"Camera 1", "NVR Next 1 Camera 1"}
+    active_names = {
+        camera["name"] for camera in db.list_active_cameras(include_secret=False)
+    }
+    assert active_names == {"Camera 1", "NVR Next 1 Camera 1"}
+
+
+def test_cameras_cleanup_requires_a_non_empty_prefix():
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    response = client.post("/api/cameras/cleanup", json={"name_prefix": "   "})
+
+    assert response.status_code == 400
