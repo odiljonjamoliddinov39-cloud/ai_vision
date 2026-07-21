@@ -8,6 +8,7 @@ import yaml
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import api.server as server
+import main as app_main
 from api.server import (
     CameraControllerCreate,
     _controller_camera_name,
@@ -116,7 +117,6 @@ def test_controller_stream_url_builds_channel_rtsp_url_with_credentials():
         username="admin",
         password="p@ss word",
         channel_count=2,
-        stream_path_template="/Streaming/Channels/{channel}01",
     )
 
     assert _controller_stream_url(controller, 3) == (
@@ -160,19 +160,8 @@ def test_controller_camera_name_template_can_use_slot_and_channel():
     assert _controller_camera_name(controller, channel=4, slot=9) == "Main NVR slot 9 channel 4"
 
 
-def test_start_detection_syncs_config_from_active_camera_slots(monkeypatch, tmp_path):
+def test_detector_camera_configs_load_from_database(monkeypatch, tmp_path):
     camera_db_path = tmp_path / "cameras.db"
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "cameras": [{"name": "Demo Camera", "source": "dummy", "slot_number": 1}],
-                "detection": {"model_path": "dummy"},
-            }
-        ),
-        encoding="utf-8",
-    )
-
     db = CameraDB(db_path=str(camera_db_path))
     first = db.add_camera(
         "NVR Camera 1",
@@ -187,26 +176,13 @@ def test_start_detection_syncs_config_from_active_camera_slots(monkeypatch, tmp_
     db.assign_slot(first["id"], 1)
     db.assign_slot(second["id"], 2)
 
-    class FakeProcess:
-        pid = 12345
+    monkeypatch.setenv("CAMERA_DB_PATH", str(camera_db_path))
 
-    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
-    monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
-    monkeypatch.setattr(server, "DETECTION_STDOUT_PATH", tmp_path / "stdout.log")
-    monkeypatch.setattr(server, "DETECTION_STDERR_PATH", tmp_path / "stderr.log")
-    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", tmp_path / "health.json")
-    monkeypatch.setattr(server, "DETECTION_PID_PATH", tmp_path / "detection.pid")
-    monkeypatch.setattr(server, "_camera_db", None)
-    monkeypatch.setattr(server, "_process", None)
-    monkeypatch.setattr(server, "_detector_pid", lambda: None)
-    monkeypatch.setattr(server, "_validate_active_cameras_for_start", lambda: None)
-    monkeypatch.setattr(server.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    cameras = app_main.load_camera_configs_from_db()
 
-    server.start_detection()
-
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert [camera["name"] for camera in data["cameras"]] == ["NVR Camera 1", "NVR Camera 2"]
-    assert [camera["slot_number"] for camera in data["cameras"]] == [1, 2]
+    assert [camera["name"] for camera in cameras] == ["NVR Camera 1", "NVR Camera 2"]
+    assert [camera["slot_number"] for camera in cameras] == [1, 2]
+    assert cameras[0]["source"].endswith("/Streaming/Channels/101")
 
 
 def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_path):
@@ -251,32 +227,45 @@ def test_update_config_can_enable_real_open_vocabulary_model(monkeypatch, tmp_pa
     assert updated["warehouse_counting"]["enabled"] is False
 
 
-def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tmp_path):
+def test_save_camera_controller_uses_single_01_template_and_deduplicates(monkeypatch, tmp_path):
     camera_db_path = tmp_path / "cameras.db"
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "cameras": [{"name": "Demo Camera", "source": "dummy", "slot_number": 1}],
-                "detection": {"model_path": "dummy"},
-            }
-        ),
-        encoding="utf-8",
-    )
 
     monkeypatch.setattr(server, "CAMERA_DB_PATH", camera_db_path)
-    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
     monkeypatch.setattr(server, "_camera_db", None)
-    monkeypatch.setenv("CAMERA_CONTROLLER_HOST", "203.0.113.10")
-    monkeypatch.setenv("CAMERA_CONTROLLER_USERNAME", "admin")
-    monkeypatch.setenv("CAMERA_CONTROLLER_PASSWORD", "secret")
-    monkeypatch.setenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "3")
-    monkeypatch.setenv("CAMERA_CONTROLLER_STREAM_TEMPLATE", "/Streaming/Channels/{channel}02")
+    monkeypatch.setattr(server, "_status", lambda: {"running": False})
+    monkeypatch.setattr(
+        server,
+        "_test_camera_stream",
+        lambda stream_url, timeout_seconds=10: {
+            "status": "connected",
+            "message": "Camera stream opened and returned a frame.",
+            "details": {"stream_url": stream_url, "reason": "ok"},
+        },
+    )
+
+    controller = CameraControllerCreate(
+        name="Main NVR",
+        host="203.0.113.10",
+        username="admin",
+        password="secret",
+        channel_count=3,
+        channel_start=1,
+        start_slot=1,
+    )
+
+    first = server.save_camera_controller(controller)
+    second = server.save_camera_controller(controller)
 
     db = server._get_camera_db()
-    active = db.list_active_cameras(include_secret=False)
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    active = db.list_active_cameras(include_secret=True)
+    cameras = db.list_cameras(include_secret=True)
+    urls = {camera["stream_url"] for camera in cameras}
 
+    assert len(cameras) == 3
+    assert len(active) == 3
     assert [camera["slot_number"] for camera in active] == [1, 2, 3]
-    assert [camera["slot_number"] for camera in config["cameras"]] == [1, 2, 3]
-    assert config["cameras"][0]["source"].endswith("/Streaming/Channels/102")
+    assert any(url.endswith("/Streaming/Channels/101") for url in urls)
+    assert any(url.endswith("/Streaming/Channels/201") for url in urls)
+    assert any(url.endswith("/Streaming/Channels/301") for url in urls)
+    assert first["results"][0]["stream_url"].endswith("/Streaming/Channels/101")
+    assert second["results"][2]["stream_url"].endswith("/Streaming/Channels/301")

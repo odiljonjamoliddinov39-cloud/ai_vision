@@ -42,6 +42,7 @@ from detection.detector import Detector
 from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
 from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
+from database.camera_db import CameraDB
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
 from database.warehouse_db import WarehouseDB
@@ -54,6 +55,20 @@ from recognition.product_recognizer import ProductRecognizer
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_camera_configs_from_db() -> list[dict]:
+    db_path = os.getenv("CAMERA_DB_PATH", "database/cameras.db")
+    db = CameraDB(db_path=db_path)
+    cameras = db.list_active_cameras(include_secret=True)
+    return [
+        {
+            "name": str(camera["name"]),
+            "source": camera["stream_url"],
+            "slot_number": camera.get("slot_number"),
+        }
+        for camera in cameras
+    ]
 
 
 def main():
@@ -78,20 +93,20 @@ def main():
     display_cfg = config.get("display", {})
 
     # --- Cameras (FR-1) ---
-    cameras = load_cameras(config["cameras"])
+    cameras = load_cameras(load_camera_configs_from_db())
     if not cameras:
         _write_detection_health(
             "logs/detection_health.json",
             {
                 "state": "error",
-                "error": "No cameras could be opened. Check config/config.yaml.",
+                "error": "No active cameras found in the camera database.",
                 "frames_read": 0,
                 "last_frame_at": None,
                 "last_detection_count": 0,
                 "model_loaded": False,
             },
         )
-        print("No cameras could be opened. Check config/config.yaml. Exiting.")
+        print("No active cameras found in the camera database. Exiting.")
         return
 
     if args.no_display:

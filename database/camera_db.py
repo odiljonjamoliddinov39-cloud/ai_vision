@@ -34,12 +34,36 @@ class CameraDB:
         with self._connect() as conn:
             conn.execute(
                 f"""
+                CREATE TABLE IF NOT EXISTS camera_controllers (
+                    id {id_column_sql(self.db)},
+                    name TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    protocol TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    username TEXT,
+                    password TEXT,
+                    channel_start INTEGER NOT NULL,
+                    channel_count INTEGER NOT NULL,
+                    start_slot INTEGER NOT NULL,
+                    stream_path_template TEXT NOT NULL,
+                    camera_name_template TEXT NOT NULL,
+                    status TEXT DEFAULT 'unknown',
+                    last_error TEXT,
+                    created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+                    updated_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                f"""
                 CREATE TABLE IF NOT EXISTS cameras (
                     id {id_column_sql(self.db)},
                     name TEXT NOT NULL,
                     stream_url TEXT NOT NULL,
                     status TEXT DEFAULT 'unknown',
                     is_active {is_active_type} DEFAULT {active_default},
+                    controller_id INTEGER,
+                    channel_number INTEGER,
                     slot_number INTEGER,
                     created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
                     updated_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
@@ -47,7 +71,15 @@ class CameraDB:
                 """
             )
             self._ensure_slot_column(conn)
+            self._ensure_controller_columns(conn)
             self._backfill_active_slots(conn)
+
+    def _ensure_controller_columns(self, conn) -> None:
+        columns = self.db.table_columns(conn, "cameras")
+        if "controller_id" not in columns:
+            conn.execute("ALTER TABLE cameras ADD COLUMN controller_id INTEGER")
+        if "channel_number" not in columns:
+            conn.execute("ALTER TABLE cameras ADD COLUMN channel_number INTEGER")
 
     def _ensure_slot_column(self, conn) -> None:
         columns = self.db.table_columns(conn, "cameras")
@@ -71,27 +103,295 @@ class CameraDB:
             )
 
     def add_camera(self, name: str, stream_url: str, status: str = "unknown") -> dict:
+        return self.upsert_camera(
+            name=name,
+            stream_url=stream_url,
+            status=status,
+            controller_id=None,
+            channel_number=None,
+            is_active=False,
+            slot_number=None,
+        )
+
+    def upsert_camera(
+        self,
+        *,
+        name: str,
+        stream_url: str,
+        status: str,
+        controller_id: int | None,
+        channel_number: int | None,
+        is_active: bool,
+        slot_number: int | None,
+    ) -> dict:
         with self._connect() as conn:
-            if self.db.is_postgres:
+            row = None
+            if controller_id is not None and channel_number is not None:
                 row = conn.execute(
-                    """
-                    INSERT INTO cameras (name, stream_url, status, is_active)
-                    VALUES (%s, %s, %s, FALSE)
-                    RETURNING id
-                    """,
-                    (name, stream_url, status),
+                    self._sql(
+                        "SELECT id FROM cameras WHERE controller_id = ? AND channel_number = ? ORDER BY id DESC LIMIT 1"
+                    ),
+                    (controller_id, channel_number),
                 ).fetchone()
-                camera_id = row["id"]
+            if row is None:
+                row = conn.execute(
+                    self._sql(
+                        "SELECT id FROM cameras WHERE stream_url = ? ORDER BY id DESC LIMIT 1"
+                    ),
+                    (stream_url,),
+                ).fetchone()
+
+            if row is None:
+                if self.db.is_postgres:
+                    row = conn.execute(
+                        """
+                        INSERT INTO cameras (
+                            name, stream_url, status, is_active, controller_id,
+                            channel_number, slot_number
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            name,
+                            stream_url,
+                            status,
+                            self.db.bool_value(is_active),
+                            controller_id,
+                            channel_number,
+                            slot_number,
+                        ),
+                    ).fetchone()
+                    camera_id = row["id"]
+                else:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO cameras (
+                            name, stream_url, status, is_active, controller_id,
+                            channel_number, slot_number
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            name,
+                            stream_url,
+                            status,
+                            self.db.bool_value(is_active),
+                            controller_id,
+                            channel_number,
+                            slot_number,
+                        ),
+                    )
+                    camera_id = cursor.lastrowid
             else:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO cameras (name, stream_url, status, is_active)
-                    VALUES (?, ?, ?, 0)
-                    """,
-                    (name, stream_url, status),
+                camera_id = row["id"]
+                conn.execute(
+                    self._sql(
+                        """
+                        UPDATE cameras
+                        SET name = ?, stream_url = ?, status = ?, is_active = ?,
+                            controller_id = ?, channel_number = ?, slot_number = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """
+                    ),
+                    (
+                        name,
+                        stream_url,
+                        status,
+                        self.db.bool_value(is_active),
+                        controller_id,
+                        channel_number,
+                        slot_number,
+                        camera_id,
+                    ),
                 )
-                camera_id = cursor.lastrowid
+
+            self._delete_duplicate_camera_rows(conn, camera_id, stream_url, controller_id, channel_number)
+
         return self.get_camera(camera_id, include_secret=False)
+
+    def _delete_duplicate_camera_rows(
+        self,
+        conn,
+        camera_id: int,
+        stream_url: str,
+        controller_id: int | None,
+        channel_number: int | None,
+    ) -> None:
+        clauses = ["id <> ?", "stream_url = ?"]
+        params: list[object] = [camera_id, stream_url]
+        if controller_id is not None and channel_number is not None:
+            clauses.append("(controller_id = ? OR channel_number = ?)")
+            params.extend([controller_id, channel_number])
+        conn.execute(
+            self._sql(f"DELETE FROM cameras WHERE {' AND '.join(clauses)}"),
+            tuple(params),
+        )
+
+    def upsert_controller(
+        self,
+        *,
+        name: str,
+        host: str,
+        protocol: str,
+        port: int,
+        username: str | None,
+        password: str | None,
+        channel_start: int,
+        channel_count: int,
+        start_slot: int,
+        stream_path_template: str,
+        camera_name_template: str,
+        status: str,
+        last_error: str | None,
+    ) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                self._sql(
+                    """
+                    SELECT id
+                    FROM camera_controllers
+                    WHERE host = ? AND protocol = ? AND port = ? AND COALESCE(username, '') = COALESCE(?, '')
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ),
+                (host, protocol, port, username),
+            ).fetchone()
+
+            if row is None:
+                if self.db.is_postgres:
+                    row = conn.execute(
+                        """
+                        INSERT INTO camera_controllers (
+                            name, host, protocol, port, username, password,
+                            channel_start, channel_count, start_slot,
+                            stream_path_template, camera_name_template,
+                            status, last_error
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            name,
+                            host,
+                            protocol,
+                            port,
+                            username,
+                            password,
+                            channel_start,
+                            channel_count,
+                            start_slot,
+                            stream_path_template,
+                            camera_name_template,
+                            status,
+                            last_error,
+                        ),
+                    ).fetchone()
+                    controller_id = row["id"]
+                else:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO camera_controllers (
+                            name, host, protocol, port, username, password,
+                            channel_start, channel_count, start_slot,
+                            stream_path_template, camera_name_template,
+                            status, last_error
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            name,
+                            host,
+                            protocol,
+                            port,
+                            username,
+                            password,
+                            channel_start,
+                            channel_count,
+                            start_slot,
+                            stream_path_template,
+                            camera_name_template,
+                            status,
+                            last_error,
+                        ),
+                    )
+                    controller_id = cursor.lastrowid
+            else:
+                controller_id = row["id"]
+                conn.execute(
+                    self._sql(
+                        """
+                        UPDATE camera_controllers
+                        SET name = ?, username = ?, password = ?, channel_start = ?,
+                            channel_count = ?, start_slot = ?, stream_path_template = ?,
+                            camera_name_template = ?, status = ?, last_error = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """
+                    ),
+                    (
+                        name,
+                        username,
+                        password,
+                        channel_start,
+                        channel_count,
+                        start_slot,
+                        stream_path_template,
+                        camera_name_template,
+                        status,
+                        last_error,
+                        controller_id,
+                    ),
+                )
+
+        return self.get_controller(controller_id, include_secret=False)
+
+    def get_controller(self, controller_id: int, include_secret: bool = False) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                self._sql("SELECT * FROM camera_controllers WHERE id = ?"),
+                (controller_id,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        if not include_secret:
+            data.pop("password", None)
+        return data
+
+    def replace_controller_cameras(self, controller_id: int, cameras: list[dict]) -> list[dict]:
+        saved: list[dict] = []
+        keep_ids: list[int] = []
+        for camera in cameras:
+            record = self.upsert_camera(
+                name=str(camera["name"]),
+                stream_url=str(camera["stream_url"]),
+                status=str(camera.get("status") or "disconnected"),
+                controller_id=controller_id,
+                channel_number=int(camera["channel_number"]),
+                is_active=bool(camera.get("is_active", False)),
+                slot_number=int(camera["slot_number"]) if camera.get("slot_number") is not None else None,
+            )
+            keep_ids.append(int(record["id"]))
+            saved.append(record)
+
+        with self._connect() as conn:
+            if keep_ids:
+                placeholders = ", ".join("?" for _ in keep_ids)
+                conn.execute(
+                    self._sql(
+                        f"DELETE FROM cameras WHERE controller_id = ? AND id NOT IN ({placeholders})"
+                    ),
+                    (controller_id, *keep_ids),
+                )
+            else:
+                conn.execute(
+                    self._sql("DELETE FROM cameras WHERE controller_id = ?"),
+                    (controller_id,),
+                )
+        return saved
 
     def get_camera(self, camera_id: int, include_secret: bool = False) -> dict | None:
         with self._connect() as conn:
@@ -133,6 +433,16 @@ class CameraDB:
                 (status, camera_id),
             )
         return self.get_camera(camera_id, include_secret=False)
+
+    def set_controller_status(self, controller_id: int, status: str, last_error: str | None = None) -> dict | None:
+        with self._connect() as conn:
+            conn.execute(
+                self._sql(
+                    "UPDATE camera_controllers SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                ),
+                (status, last_error, controller_id),
+            )
+        return self.get_controller(controller_id, include_secret=False)
 
     def set_active(self, camera_id: int, slot_number: int = 1) -> dict | None:
         return self.assign_slot(camera_id, slot_number)
@@ -184,22 +494,6 @@ class CameraDB:
                 self._sql("DELETE FROM cameras WHERE id = ?"), (camera_id,)
             )
             return cursor.rowcount > 0
-
-    def ensure_default_camera(self, name: str, stream_url: str) -> None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT COUNT(*) AS count FROM cameras").fetchone()
-            if int(row["count"]) > 0:
-                return
-
-            conn.execute(
-                self._sql(
-                    """
-                    INSERT INTO cameras (name, stream_url, status, is_active, slot_number)
-                    VALUES (?, ?, 'unknown', ?, 1)
-                    """
-                ),
-                (name, stream_url, self.db.bool_value(True)),
-            )
 
     @staticmethod
     def _serialize(row, include_secret: bool = False) -> dict:

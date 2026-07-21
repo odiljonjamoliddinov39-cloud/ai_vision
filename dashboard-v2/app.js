@@ -26,9 +26,7 @@ const API_BASE = (() => {
   }
   const saved = localStorage.getItem("ai_vision_v2_api_base");
   if (saved) return saved;
-  if (window.location.hostname.endsWith("vercel.app")) {
-    return "https://67-205-160-8.sslip.io";
-  }
+  // Default to same-origin so Vercel rewrites can proxy /api to the DO backend.
   return window.location.origin;
 })();
 
@@ -37,9 +35,10 @@ const state = {
   activeModule: null,
   session: null,
   overview: null,
+  cameraRegistry: null,
 };
 
-const HEAD_MODULE_IDS = new Set(["overview", "users"]);
+const HEAD_MODULE_IDS = new Set(["overview", "users", "cameras"]);
 
 const MODULE_OVERRIDES = {
   users: { label: "Company Control", subtitle: "Companies, roles & access" },
@@ -90,6 +89,26 @@ async function api(path) {
     const detail = await response.text();
     throw new Error(detail || response.statusText);
   }
+  return response.json();
+}
+
+async function apiJson(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "X-AI-Role": state.role,
+      "X-AI-User-Name": "Dashboard V2 Preview",
+      "X-AI-Company": "All Companies",
+      ...(options.headers || {}),
+    },
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || response.statusText);
+  }
+
   return response.json();
 }
 
@@ -262,6 +281,34 @@ function renderModuleContent() {
     return;
   }
 
+  if (module.id === "cameras") {
+    const cameras = state.cameraRegistry?.cameras || [];
+    els.moduleContent.innerHTML = cameras.length
+      ? `
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Slot</th><th>Status</th><th>Source</th></tr>
+          </thead>
+          <tbody>
+            ${cameras
+              .map(
+                (camera) => `
+                  <tr>
+                    <td>${escapeHtml(camera.name)}</td>
+                    <td>${escapeHtml(camera.slot_number ?? "-")}</td>
+                    <td>${escapeHtml((camera.status || "unknown").toUpperCase())}</td>
+                    <td>${escapeHtml(camera.masked_stream_url || "")}</td>
+                  </tr>
+                `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      `
+      : `<p class="empty">No cameras are stored in the database yet.</p>`;
+    return;
+  }
+
   if (module.id === "activity" || module.id === "reports") {
     els.moduleContent.innerHTML = movements.length
       ? `<table><tbody>${movements
@@ -280,26 +327,41 @@ function renderModuleContent() {
 }
 
 // ---- Company Control --------------------------------------------------------
-// Companies/roles live in localStorage for now; swap the store helpers for
-// backend endpoints later.
+// Companies/roles are persisted on the backend so public account links work
+// across devices and through the Vercel public domain.
 
-const COMPANY_STORE_KEY = "ai_vision_v2_companies";
 const ACCESS_OPTIONS = [
   { key: "camera", label: "Camera Control" },
   { key: "analytics", label: "Analytics" },
 ];
 
+let companyStore = [];
+let publicDashboardUrl = window.location.origin;
+
 function loadCompanies() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(COMPANY_STORE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return companyStore;
 }
 
 function saveCompanies(companies) {
-  localStorage.setItem(COMPANY_STORE_KEY, JSON.stringify(companies));
+  companyStore = Array.isArray(companies) ? companies : [];
+}
+
+async function loadCompanyControl() {
+  const result = await api("/api/v2/company-control");
+  saveCompanies(result.companies);
+  publicDashboardUrl = result.public_dashboard_url || window.location.origin;
+  return companyStore;
+}
+
+async function persistCompanyControl(companies) {
+  const result = await apiJson("/api/v2/company-control", {
+    method: "POST",
+    body: JSON.stringify({ companies }),
+  });
+
+  saveCompanies(result.companies);
+  publicDashboardUrl = result.public_dashboard_url || window.location.origin;
+  return companyStore;
 }
 
 function newId() {
@@ -317,7 +379,11 @@ function ccCompanies() {
 }
 
 function accountLink(role) {
-  return `${window.location.origin}/dashboard-v2#acc=${role.id}`;
+  if (role.link) return role.link;
+  if (role.token) {
+    return `${publicDashboardUrl}/dashboard-v2#acc=${encodeURIComponent(role.token)}`;
+  }
+  return "";
 }
 
 function renderRoleView(company, role) {
@@ -423,7 +489,7 @@ function renderCompanyControl(container) {
     .join("");
 
   container.innerHTML = `
-    <p class="chart-note">Stored in this browser for now — backend hookup pending.</p>
+    <p class="chart-note">Stored securely on the DigitalOcean backend.</p>
     <form class="cc-add cc-add-company" data-cc-form="company">
       <input name="name" placeholder="Company name" required maxlength="60" autocomplete="off" />
       <button type="submit">Add company</button>
@@ -498,23 +564,22 @@ function handleCompanySubmit(event) {
   renderCompanyControl(els.moduleContent);
 }
 
-function handleCompanyClick(event) {
+async function handleCompanyClick(event) {
   const button = event.target.closest("[data-cc-action]");
   if (!button) return;
 
   if (button.dataset.ccAction === "save") {
-    const companies = ccCompanies();
-    companies.forEach((company) => {
-      (company.roles || []).forEach((role) => {
-        if (!role.link) role.link = accountLink(role);
-      });
-    });
-    saveCompanies(companies);
-    ccDirty = false;
-    ccEditingCompany = null;
-    toast("Changes saved — account links are ready.");
-    renderCompanyControl(els.moduleContent);
-    renderSideCompanies();
+    try {
+      const saved = await persistCompanyControl(ccCompanies());
+      ccDraft = saved;
+      ccDirty = false;
+      ccEditingCompany = null;
+      toast("Changes saved on DigitalOcean — public links are ready.");
+      renderCompanyControl(els.moduleContent);
+      renderSideCompanies();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error));
+    }
     return;
   }
 
@@ -703,14 +768,22 @@ function handleSettingsClick(event) {
 
 // ---- User dashboard (account links) -----------------------------------------
 
-function resolveAccountFromHash() {
-  const match = window.location.hash.match(/acc=([a-z0-9]+)/i);
-  if (!match) return null;
-  for (const company of loadCompanies()) {
-    const role = (company.roles || []).find((item) => item.id === match[1]);
-    if (role) return { company, role, missing: false };
-  }
-  return { company: null, role: null, missing: true };
+function accountTokenFromHash() {
+  const match = window.location.hash.match(/acc=([^&]+)/i);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function resolveAccountFromHash() {
+  const token = accountTokenFromHash();
+  if (!token) return null;
+
+  return apiJson(`/api/v2/company-control/accounts/public/${encodeURIComponent(token)}`, {
+    headers: {
+      "X-AI-Role": "viewer",
+      "X-AI-User-Name": "Public account",
+      "X-AI-Company": "Assigned company",
+    },
+  });
 }
 
 function livePreviewHtml(summary, health) {
@@ -726,7 +799,7 @@ function livePreviewHtml(summary, health) {
 }
 
 const MAX_NVRS = 5;
-const MAX_NVR_SLOTS = 15;
+const MAX_NVR_SLOTS = 50;
 let accountState = null;
 let accountModule = null;
 
@@ -744,13 +817,22 @@ function companyConfig(company) {
   return company;
 }
 
-function persistAccountCompany() {
-  const companies = loadCompanies();
-  const index = companies.findIndex((item) => item.id === accountState.company.id);
-  if (index >= 0) {
-    companies[index] = accountState.company;
-    saveCompanies(companies);
-  }
+async function persistAccountCompany() {
+  const token = accountTokenFromHash();
+  if (!token || !accountState?.company) return;
+
+  accountState = await apiJson(
+    `/api/v2/company-control/accounts/public/${encodeURIComponent(token)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ company: accountState.company }),
+      headers: {
+        "X-AI-Role": "viewer",
+        "X-AI-User-Name": "Public account",
+        "X-AI-Company": accountState.company.name || "Assigned company",
+      },
+    }
+  );
 }
 
 function accountMenus(role) {
@@ -990,7 +1072,9 @@ function handleAccountSubmit(event) {
     return;
   }
 
-  persistAccountCompany();
+  persistAccountCompany().catch((error) =>
+    toast(error instanceof Error ? error.message : String(error))
+  );
   renderAccountModule();
 }
 
@@ -1016,7 +1100,9 @@ function handleAccountClick(event) {
     return;
   }
 
-  persistAccountCompany();
+  persistAccountCompany().catch((error) =>
+    toast(error instanceof Error ? error.message : String(error))
+  );
   renderAccountModule();
 }
 
@@ -1495,17 +1581,23 @@ function renderAnalytics(container) {
 }
 
 async function load() {
-  const [session, overview] = await Promise.all([
-    api("/api/v2/rbac/me"),
-    api("/api/v2/head/overview"),
-  ]);
-  state.session = session;
-  state.overview = overview;
-  const account = resolveAccountFromHash();
-  if (account) {
+  const token = accountTokenFromHash();
+  if (token) {
+    const account = await resolveAccountFromHash();
     renderAccountView(account);
     return;
   }
+
+  const [session, overview, _companies, cameraRegistry] = await Promise.all([
+    api("/api/v2/rbac/me"),
+    api("/api/v2/head/overview"),
+    loadCompanyControl(),
+    api("/api/cameras"),
+  ]);
+  state.session = session;
+  state.overview = overview;
+  state.cameraRegistry = cameraRegistry;
+  renderSideCompanies();
   els.pageTitle.textContent = "Head Dashboard";
   els.companiesSection.hidden = false;
   renderNavigation();

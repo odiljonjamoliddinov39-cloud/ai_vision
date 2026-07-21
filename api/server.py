@@ -48,338 +48,10 @@ from webauthn.helpers.structs import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
+from database.company_portal_db import CompanyPortalDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
-
-
-# ============================================================
-# api/server.py — COPY/PASTE CHANGES
-# ============================================================
-
-# 1) Add this import next to the other database imports:
-
-from database.company_portal_db import CompanyPortalDB
-
-
-# 2) Add this constant next to the other DB paths:
-
-COMPANY_PORTAL_DB_PATH = ROOT / "database" / "company_portal.db"
-
-
-# 3) Add this global next to the other *_db globals:
-
-_company_portal_db: CompanyPortalDB | None = None
-
-
-# 4) Add this helper near _get_access_control_db():
-
-def _get_company_portal_db() -> CompanyPortalDB:
-    global _company_portal_db
-    if _company_portal_db is None:
-        _company_portal_db = CompanyPortalDB(
-            db_path=str(COMPANY_PORTAL_DB_PATH)
-        )
-    return _company_portal_db
-
-
-def _public_dashboard_url() -> str:
-    return os.getenv(
-        "PUBLIC_DASHBOARD_URL",
-        "https://ai-vision-dashboard-phi.vercel.app",
-    ).strip().rstrip("/")
-
-
-# 5) Add these Pydantic request models near the other BaseModel classes:
-/* ============================================================
-   dashboard-v2/app.js — COPY/PASTE REPLACEMENTS
-   ============================================================ */
-
-
-/* 1) ADD this helper immediately after the existing api(path) function. */
-
-async function apiJson(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      "X-AI-Role": state.role,
-      "X-AI-User-Name": "Dashboard V2 Preview",
-      "X-AI-Company": "All Companies",
-      ...(options.headers || {}),
-    },
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || response.statusText);
-  }
-
-  return response.json();
-}
-
-
-/* 2) REPLACE the block beginning with:
-      const COMPANY_STORE_KEY = "ai_vision_v2_companies";
-   and including loadCompanies() and saveCompanies()
-   with this block. */
-
-let companyStore = [];
-let publicDashboardUrl = "https://ai-vision-dashboard-phi.vercel.app";
-
-function loadCompanies() {
-  return companyStore;
-}
-
-function saveCompanies(companies) {
-  companyStore = Array.isArray(companies) ? companies : [];
-}
-
-async function loadCompanyControl() {
-  const result = await api("/api/v2/company-control");
-  companyStore = Array.isArray(result.companies) ? result.companies : [];
-  publicDashboardUrl =
-    result.public_dashboard_url ||
-    "https://ai-vision-dashboard-phi.vercel.app";
-  return companyStore;
-}
-
-async function persistCompanyControl(companies) {
-  const result = await apiJson("/api/v2/company-control", {
-    method: "POST",
-    body: JSON.stringify({ companies }),
-  });
-
-  companyStore = Array.isArray(result.companies) ? result.companies : [];
-  publicDashboardUrl =
-    result.public_dashboard_url ||
-    "https://ai-vision-dashboard-phi.vercel.app";
-
-  return companyStore;
-}
-
-
-/* 3) REPLACE accountLink(role) with this version. */
-
-function accountLink(role) {
-  if (role.link) return role.link;
-  if (role.token) {
-    return `${publicDashboardUrl}/dashboard-v2#acc=${encodeURIComponent(
-      role.token
-    )}`;
-  }
-  return "";
-}
-
-
-/* 4) Change this function declaration:
-
-function handleCompanyClick(event) {
-
-   to:
-
-async function handleCompanyClick(event) {
-
-
-   Then REPLACE only the "save" action block with this version: */
-
-  if (button.dataset.ccAction === "save") {
-    try {
-      const companies = ccCompanies();
-      const saved = await persistCompanyControl(companies);
-      ccDraft = saved;
-      ccDirty = false;
-      ccEditingCompany = null;
-      toast("Changes saved on DigitalOcean — public links are ready.");
-      renderCompanyControl(els.moduleContent);
-      renderSideCompanies();
-    } catch (error) {
-      toast(error instanceof Error ? error.message : String(error));
-    }
-    return;
-  }
-
-
-/* 5) REPLACE resolveAccountFromHash() with these two functions. */
-
-function accountTokenFromHash() {
-  const match = window.location.hash.match(/acc=([^&]+)/i);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-async function resolveAccountFromHash() {
-  const token = accountTokenFromHash();
-  if (!token) return null;
-
-  return apiJson(
-    `/api/v2/company-control/accounts/public/${encodeURIComponent(token)}`,
-    {
-      headers: {
-        "X-AI-Role": "viewer",
-        "X-AI-User-Name": "Public account",
-        "X-AI-Company": "Assigned company",
-      },
-    }
-  );
-}
-
-
-/* 6) REPLACE persistAccountCompany() with this async version. */
-
-async function persistAccountCompany() {
-  const token = accountTokenFromHash();
-  if (!token || !accountState?.company) return;
-
-  const result = await apiJson(
-    `/api/v2/company-control/accounts/public/${encodeURIComponent(token)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify({ company: accountState.company }),
-      headers: {
-        "X-AI-Role": "viewer",
-        "X-AI-User-Name": "Public account",
-        "X-AI-Company": accountState.company.name || "Assigned company",
-      },
-    }
-  );
-
-  accountState = result;
-}
-
-
-/* IMPORTANT:
-   Existing places that call persistAccountCompany() may remain as they are.
-   The request will run asynchronously. To display save failures visibly,
-   use:
-
-   persistAccountCompany().catch((error) =>
-     toast(error instanceof Error ? error.message : String(error))
-   );
-*/
-
-
-/* 7) REPLACE the complete load() function with this version. */
-
-async function load() {
-  const token = accountTokenFromHash();
-
-  if (token) {
-    const account = await resolveAccountFromHash();
-    renderAccountView(account);
-    return;
-  }
-
-  const [session, overview] = await Promise.all([
-    api("/api/v2/rbac/me"),
-    api("/api/v2/head/overview"),
-    loadCompanyControl(),
-  ]);
-
-  state.session = session;
-  state.overview = overview;
-
-  els.pageTitle.textContent = "Head Dashboard";
-  els.companiesSection.hidden = false;
-  renderNavigation();
-  renderSummary();
-  renderScope();
-  renderModuleContent();
-}
-
-
-/* 8) REPLACE these browser-only notes wherever they appear:
-
-   "Stored in this browser for now — backend hookup pending."
-
-   with:
-
-   "Stored securely on the DigitalOcean backend."
-*/
-
-class CompanyControlSaveRequest(BaseModel):
-    companies: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class PublicCompanyUpdateRequest(BaseModel):
-    company: dict[str, Any]
-
-
-# 6) Replace _is_public_path() with this version:
-
-def _is_public_path(path: str) -> bool:
-    return (
-        path == "/"
-        or path == "/api/status"
-        or path.startswith("/assets/")
-        or path.startswith("/api/v2/company-control/accounts/public/")
-        or path in {"/favicon.ico", "/robots.txt"}
-    )
-
-
-# 7) Add these routes near the other /api/v2 routes:
-
-@app.get("/api/v2/company-control")
-def get_company_control(request: Request) -> dict[str, Any]:
-    _require_permission(request, "manage_users")
-    return {
-        "companies": _get_company_portal_db().list_companies(),
-        "public_dashboard_url": _public_dashboard_url(),
-    }
-
-
-@app.post("/api/v2/company-control")
-def save_company_control(
-    payload: CompanyControlSaveRequest,
-    request: Request,
-) -> dict[str, Any]:
-    _require_permission(request, "manage_users")
-    companies = _get_company_portal_db().save_companies(
-        payload.companies,
-        _public_dashboard_url(),
-    )
-    _audit(
-        "company_control_saved",
-        {
-            "company_count": len(companies),
-            "role_count": sum(
-                len(company.get("roles") or [])
-                for company in companies
-            ),
-        },
-        actor=_request_actor(request),
-    )
-    return {
-        "companies": companies,
-        "public_dashboard_url": _public_dashboard_url(),
-    }
-
-
-@app.get("/api/v2/company-control/accounts/public/{token}")
-def get_public_company_account(token: str) -> dict[str, Any]:
-    account = _get_company_portal_db().get_public_account(token)
-    if not account:
-        raise HTTPException(
-            status_code=404,
-            detail="This account link is invalid or has been removed.",
-        )
-    return account
-
-
-@app.put("/api/v2/company-control/accounts/public/{token}")
-def update_public_company_account(
-    token: str,
-    payload: PublicCompanyUpdateRequest,
-) -> dict[str, Any]:
-    account = _get_company_portal_db().update_public_company(
-        token,
-        payload.company,
-    )
-    if not account:
-        raise HTTPException(
-            status_code=404,
-            detail="This account link is invalid or has been removed.",
-        )
-    return account
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -393,11 +65,16 @@ WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
 SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
+COMPANY_PORTAL_DB_PATH = ROOT / "database" / "company_portal.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
 DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
 MAX_CAMERA_SLOTS = 50
+CONTROLLER_STREAM_PATH_TEMPLATE = os.getenv(
+    "CAMERA_STREAM_PATH_TEMPLATE",
+    "/Streaming/Channels/{channel}01",
+)
 DEFAULT_ALLOWED_ORIGINS = [
     "https://ai-vision-dashboard-phi.vercel.app",
     "http://localhost:8000",
@@ -413,12 +90,48 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return values or default
 
 
+def _public_dashboard_url(request: Request | None = None) -> str:
+    configured = os.getenv("PUBLIC_DASHBOARD_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+
+    if request is not None:
+        origin = request.headers.get("origin", "").strip().rstrip("/")
+        if origin:
+            return origin
+
+        forwarded_host = request.headers.get("x-forwarded-host", "").strip()
+        forwarded_proto = request.headers.get("x-forwarded-proto", "https").strip() or "https"
+        if forwarded_host:
+            return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+        return f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+
+    return "https://ai-vision-dashboard-phi.vercel.app"
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_env_list("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS),
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-AI-User-Email", "X-Requested-With"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-AI-Role",
+        "X-AI-User-Id",
+        "X-AI-User-Name",
+        "X-AI-User-Email",
+        "X-AI-Company",
+        "X-AI-Permissions",
+        "X-AI-Deny-Permissions",
+        "X-AI-Factory",
+        "X-AI-Warehouse",
+        "X-AI-Production-Line",
+        "X-AI-Camera",
+        "X-Requested-With",
+    ],
 )
 
 _tracking_db: TrackingDB | None = None
@@ -426,6 +139,7 @@ _warehouse_db: WarehouseDB | None = None
 _camera_db: CameraDB | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _access_control_db: AccessControlDB | None = None
+_company_portal_db: CompanyPortalDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
 _manual_stop_requested = False
@@ -593,86 +307,7 @@ def _get_camera_db() -> CameraDB:
     global _camera_db
     if _camera_db is None:
         _camera_db = CameraDB(db_path=str(CAMERA_DB_PATH))
-        _seed_cameras_from_environment(_camera_db)
-        config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
-        first_camera = (config.get("cameras") or [{"name": "Camera 1", "source": 0}])[0]
-        _camera_db.ensure_default_camera(
-            name=str(first_camera.get("name", "Camera 1")),
-            stream_url=str(first_camera.get("source", 0)),
-        )
     return _camera_db
-
-
-def _seed_cameras_from_environment(db: CameraDB) -> None:
-    """Optional boot-time camera seeding for stateless cloud deployments.
-
-    DigitalOcean App Platform files can reset on rebuild. These env vars let the
-    backend recreate controller channels on startup so the dashboard does not
-    fall back to only the checked-in demo camera.
-    """
-
-    host = os.getenv("CAMERA_CONTROLLER_HOST", "").strip()
-    if not host:
-        return
-
-    existing_active = db.list_active_cameras(include_secret=False)
-    if existing_active and not (
-        len(existing_active) == 1
-        and str(existing_active[0].get("masked_stream_url", "")).strip().lower() == "dummy"
-    ):
-        return
-
-    protocol = os.getenv("CAMERA_CONTROLLER_PROTOCOL", "rtsp").strip().lower()
-    if protocol not in STREAM_DEFAULT_PORTS:
-        protocol = "rtsp"
-
-    try:
-        port = int(os.getenv("CAMERA_CONTROLLER_PORT", str(STREAM_DEFAULT_PORTS[protocol])))
-        channel_count = int(os.getenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "10"))
-        channel_start = int(os.getenv("CAMERA_CONTROLLER_CHANNEL_START", "1"))
-        start_slot = int(os.getenv("CAMERA_CONTROLLER_START_SLOT", "1"))
-    except ValueError:
-        return
-
-    controller = CameraControllerCreate(
-        name=os.getenv("CAMERA_CONTROLLER_NAME", "Warehouse NVR Substream"),
-        host=host,
-        protocol=protocol,
-        port=port,
-        username=os.getenv("CAMERA_CONTROLLER_USERNAME") or None,
-        password=os.getenv("CAMERA_CONTROLLER_PASSWORD") or None,
-        channel_count=max(1, min(channel_count, MAX_CAMERA_SLOTS)),
-        channel_start=max(1, channel_start),
-        start_slot=max(1, min(start_slot, MAX_CAMERA_SLOTS)),
-        stream_path_template=os.getenv(
-            "CAMERA_CONTROLLER_STREAM_TEMPLATE",
-            "/Streaming/Channels/{channel}02",
-        ),
-        camera_name_template=os.getenv(
-            "CAMERA_CONTROLLER_CAMERA_NAME_TEMPLATE",
-            "{controller} Camera {channel}",
-        ),
-        make_active=True,
-        test_controller=False,
-        test_streams=False,
-        require_public=False,
-    )
-
-    last_slot = controller.start_slot + controller.channel_count - 1
-    if last_slot > MAX_CAMERA_SLOTS:
-        return
-
-    for index in range(controller.channel_count):
-        channel = controller.channel_start + index
-        slot = controller.start_slot + index
-        saved = db.add_camera(
-            name=_controller_camera_name(controller, channel, slot),
-            stream_url=_controller_stream_url(controller, channel),
-            status="connected",
-        )
-        db.assign_slot(saved["id"], slot)
-
-    _sync_config_active_cameras(db)
 
 
 def _get_security_audit_db() -> SecurityAuditDB:
@@ -687,6 +322,13 @@ def _get_access_control_db() -> AccessControlDB:
     if _access_control_db is None:
         _access_control_db = AccessControlDB(db_path=str(ACCESS_CONTROL_DB_PATH))
     return _access_control_db
+
+
+def _get_company_portal_db() -> CompanyPortalDB:
+    global _company_portal_db
+    if _company_portal_db is None:
+        _company_portal_db = CompanyPortalDB(db_path=str(COMPANY_PORTAL_DB_PATH))
+    return _company_portal_db
 
 
 def _admin_api_key() -> str:
@@ -794,6 +436,7 @@ def _is_public_path(path: str) -> bool:
         path == "/"
         or path == "/api/status"
         or path.startswith("/assets/")
+        or path.startswith("/api/v2/company-control/accounts/public/")
         or path in {"/favicon.ico", "/robots.txt"}
     )
 
@@ -991,12 +634,11 @@ class CameraControllerCreate(BaseModel):
     channel_count: int = Field(default=4, ge=1, le=MAX_CAMERA_SLOTS)
     channel_start: int = Field(default=1, ge=1)
     start_slot: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
-    stream_path_template: str = Field(default="/Streaming/Channels/{channel}01", min_length=1)
     camera_name_template: str = Field(default="{controller} Camera {channel}", min_length=1)
     make_active: bool = True
     test_controller: bool = True
     test_streams: bool = False
-    require_public: bool = True
+    require_public: bool = False
 
 
 class V2UserCreate(BaseModel):
@@ -1061,6 +703,14 @@ class V2ScopeAssignment(BaseModel):
     scope_type: str = Field(pattern="^(company|factory|warehouse|production_line|zone|camera)$")
     scope_ids: list[str] = Field(default_factory=list)
     effect: str = Field(default="allow", pattern="^(allow|deny)$")
+
+
+class CompanyControlSaveRequest(BaseModel):
+    companies: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PublicCompanyUpdateRequest(BaseModel):
+    company: dict[str, Any]
 
 
 STREAM_DEFAULT_PORTS = {
@@ -1191,7 +841,7 @@ def _controller_stream_url(controller: CameraControllerCreate, channel: int) -> 
     protocol = controller.protocol.lower()
     host = _normalize_controller_host(controller.host)
     port = controller.port or STREAM_DEFAULT_PORTS[protocol]
-    path = controller.stream_path_template.format(channel=channel)
+    path = CONTROLLER_STREAM_PATH_TEMPLATE.format(channel=channel)
     if not path.startswith("/"):
         path = f"/{path}"
 
@@ -1213,22 +863,39 @@ def _controller_camera_name(controller: CameraControllerCreate, channel: int, sl
     )
 
 
-def _set_config_active_cameras(cameras: list[dict[str, Any]]) -> dict[str, Any]:
-    data = _read_yaml(CONFIG_PATH)
-    data["cameras"] = [
-        {
-            "name": camera["name"],
-            "source": _camera_source_from_text(camera["stream_url"]),
-            "slot_number": camera.get("slot_number") or index,
-        }
-        for index, camera in enumerate(cameras, start=1)
-    ]
-    _write_yaml(CONFIG_PATH, data)
-    return data
+def _masked_stream_url(stream_url: str) -> str:
+    return CameraDB._serialize({"stream_url": stream_url, "is_active": False}, include_secret=False)["masked_stream_url"]
 
 
-def _sync_config_active_cameras(db: CameraDB) -> dict[str, Any]:
-    return _set_config_active_cameras(db.list_active_cameras(include_secret=True))
+def _camera_status_from_test_result(result: dict[str, Any]) -> str:
+    if result.get("status") == "connected":
+        return "connected"
+
+    message = str(result.get("message") or "").lower()
+    if any(token in message for token in ("invalid", "missing", "use a full camera stream url", "unsupported")):
+        return "error"
+    return "disconnected"
+
+
+def _build_controller_camera_records(
+    controller: CameraControllerCreate,
+    statuses: dict[int, str],
+) -> list[dict[str, Any]]:
+    cameras: list[dict[str, Any]] = []
+    for index in range(controller.channel_count):
+        channel = controller.channel_start + index
+        slot = controller.start_slot + index
+        cameras.append(
+            {
+                "name": _controller_camera_name(controller, channel, slot),
+                "stream_url": _controller_stream_url(controller, channel),
+                "status": statuses.get(channel, "disconnected"),
+                "channel_number": channel,
+                "slot_number": slot if controller.make_active else None,
+                "is_active": bool(controller.make_active),
+            }
+        )
+    return cameras
 
 
 def _next_available_slot(cameras: list[dict[str, Any]]) -> int:
@@ -1245,11 +912,20 @@ def _next_available_slot(cameras: list[dict[str, Any]]) -> int:
 
 def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str, Any]:
     endpoint, validation_error = _camera_stream_endpoint(stream_url)
+    masked_url = _redact_sensitive_text(stream_url)
     if validation_error:
-        return {"status": "failed", "message": validation_error}
+        return {
+            "status": "failed",
+            "message": validation_error,
+            "details": {"stream_url": masked_url, "reason": validation_error},
+        }
 
     if stream_url.strip().lower() == "dummy":
-        return {"status": "connected", "message": "Demo camera source is available."}
+        return {
+            "status": "connected",
+            "message": "Demo camera source is available.",
+            "details": {"stream_url": masked_url, "reason": "demo source"},
+        }
 
     if endpoint is not None:
         endpoint_error = _check_camera_endpoint(endpoint)
@@ -1258,10 +934,12 @@ def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str,
                 "status": "failed",
                 "message": endpoint_error,
                 "details": {
+                    "stream_url": masked_url,
                     "host": endpoint["host"],
                     "port": endpoint["port"],
                     "scheme": endpoint["scheme"],
                     "endpoint_reachable": False,
+                    "reason": endpoint_error,
                 },
             }
 
@@ -1307,10 +985,12 @@ except Exception as exc:
         response = {"status": "failed", "message": "OpenCV timed out while waiting for a video frame."}
         if endpoint is not None:
             response["details"] = {
+                "stream_url": masked_url,
                 "host": endpoint["host"],
                 "port": endpoint["port"],
                 "scheme": endpoint["scheme"],
                 "endpoint_reachable": True,
+                "reason": response["message"],
             }
         return response
 
@@ -1325,12 +1005,14 @@ except Exception as exc:
         response = {"status": "connected", "message": "Camera stream opened and returned a frame."}
         if endpoint is not None:
             response["details"] = {
+                "stream_url": masked_url,
                 "host": endpoint["host"],
                 "port": endpoint["port"],
                 "scheme": endpoint["scheme"],
                 "endpoint_reachable": True,
                 "opencv_opened": True,
                 "frame_read": True,
+                "reason": response["message"],
             }
         return response
 
@@ -1338,13 +1020,17 @@ except Exception as exc:
     response = {"status": "failed", "message": message}
     if endpoint is not None:
         response["details"] = {
+            "stream_url": masked_url,
             "host": endpoint["host"],
             "port": endpoint["port"],
             "scheme": endpoint["scheme"],
             "endpoint_reachable": True,
             "opencv_opened": bool(payload.get("opened")),
             "frame_read": bool(payload.get("frame_read")),
+            "reason": message,
         }
+    else:
+        response["details"] = {"stream_url": masked_url, "reason": message}
     return response
 
 
@@ -1672,10 +1358,12 @@ def _validate_active_cameras_for_start() -> None:
     failures: list[str] = []
     for camera in active_cameras:
         result = _test_camera_stream(str(camera["stream_url"]))
-        db.set_status(camera["id"], result["status"])
+        db.set_status(camera["id"], _camera_status_from_test_result(result))
         if result["status"] != "connected":
             slot = camera.get("slot_number") or "-"
-            failures.append(f"Slot {slot} ({camera['name']}): {result['message']}")
+            failures.append(
+                f"Slot {slot} ({camera['name']}, {result['details']['stream_url']}): {result['message']}"
+            )
 
     if failures:
         raise HTTPException(
@@ -1683,8 +1371,6 @@ def _validate_active_cameras_for_start() -> None:
             detail="Cannot start detection until active camera slots are reachable. "
             + " ".join(failures),
         )
-
-    _sync_config_active_cameras(db)
 
 
 def _status() -> dict[str, Any]:
@@ -2127,6 +1813,71 @@ def v2_admin_reactivate_user(user_id: int, request: Request) -> dict[str, Any]:
     return user or {}
 
 
+@app.get("/api/v2/company-control")
+def get_company_control(request: Request) -> dict[str, Any]:
+    _require_permission(request, "manage_users")
+    return {
+        "companies": _get_company_portal_db().list_companies(),
+        "public_dashboard_url": _public_dashboard_url(request),
+    }
+
+
+@app.post("/api/v2/company-control")
+def save_company_control(
+    payload: CompanyControlSaveRequest,
+    request: Request,
+) -> dict[str, Any]:
+    _require_permission(request, "manage_users")
+    public_dashboard_url = _public_dashboard_url(request)
+    companies = _get_company_portal_db().save_companies(
+        payload.companies,
+        public_dashboard_url,
+    )
+    _audit(
+        "company_control_saved",
+        {
+            "company_count": len(companies),
+            "role_count": sum(
+                len(company.get("roles") or [])
+                for company in companies
+            ),
+        },
+        actor=_request_actor(request),
+    )
+    return {
+        "companies": companies,
+        "public_dashboard_url": public_dashboard_url,
+    }
+
+
+@app.get("/api/v2/company-control/accounts/public/{token}")
+def get_public_company_account(token: str) -> dict[str, Any]:
+    account = _get_company_portal_db().get_public_account(token)
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="This account link is invalid or has been removed.",
+        )
+    return account
+
+
+@app.put("/api/v2/company-control/accounts/public/{token}")
+def update_public_company_account(
+    token: str,
+    payload: PublicCompanyUpdateRequest,
+) -> dict[str, Any]:
+    account = _get_company_portal_db().update_public_company(
+        token,
+        payload.company,
+    )
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="This account link is invalid or has been removed.",
+        )
+    return account
+
+
 @app.get("/api/v2/rbac/me")
 def dashboard_v2_rbac_me(request: Request) -> dict[str, Any]:
     context = _rbac_context(request)
@@ -2258,7 +2009,17 @@ def opencv_diagnostics() -> dict[str, Any]:
 
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
-    return _redact_config(_read_yaml(CONFIG_PATH))
+    data = _redact_config(_read_yaml(CONFIG_PATH))
+    data["cameras"] = [
+        {
+            "name": camera["name"],
+            "source": camera["masked_stream_url"],
+            "slot_number": camera.get("slot_number"),
+            "status": camera.get("status"),
+        }
+        for camera in _get_camera_db().list_active_cameras(include_secret=False)
+    ]
+    return data
 
 
 @app.patch("/api/config")
@@ -2323,6 +2084,49 @@ def list_cameras() -> dict[str, Any]:
     return {"cameras": cameras, "active_camera": active, "active_cameras": active_cameras}
 
 
+@app.post("/api/cameras/health")
+def check_camera_health() -> dict[str, Any]:
+    db = _get_camera_db()
+    cameras = db.list_cameras(include_secret=True)
+    results: list[dict[str, Any]] = []
+    controller_errors: dict[int, list[str]] = {}
+
+    for camera in cameras:
+        result = _test_camera_stream(str(camera["stream_url"]))
+        status = _camera_status_from_test_result(result)
+        updated = db.set_status(int(camera["id"]), status)
+        payload = {
+            "camera": updated,
+            "test": result,
+        }
+        results.append(payload)
+        controller_id = camera.get("controller_id")
+        if controller_id is not None and status != "connected":
+            controller_errors.setdefault(int(controller_id), []).append(result["message"])
+
+    for camera in cameras:
+        controller_id = camera.get("controller_id")
+        if controller_id is None:
+            continue
+        errors = controller_errors.get(int(controller_id), [])
+        db.set_controller_status(
+            int(controller_id),
+            "error" if errors else "connected",
+            "; ".join(errors) if errors else None,
+        )
+
+    refreshed = db.list_cameras(include_secret=False)
+    return {
+        "cameras": refreshed,
+        "results": results,
+        "summary": {
+            "connected": sum(1 for camera in refreshed if camera.get("status") == "connected"),
+            "disconnected": sum(1 for camera in refreshed if camera.get("status") == "disconnected"),
+            "error": sum(1 for camera in refreshed if camera.get("status") == "error"),
+        },
+    }
+
+
 @app.post("/api/cameras/test")
 def test_camera_stream(request: CameraTestRequest) -> dict[str, Any]:
     return _test_camera_stream(request.stream_url)
@@ -2340,20 +2144,24 @@ def save_camera(camera: CameraCreate) -> dict[str, Any]:
         if camera.test_connection
         else {"status": "unknown", "message": "Saved without testing."}
     )
-    saved = db.add_camera(
-        name=camera.name.strip(),
-        stream_url=camera.stream_url.strip(),
-        status=test_result["status"],
-    )
-
-    active = None
+    status = _camera_status_from_test_result(test_result)
+    slot_number = None
     if camera.make_active and test_result["status"] == "connected":
         slot_number = camera.slot_number or _next_available_slot(db.list_cameras(include_secret=False))
-        active = db.assign_slot(saved["id"], slot_number)
-        _sync_config_active_cameras(db)
-        if _status()["running"]:
-            stop_detection()
-            start_detection(StartRequest())
+    saved = db.upsert_camera(
+        name=camera.name.strip(),
+        stream_url=camera.stream_url.strip(),
+        status=status,
+        controller_id=None,
+        channel_number=None,
+        is_active=slot_number is not None,
+        slot_number=slot_number,
+    )
+
+    active = db.get_camera(saved["id"], include_secret=False) if slot_number is not None else None
+    if _status()["running"] and slot_number is not None:
+        stop_detection()
+        start_detection(StartRequest())
 
     cameras = db.list_cameras(include_secret=False)
     active_cameras = [row for row in cameras if row["is_active"]]
@@ -2384,76 +2192,74 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
     if controller.require_public and private_host_message:
         raise HTTPException(status_code=400, detail=private_host_message)
 
-    controller_error = None
-    if controller.test_controller:
-        controller_error = _check_camera_endpoint(endpoint)
-        if controller_error:
-            controller_error = _redact_sensitive_text(controller_error)
+    validation_channel = controller.channel_start
+    validation_url = _controller_stream_url(controller, validation_channel)
+    validation_result = _test_camera_stream(validation_url)
+    if validation_result["status"] != "connected":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Controller validation failed for {validation_result['details']['stream_url']}: "
+                f"{validation_result['message']}"
+            ),
+        )
 
     db = _get_camera_db()
-    saved_cameras = []
-    test_results = []
-    controller_reachable = controller_error is None
+    saved_controller = db.upsert_controller(
+        name=controller.name.strip(),
+        host=endpoint["host"],
+        protocol=endpoint["scheme"],
+        port=endpoint["port"],
+        username=controller.username,
+        password=controller.password,
+        channel_start=controller.channel_start,
+        channel_count=controller.channel_count,
+        start_slot=controller.start_slot,
+        stream_path_template=CONTROLLER_STREAM_PATH_TEMPLATE,
+        camera_name_template=controller.camera_name_template,
+        status="connected",
+        last_error=None,
+    )
 
-    for index in range(controller.channel_count):
-        channel = controller.channel_start + index
-        slot = controller.start_slot + index
-        stream_url = _controller_stream_url(controller, channel)
+    statuses = {validation_channel: "connected"}
+    saved_cameras = db.replace_controller_cameras(
+        int(saved_controller["id"]),
+        _build_controller_camera_records(controller, statuses),
+    )
+    test_results = [
+        {
+            "camera_id": saved_camera["id"],
+            "slot_number": saved_camera.get("slot_number"),
+            "channel": controller.channel_start + index,
+            "status": saved_camera["status"],
+            "message": (
+                validation_result["message"]
+                if controller.channel_start + index == validation_channel
+                else "Camera discovered from controller configuration. Run health check to verify this channel."
+            ),
+            "stream_url": _redact_sensitive_text(_controller_stream_url(controller, controller.channel_start + index)),
+            "active": bool(saved_camera.get("is_active")),
+        }
+        for index, saved_camera in enumerate(saved_cameras)
+    ]
 
-        if controller.test_streams and controller_reachable:
-            test_result = _test_camera_stream(stream_url)
-        elif controller_reachable:
-            test_result = {
-                "status": "connected",
-                "message": f"Controller endpoint {endpoint['host']}:{endpoint['port']} is reachable.",
-            }
-        else:
-            test_result = {
-                "status": "failed",
-                "message": controller_error or "Controller endpoint is not reachable.",
-            }
-
-        saved = db.add_camera(
-            name=_controller_camera_name(controller, channel, slot),
-            stream_url=stream_url,
-            status=test_result["status"],
-        )
-
-        active = None
-        if controller.make_active and test_result["status"] == "connected":
-            active = db.assign_slot(saved["id"], slot)
-
-        saved_cameras.append(db.get_camera(saved["id"], include_secret=False))
-        test_results.append(
-            {
-                "camera_id": saved["id"],
-                "slot_number": slot,
-                "channel": channel,
-                "status": test_result["status"],
-                "message": test_result["message"],
-                "active": active is not None,
-            }
-        )
-
-    if controller.make_active and any(result["active"] for result in test_results):
-        _sync_config_active_cameras(db)
-        if _status()["running"]:
-            stop_detection()
-            start_detection(StartRequest())
+    if controller.make_active and _status()["running"]:
+        stop_detection()
+        start_detection(StartRequest())
 
     cameras = db.list_cameras(include_secret=False)
     active_cameras = [row for row in cameras if row["is_active"]]
     return {
         "controller": {
+            **saved_controller,
             "name": controller.name.strip(),
             "host": endpoint["host"],
             "port": endpoint["port"],
             "protocol": endpoint["scheme"],
-            "reachable": controller_reachable,
+            "reachable": True,
             "public_reachable_required": controller.require_public,
             "public_reachability_warning": private_host_message,
-            "message": controller_error
-            or f"Controller endpoint {endpoint['host']}:{endpoint['port']} is reachable.",
+            "message": f"Validated {validation_result['details']['stream_url']} and generated {controller.channel_count} camera records.",
         },
         "created": saved_cameras,
         "results": test_results,
@@ -2471,7 +2277,7 @@ def test_saved_camera(camera_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Camera not found.")
 
     result = _test_camera_stream(camera["stream_url"])
-    updated = db.set_status(camera_id, result["status"])
+    updated = db.set_status(camera_id, _camera_status_from_test_result(result))
     return {"camera": updated, "test": result}
 
 
@@ -2482,7 +2288,6 @@ def delete_saved_camera(camera_id: int) -> dict[str, Any]:
     if not deleted:
         raise HTTPException(status_code=404, detail="Camera not found.")
 
-    _sync_config_active_cameras(db)
     if _status()["running"]:
         stop_detection()
         start_detection(StartRequest())
@@ -2507,7 +2312,6 @@ def set_active_camera(
     if active is None:
         raise HTTPException(status_code=404, detail="Camera not found.")
 
-    _sync_config_active_cameras(db)
     restarted = False
     if _status()["running"]:
         stop_detection()
@@ -2534,7 +2338,6 @@ def clear_camera_slot(slot_number: int) -> dict[str, Any]:
 
     db = _get_camera_db()
     db.clear_slot(slot_number)
-    _sync_config_active_cameras(db)
     restarted = False
     if _status()["running"]:
         stop_detection()
@@ -2557,11 +2360,6 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     request = request or StartRequest()
     if _detector_pid() is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
-    # Treat the camera database as the source of truth. This prevents a stale
-    # config/config.yaml (for example the demo camera checked into the repo) from
-    # making the detector process only slot 1 while the dashboard has many active
-    # NVR/controller channels saved in SQLite.
-    _sync_config_active_cameras(_get_camera_db())
     _validate_active_cameras_for_start()
     _manual_stop_requested = False
     _clear_live_frames()
