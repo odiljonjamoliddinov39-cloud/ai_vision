@@ -90,6 +90,12 @@ class Camera:
             # tolerating the errors.
             "-skip_frame",
             "nokey",
+            # Drop corrupted packets instead of trying to decode them. On a
+            # lossy/mid-GOP RTSP stream (especially H.265) this quietly skips
+            # the garbage that otherwise floods the decoder with warnings,
+            # keeping the stream - and the logs - calm.
+            "-fflags",
+            "+discardcorrupt",
             "-i",
             self.source,
             "-f",
@@ -147,7 +153,7 @@ class Camera:
             return
         for line in iter(process.stderr.readline, b""):
             text = line.decode("utf-8", errors="replace").strip()
-            if text:
+            if text and not _is_benign_ffmpeg_noise(text):
                 print(f"[{self.name}] ffmpeg: {text}")
 
     def _terminate_ffmpeg(self) -> None:
@@ -400,6 +406,35 @@ def _configure_network_video_options(source) -> None:
         "OPENCV_FFMPEG_CAPTURE_OPTIONS",
         "rtsp_transport;tcp|stimeout;8000000|max_delay;500000|buffer_size;102400",
     )
+
+
+# High-frequency, non-fatal decoder/transport messages from lossy or H.265
+# RTSP streams. They say nothing actionable - a channel either yields frames
+# or it doesn't - but at a few per second per camera they bury every real log
+# line (connection changes, reconnects, AI events). Filtered out of the app
+# log so one unstable camera can't drown the system. Genuine problems
+# (connection refused, auth failure, ffmpeg exit) don't match and still print.
+_BENIGN_FFMPEG_MARKERS = (
+    "PPS changed between slices",
+    "PPS id out of range",
+    "Could not find ref with POC",
+    "error while decoding MB",
+    "bad cseq",
+    "Last message repeated",
+    "non-existing PPS",
+    "decode_slice_header error",
+    "mmco: unref short failure",
+    "illegal short term buffer",
+    "concealing",
+    "no frame!",
+    "corrupt decoded frame",
+    "left block unavailable",
+    "error while decoding",
+)
+
+
+def _is_benign_ffmpeg_noise(text: str) -> bool:
+    return any(marker in text for marker in _BENIGN_FFMPEG_MARKERS)
 
 
 _SECRET_URL_RE = re.compile(r"\b(?P<scheme>rtsp|https?)://(?P<username>[^:/\s]+):(?P<password>[^@\s]+)@")

@@ -23,7 +23,7 @@ from api.server import (
     _redact_sensitive_text,
     _test_camera_stream,
 )
-from cameras.camera import Camera, _mask_source
+from cameras.camera import Camera, _is_benign_ffmpeg_noise, _mask_source
 from database.camera_db import CameraDB
 
 
@@ -712,6 +712,34 @@ def test_camera_ffmpeg_command_only_decodes_keyframes():
     assert "-skip_frame" in command
     assert command[command.index("-skip_frame") + 1] == "nokey"
     assert command.index("-skip_frame") < command.index("-i")
+
+
+def test_camera_ffmpeg_command_discards_corrupt_packets():
+    # A lossy/H.265 RTSP stream should have its corrupt packets dropped so it
+    # stays quiet instead of flooding the decoder (and the logs).
+    command = Camera(name="Gate Camera", source="dummy")._ffmpeg_command()
+    assert "-fflags" in command
+    assert command[command.index("-fflags") + 1] == "+discardcorrupt"
+    assert command.index("-fflags") < command.index("-i")
+
+
+def test_benign_ffmpeg_decoder_noise_is_filtered_but_real_errors_are_kept():
+    # One unstable camera must not drown the log in decoder warnings, while
+    # genuine, actionable errors still surface.
+    for benign in (
+        "[hevc @ 0x5b] PPS changed between slices.",
+        "[h264 @ 0x5a] error while decoding MB 4 10, bytestream -6",
+        "[rtsp @ 0x5d] RTP: PT=60: bad cseq 0259 expected=ba3a",
+        "Last message repeated 2 times",
+    ):
+        assert _is_benign_ffmpeg_noise(benign) is True
+    for real in (
+        "Connection refused",
+        "401 Unauthorized",
+        "Server returned 404 Not Found",
+        "Could not open camera source",
+    ):
+        assert _is_benign_ffmpeg_noise(real) is False
 
 
 def test_camera_stream_check_only_decodes_keyframes():
