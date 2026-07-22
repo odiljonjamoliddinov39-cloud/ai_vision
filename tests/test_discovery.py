@@ -208,3 +208,135 @@ def test_discovery_scan_endpoint_returns_structured_services(monkeypatch):
     assert body["reachable"] is True
     assert body["services"][0]["protocol"] == "RTSP"
     assert body["services"][0]["requires_auth"] is True
+
+
+# --- Stream enumeration providers ------------------------------------------
+
+from discovery.providers import enumerate_streams, select_provider  # noqa: E402
+from discovery.providers.base import StreamCredentials  # noqa: E402
+from discovery.providers.onvif_provider import OnvifStreamProvider  # noqa: E402
+
+
+def test_hikvision_provider_builds_the_working_channel_paths():
+    result = enumerate_streams(
+        host="87.192.242.82",
+        port=554,
+        protocol="rtsp",
+        credentials=StreamCredentials("admin", "Q135246q"),
+        vendor="hikvision",
+        channel_count=3,
+    )
+    assert result.provider == "hikvision"
+    urls = [channel.stream_url for channel in result.channels]
+    assert urls == [
+        "rtsp://admin:Q135246q@87.192.242.82:554/Streaming/Channels/101",
+        "rtsp://admin:Q135246q@87.192.242.82:554/Streaming/Channels/201",
+        "rtsp://admin:Q135246q@87.192.242.82:554/Streaming/Channels/301",
+    ]
+
+
+def test_dahua_provider_uses_its_realmonitor_path():
+    result = enumerate_streams(
+        host="203.0.113.5",
+        port=554,
+        protocol="rtsp",
+        credentials=StreamCredentials("admin", "x"),
+        vendor="dahua",
+        channel_count=2,
+    )
+    assert result.provider == "dahua"
+    assert result.channels[1].stream_url == (
+        "rtsp://admin:x@203.0.113.5:554/cam/realmonitor?channel=2&subtype=0"
+    )
+
+
+def test_unknown_vendor_falls_back_to_generic_single_stream():
+    result = enumerate_streams(
+        host="203.0.113.5",
+        port=554,
+        protocol="rtsp",
+        credentials=None,
+        vendor=None,
+        channel_count=5,
+    )
+    assert result.provider == "generic-rtsp"
+    assert len(result.channels) == 1
+    assert result.channels[0].stream_url == "rtsp://203.0.113.5:554/"
+
+
+def test_credentials_are_url_encoded_in_stream_urls():
+    result = enumerate_streams(
+        host="203.0.113.5",
+        port=554,
+        protocol="rtsp",
+        credentials=StreamCredentials("admin", "p@ss/word"),
+        vendor="hikvision",
+        channel_count=1,
+    )
+    # '@' and '/' in the password must be percent-encoded so they don't corrupt
+    # the URL's authority/path.
+    assert "p%40ss%2Fword" in result.channels[0].stream_url
+
+
+def test_onvif_provider_is_skipped_when_the_library_is_absent():
+    # The optional ONVIF dependency is not installed here, so the provider must
+    # report itself unavailable rather than raising - discovery still works.
+    provider = OnvifStreamProvider()
+    assert provider.supports(vendor="hikvision", protocol="rtsp") is False
+    # And it is not the provider selected for a known vendor.
+    selected = select_provider(vendor="hikvision", protocol="rtsp")
+    assert selected is not None
+    assert selected.name == "hikvision"
+
+
+def test_discovery_connect_registers_enumerated_channels(tmp_path, monkeypatch):
+    from database.camera_db import CameraDB
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db = CameraDB(str(tmp_path / "cameras.db"))
+    monkeypatch.setattr(server, "_get_camera_db", lambda: db)
+    monkeypatch.setattr(server, "_sync_config_active_cameras", lambda db: None)
+    monkeypatch.setattr(server, "_status", lambda: {"running": False})
+    # Don't touch the real config / spawn a detector from a test.
+    monkeypatch.setattr(server, "stop_detection", lambda: None)
+    monkeypatch.setattr(server, "start_detection", lambda request: None)
+    # Skip the real ffmpeg stream test; treat every enumerated stream as reachable.
+    monkeypatch.setattr(server, "_test_camera_stream", lambda url: {"status": "connected", "message": "ok"})
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/discovery/connect",
+            json={
+                "host": "8.8.8.8",
+                "protocol": "rtsp",
+                "port": 554,
+                "username": "admin",
+                "password": "secret",
+                "vendor": "hikvision",
+                "channel_count": 3,
+                "name": "Warehouse",
+                "test_streams": True,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "hikvision"
+    assert len(body["results"]) == 3
+    assert all(result["active"] for result in body["results"])
+    assert [row["name"] for row in body["cameras"]] == [
+        "Warehouse Channel 1",
+        "Warehouse Channel 2",
+        "Warehouse Channel 3",
+    ]
+    # Credentials must never come back in the masked camera listing.
+    assert all("secret" not in row["masked_stream_url"] for row in body["cameras"])
+
+
+def test_discovery_connect_rejects_a_disallowed_host(monkeypatch):
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/discovery/connect",
+            json={"host": "192.168.1.10", "protocol": "rtsp", "vendor": "hikvision"},
+        )
+    assert response.status_code == 400
