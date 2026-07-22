@@ -81,6 +81,16 @@ def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
     assert 'menus.push({ id: "feed", label: "Camera Feed"' in source
 
 
+def test_camera_control_rows_use_stream_health_for_live_slots():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'api("/api/v2/streams/health").catch(() => ({ streams: [] }))' in source
+    assert "function streamStatusBySlot()" in source
+    assert 'const isLive = stream?.status === "online";' in source
+    assert 'const label = isLive' in source
+    assert '? "Live"' in source
+
+
 def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
@@ -92,7 +102,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=40" in html
+    assert "/dashboard-v2/assets/app.js?v=41" in html
     assert "/dashboard-v2/assets/styles.css?v=37" in html
 
 

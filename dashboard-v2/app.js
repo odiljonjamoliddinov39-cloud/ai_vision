@@ -37,6 +37,7 @@ const state = {
   activeModule: null,
   session: null,
   overview: null,
+  streams: [],
 };
 
 const LOAD_RETRY_DELAYS_MS = [500, 1000, 2000];
@@ -1262,6 +1263,15 @@ function nvrControllerMessage(nvr, assigned, total) {
   return message;
 }
 
+function streamStatusBySlot() {
+  const streams = state.streams || [];
+  return new Map(
+    streams
+      .filter((stream) => stream.slot_number != null)
+      .map((stream) => [Number(stream.slot_number), stream])
+  );
+}
+
 function dimBoxSvg({ w, h, d }) {
   const stroke = currentTheme() === "dark" ? "#38bdf8" : "#2563eb";
   const rgb = currentTheme() === "dark" ? "56,189,248" : "37,99,235";
@@ -1529,6 +1539,7 @@ function renderAccountModule() {
 
   if (menu.id === "camera") {
     const atLimit = config.nvrs.length >= MAX_NVRS;
+    const streamsBySlot = streamStatusBySlot();
     const nvrCards = config.nvrs
       .map((nvr) => {
         const channels = nvr.channelsDetail || [];
@@ -1539,10 +1550,14 @@ function renderAccountModule() {
           ? `<ul class="nvr-channels">${channels
               .map((channel) => {
                 const hasSlot = channel.slot_number != null;
-                const stateClass = hasSlot ? "pending" : channel.status === "connected" ? "pending" : "bad";
-                const label = hasSlot
-                  ? "Waiting for video"
-                  : channel.status === "connected"
+                const stream = hasSlot ? streamsBySlot.get(Number(channel.slot_number)) : null;
+                const isLive = stream?.status === "online";
+                const stateClass = isLive ? "ok" : hasSlot || channel.status === "connected" ? "pending" : "bad";
+                const label = isLive
+                  ? "Live"
+                  : hasSlot
+                    ? "Waiting for video"
+                    : channel.status === "connected"
                     ? "Waiting for a free slot"
                     : "Not connected";
                 const slotLabel = channel.slot_number != null ? `slot ${channel.slot_number}` : "no slot yet";
@@ -2671,12 +2686,14 @@ async function loadLiveWarehouseActivity(container) {
 }
 
 async function load() {
-  const [session, overview] = await Promise.all([
+  const [session, overview, streamsHealth] = await Promise.all([
     api("/api/v2/rbac/me"),
     api("/api/v2/head/overview"),
+    api("/api/v2/streams/health").catch(() => ({ streams: [] })),
   ]);
   state.session = session;
   state.overview = overview;
+  state.streams = streamsHealth.streams || [];
   const account = await resolveAccountFromHash();
   if (account) {
     renderAccountView(account);
