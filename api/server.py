@@ -48,6 +48,8 @@ from webauthn.helpers.structs import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from discovery import discover_device  # noqa: E402
+from discovery.portscan import DiscoveryHostError, resolve_and_guard  # noqa: E402
+from discovery.providers import StreamCredentials, enumerate_streams  # noqa: E402
 from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
 from database.accounts_db import AccountsDB  # noqa: E402
@@ -767,6 +769,19 @@ class CameraCleanupRequest(BaseModel):
 
 class DiscoveryScanRequest(BaseModel):
     host: str = Field(min_length=1, max_length=255)
+
+
+class DiscoveryConnectRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    protocol: str = Field(default="rtsp", pattern="^(rtsp|http|https)$")
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = None
+    password: str | None = None
+    vendor: str | None = None  # fingerprint hint carried from the scan step
+    channel_count: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
+    name: str = Field(default="Camera", min_length=1, max_length=60)
+    make_active: bool = True
+    test_streams: bool = True
 
 
 class CameraControllerCreate(BaseModel):
@@ -2580,6 +2595,138 @@ async def discovery_scan(request: DiscoveryScanRequest) -> dict[str, Any]:
         },
     )
     return result.to_dict()
+
+
+def _register_discovered_channels(
+    name_prefix: str,
+    channels: list[Any],
+    make_active: bool,
+    test_streams: bool,
+    db: CameraDB,
+) -> list[dict[str, Any]]:
+    """Save/activate a provider's enumerated channels, reusing the same
+    register-without-activate + slot-budget behaviour as the controller path:
+    every channel is saved, and channels beyond the free active-slot budget
+    are left registered-but-inactive rather than rejecting the whole request.
+    """
+    used_slots = {
+        int(camera["slot_number"])
+        for camera in db.list_active_cameras(include_secret=False)
+        if camera.get("slot_number") is not None
+    }
+    next_slot = 1
+    results: list[dict[str, Any]] = []
+
+    for stream in channels:
+        if test_streams:
+            test_result = _test_camera_stream(stream.stream_url)
+        else:
+            test_result = {"status": "connected", "message": "Stream registered without a pre-flight test."}
+
+        saved = db.add_camera(
+            name=f"{name_prefix} {stream.name}",
+            stream_url=stream.stream_url,
+            status=test_result["status"],
+        )
+
+        active = None
+        assigned_slot = None
+        message = test_result["message"]
+        if make_active and test_result["status"] == "connected":
+            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+                next_slot += 1
+            if next_slot <= MAX_CAMERA_SLOTS:
+                active = db.assign_slot(saved["id"], next_slot)
+                used_slots.add(next_slot)
+                assigned_slot = next_slot
+                next_slot += 1
+            else:
+                message = (
+                    f"Reachable, but no free camera slot is available right now "
+                    f"({MAX_CAMERA_SLOTS} active slot limit reached). Deactivate "
+                    "another camera to free one up for this one."
+                )
+
+        results.append(
+            {
+                "camera_id": saved["id"],
+                "channel": stream.channel,
+                "slot_number": assigned_slot,
+                "status": test_result["status"],
+                "message": message,
+                "active": active is not None,
+            }
+        )
+    return results
+
+
+@app.post("/api/discovery/connect")
+def discovery_connect(request: DiscoveryConnectRequest) -> dict[str, Any]:
+    """Complete the device-first flow: enumerate the chosen service's streams
+    via the provider stack (ONVIF-first, vendor/generic fallback) and register
+    them through the existing camera store + slot allocator + ffmpeg stream
+    layer. The operator supplies only the device, the selected service, and -
+    when required - credentials; never a stream path."""
+    host = request.host.strip()
+    try:
+        resolve_and_guard(host)
+    except DiscoveryHostError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    port = request.port or STREAM_DEFAULT_PORTS.get(request.protocol.lower(), 554)
+    credentials = StreamCredentials(request.username or "", request.password or "")
+    enumeration = enumerate_streams(
+        host=host,
+        port=port,
+        protocol=request.protocol,
+        credentials=credentials,
+        vendor=request.vendor,
+        channel_count=request.channel_count,
+    )
+
+    if enumeration.requires_auth and not request.username:
+        raise HTTPException(
+            status_code=401,
+            detail="This service requires authentication. Provide a username and password.",
+        )
+    if not enumeration.channels:
+        raise HTTPException(
+            status_code=502,
+            detail=_redact_sensitive_text(
+                enumeration.error or "No connectable streams were found on this device."
+            ),
+        )
+
+    db = _get_camera_db()
+    results = _register_discovered_channels(
+        name_prefix=request.name.strip(),
+        channels=enumeration.channels,
+        make_active=request.make_active,
+        test_streams=request.test_streams,
+        db=db,
+    )
+
+    if request.make_active and any(result["active"] for result in results):
+        _sync_config_active_cameras(db)
+        if _status()["running"]:
+            stop_detection()
+        try:
+            start_detection(StartRequest())
+        except HTTPException:
+            pass
+
+    cameras = db.list_cameras(include_secret=False)
+    active_cameras = [row for row in cameras if row["is_active"]]
+    _audit(
+        "discovery_connect",
+        {"host": host, "provider": enumeration.provider, "channels": len(results)},
+    )
+    return {
+        "provider": enumeration.provider,
+        "results": results,
+        "cameras": cameras,
+        "active_cameras": active_cameras,
+    }
 
 
 @app.post("/api/camera-controller")
