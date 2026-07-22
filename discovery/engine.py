@@ -41,12 +41,15 @@ def _service_for_port(ip: str, result: PortResult) -> tuple[DiscoveredService, s
     else:  # pragma: no cover - defensive; KNOWN_PORTS only has the above
         probe = fp.ServiceProbe(reachable=True, requires_auth=False, banner=None)
 
-    if not probe.reachable:
-        status = "unreachable"
-    elif probe.requires_auth:
-        status = "requires_auth"
-    else:
-        status = "available"
+    # The port scan already proved this TCP port is open, so the service is
+    # reachable by definition. The probe only *enriches* (auth hint + banner)
+    # and is best-effort: some NVRs accept the socket but don't answer an
+    # unauthenticated RTSP OPTIONS quickly, so a probe timeout must never
+    # downgrade an open port to "unreachable" - that produced a false negative
+    # against a real NVR whose RTSP port was demonstrably open. Auth detection
+    # here is likewise only a hint; credentials are always enterable at connect
+    # time regardless, because OPTIONS-based detection is unreliable.
+    status = "requires_auth" if probe.requires_auth else "available"
 
     return (
         DiscoveredService(

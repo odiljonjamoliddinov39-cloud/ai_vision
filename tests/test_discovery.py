@@ -369,3 +369,32 @@ def test_manual_stream_entry_is_kept_only_as_an_advanced_override():
     assert "discovery-advanced" in source
     assert "Advanced — enter a stream URL manually" in source
     assert "function manualNvrFormHtml()" in source
+
+
+def test_open_port_with_a_flaky_probe_stays_available_not_unreachable(monkeypatch):
+    # The scan proved 554 open; a probe that can't get a clean OPTIONS response
+    # (e.g. timeout) must NOT downgrade the service to "unreachable".
+    monkeypatch.setattr(
+        "discovery.engine.scan_ports",
+        lambda ip, *a, **k: [PortResult(port=554, service="rtsp", open=True)],
+    )
+
+    class _Probe:
+        reachable = False
+        requires_auth = False
+        banner = None
+
+    monkeypatch.setattr("discovery.engine.fp.probe_rtsp", lambda ip, port, **k: _Probe())
+
+    result = discover_device("8.8.8.8")
+    assert result.reachable is True
+    assert result.services[0].status == "available"
+
+
+def test_discovery_connect_form_always_offers_optional_credentials():
+    source = _app_js()
+    # Auth detection is unreliable, so username/password are always enterable
+    # and no longer hidden behind the requires-auth hint.
+    assert 'placeholder="Username (optional)"' in source
+    assert 'placeholder="Password (optional)"' in source
+    assert "const needsAuth = discoveryState.selectedRequiresAuth;" not in source

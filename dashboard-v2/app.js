@@ -1654,14 +1654,19 @@ function manualNvrFormHtml() {
 }
 
 function discoveryConnectFormHtml(isNvr) {
-  const needsAuth = discoveryState.selectedRequiresAuth;
+  // Credentials are always enterable (optional): auth detection from an RTSP
+  // OPTIONS probe is unreliable - it can report "Available" for a stream that
+  // actually needs a password - so we never hide the fields behind it. The
+  // needs-sign-in hint just clarifies why they matter for this service.
+  const authHint = discoveryState.selectedRequiresAuth
+    ? '<p class="discovery-auth-hint">This service asked for sign-in — enter the device credentials.</p>'
+    : "";
   return `
+    ${authHint}
     <div class="discovery-connect">
       <input placeholder="Name this device (e.g. Warehouse North)" maxlength="60" autocomplete="off" data-discovery-name />
-      ${needsAuth
-        ? `<input placeholder="Username" autocomplete="off" data-discovery-username />
-           <input type="password" placeholder="Password" autocomplete="new-password" data-discovery-password />`
-        : ""}
+      <input placeholder="Username (optional)" autocomplete="off" data-discovery-username />
+      <input type="password" placeholder="Password (optional)" autocomplete="new-password" data-discovery-password />
       ${isNvr
         ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" data-discovery-channels aria-label="Channels to connect" title="How many channels to connect" />`
         : ""}
