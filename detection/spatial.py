@@ -100,7 +100,7 @@ class SpatialAnalyzer:
         depth_m = max(0.05, width_m * depth_ratio)
         quantity, grid = self._estimate_quantity(
             class_name=class_name,
-            inventory_name=default_inventory_name,
+            inventory_name=inventory_name,
             width_m=width_m,
             height_m=height_m,
             depth_m=depth_m,

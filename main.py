@@ -315,9 +315,6 @@ def main():
                     last_tracked_count = 0
 
                 last_detection_count = len(detections)
-                last_detections_by_camera[cam.name] = [
-                    _serialize_detection(det, frame) for det in detections
-                ]
                 if product_recognizer is not None:
                     product_recognizer.annotate(cam.name, frame, detections)
 
@@ -331,6 +328,10 @@ def main():
                         for measurement in measurements
                     ]
                     last_spatial_objects_by_camera[cam.name] = last_spatial_objects
+
+                last_detections_by_camera[cam.name] = [
+                    _serialize_detection(det, frame) for det in detections
+                ]
 
                 draw_detections(frame, detections, box_thickness, font_scale)
                 if display_cfg.get("show_fps", True):
@@ -455,12 +456,13 @@ def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
 def _serialize_detection(det, frame) -> dict:
     height, width = frame.shape[:2]
     x1, y1, x2, y2 = getattr(det, "box", (0, 0, 0, 0))
-    return {
+    payload = {
         "timestamp": datetime.now().isoformat(timespec="milliseconds"),
         "frame_width": width,
         "frame_height": height,
         "class_id": getattr(det, "class_id", None),
         "class_name": getattr(det, "class_name", "object"),
+        "inventory_name": getattr(det, "inventory_name", None),
         "confidence": float(getattr(det, "confidence", 0.0)),
         "track_id": getattr(det, "track_id", None),
         "bbox": {
@@ -470,6 +472,20 @@ def _serialize_detection(det, frame) -> dict:
             "y2": float(y2),
         },
     }
+    for field in (
+        "object_type",
+        "quantity",
+        "quantity_grid",
+        "width_m",
+        "height_m",
+        "depth_m",
+        "distance_m",
+        "method",
+    ):
+        if hasattr(det, field):
+            value = getattr(det, field)
+            payload[field] = list(value) if field == "quantity_grid" else value
+    return payload
 
 
 def _write_detection_health(path: str, payload: dict) -> None:

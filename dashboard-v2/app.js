@@ -2224,18 +2224,17 @@ function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-// /api/occupancy/events returns raw check_in/check_out rows (most recent
-// first) from the object tracker - aggregate them into the same
-// {date, in, out} shape the movements chart already expects.
-function aggregateMovements(events) {
+// /api/warehouse/movements returns YOLO warehouse ledger rows. In appearance
+// mode, an IN row is created when a tracked item is first recognized, even if
+// it stays still in the frame.
+function aggregateMovements(movements) {
   const days = emptyMovements();
-  for (const event of events || []) {
-    const at = new Date(event.timestamp);
+  for (const movement of movements || []) {
+    const at = new Date(movement.created_at);
     if (Number.isNaN(at.getTime())) continue;
     const bucket = days.find((day) => sameDay(day.date, at));
     if (!bucket) continue;
-    if (event.event_type === "check_in") bucket.in += 1;
-    else if (event.event_type === "check_out") bucket.out += 1;
+    if (movement.direction === "IN") bucket.in += Number(movement.quantity || 1);
   }
   return days;
 }
@@ -2252,28 +2251,40 @@ function timeAgo(timestamp) {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-function recentActivityHtml(events) {
-  if (!events.length) {
+function movementDimensionsText(movement) {
+  const width = Number(movement.estimated_width_m);
+  const height = Number(movement.estimated_height_m);
+  const depth = Number(movement.estimated_depth_m);
+  if (![width, height, depth].every(Number.isFinite)) return "";
+  return `${width.toFixed(2)} x ${height.toFixed(2)} x ${depth.toFixed(2)} m`;
+}
+
+function recentActivityHtml(movements) {
+  const checkIns = (movements || []).filter((movement) => movement.direction === "IN");
+  if (!checkIns.length) {
     return `<div class="alert-empty-state">
       <span class="alert-dot" style="background:var(--good)"></span>
-      <div class="alert-main"><strong>No activity yet</strong><small>Check-ins will appear here once the tracker sees something cross the counting line.</small></div>
+      <div class="alert-main"><strong>No AI Check-ins yet</strong><small>YOLO will add items here when it recognizes stock in view, even if the item stays still.</small></div>
     </div>`;
   }
-  return events
+  return checkIns
     .slice(0, 10)
-    .map((event) => {
-      const label = event.event_type === "check_in" ? "Checked in" : "Checked out";
-      const dotColor = event.event_type === "check_in" ? "var(--good)" : "var(--warn)";
+    .map((movement) => {
+      const quantity = Number(movement.quantity || 1);
+      const quantityLabel = quantity > 1 ? `${quantity}x ` : "";
+      const dimensions = movementDimensionsText(movement);
+      const meta = [movement.camera_id, timeAgo(movement.created_at), dimensions || null]
+        .filter(Boolean)
+        .join(" - ");
       return `
         <div class="alert-row">
-          <span class="alert-dot" style="background:${dotColor}"></span>
-          <div class="alert-main"><strong>${escapeHtml(label)}: ${escapeHtml(event.class_name)}</strong><small>${escapeHtml(event.camera_name)} · ${escapeHtml(timeAgo(event.timestamp))}</small></div>
+          <span class="alert-dot" style="background:var(--good)"></span>
+          <div class="alert-main"><strong>AI Check in: ${escapeHtml(quantityLabel)}${escapeHtml(movement.product_name)}</strong><small>${escapeHtml(meta)}</small></div>
         </div>
       `;
     })
     .join("");
 }
-
 function axisMax(value) {
   const candidates = [2, 4, 5, 8, 10, 20, 30, 40, 50, 60, 80, 100, 200, 500, 1000];
   return candidates.find((candidate) => candidate >= value) || Math.ceil(value / 1000) * 1000;
@@ -2591,14 +2602,13 @@ function renderAnalytics(container, catalogMode = false) {
     {
       id: "movements",
       type: "grouped",
-      title: "Warehouse movements",
-      subtitle: "Items in vs out per day — past 14 days (live)",
+      title: "AI Check-ins",
+      subtitle: "YOLO-recognized item entries per day - past 14 days (live)",
       points: emptyMovements(),
       series: [
-        { key: "in", label: "IN" },
-        { key: "out", label: "OUT" },
+        { key: "in", label: "AI Check in" },
       ],
-      colors: [chartColors().blue, chartColors().green],
+      colors: [chartColors().blue],
       formatValue: count,
       svg: null,
     },
@@ -2636,7 +2646,7 @@ function renderAnalytics(container, catalogMode = false) {
     { name: "Memory Usage", pct: 71, color: "#db2777" },
   ];
   container.innerHTML = `
-    <p class="chart-note">${catalogMode ? "Operational overview with scheduled catalog recognition results below." : "Companies/uptime are sample data — warehouse movements and recent activity below are live."}</p>
+    <p class="chart-note">${catalogMode ? "Operational overview with scheduled catalog recognition results below." : "Companies/uptime are sample data - AI Check-ins below are live."}</p>
     <div class="chart-grid">${specs.map(chartCardHtml).join("")}</div>
     <div class="ov-grid">
       <section class="ov-card">
@@ -2675,7 +2685,7 @@ function renderAnalytics(container, catalogMode = false) {
           .join("")}
       </section>
       <section class="ov-card" data-recent-activity>
-        <h3>Recent Activity</h3>
+        <h3>AI Check in</h3>
         <div class="alert-empty-state">
           <span class="alert-dot" style="background:var(--good)"></span>
           <div class="alert-main"><strong>Loading…</strong></div>
@@ -2689,12 +2699,12 @@ function renderAnalytics(container, catalogMode = false) {
 
 async function loadLiveWarehouseActivity(container) {
   try {
-    const { events } = await accountsApi("/api/occupancy/events?limit=200");
+    const { movements } = await accountsApi("/api/warehouse/movements?limit=200");
     if (!container.isConnected) return;
 
     const movementsSpec = chartRegistry.get("movements");
     if (movementsSpec) {
-      movementsSpec.points = aggregateMovements(events);
+      movementsSpec.points = aggregateMovements(movements);
       movementsSpec.svg = groupedBarChartSvg("movements", movementsSpec.points, {
         seriesKeys: movementsSpec.series.map((series) => series.key),
         seriesLabels: movementsSpec.series.map((series) => series.label),
@@ -2709,12 +2719,12 @@ async function loadLiveWarehouseActivity(container) {
 
     const activityCard = container.querySelector("[data-recent-activity]");
     if (activityCard) {
-      activityCard.innerHTML = `<h3>Recent Activity</h3>${recentActivityHtml(events)}`;
+      activityCard.innerHTML = `<h3>AI Check in</h3>${recentActivityHtml(movements)}`;
     }
   } catch {
     const activityCard = container.querySelector("[data-recent-activity]");
     if (activityCard) {
-      activityCard.innerHTML = `<h3>Recent Activity</h3><div class="alert-empty-state">
+      activityCard.innerHTML = `<h3>AI Check in</h3><div class="alert-empty-state">
         <span class="alert-dot" style="background:var(--bad)"></span>
         <div class="alert-main"><strong>Couldn't load activity</strong></div>
       </div>`;

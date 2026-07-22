@@ -129,3 +129,28 @@ def test_appearance_counter_carries_spatial_unit_count():
     assert event.product_name == "cardboard box"
     assert event.quantity == 8
     assert event.dimensions_m == (1.73, 0.7, 0.95)
+
+
+def test_appearance_counter_suppresses_same_stationary_item_by_name_and_dimensions():
+    counter = AppearanceCounter(camera_id="Camera 1")
+    first = _FakeTrackedObject(
+        track_id=10,
+        class_name="stack of cardboard boxes",
+        box=(100, 100, 300, 300),
+    )
+    first.inventory_name = "Blue crate"
+    first.width_m = 1.2
+    first.height_m = 0.8
+    first.depth_m = 0.5
+    reassigned = _FakeTrackedObject(
+        track_id=42,
+        class_name="box",
+        box=(132, 125, 332, 325),
+    )
+    reassigned.inventory_name = "Blue crate"
+    reassigned.width_m = 1.23
+    reassigned.height_m = 0.78
+    reassigned.depth_m = 0.52
+
+    assert len(counter.update([first])) == 1
+    assert counter.update([reassigned]) == []

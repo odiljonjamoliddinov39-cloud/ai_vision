@@ -81,3 +81,34 @@ def test_spatial_analyzer_preserves_catalog_inventory_name():
     assert measurement.width_m > 0
     assert measurement.height_m > 0
     assert measurement.depth_m > 0
+
+
+def test_spatial_analyzer_uses_recognized_inventory_dimensions_for_quantity():
+    analyzer = SpatialAnalyzer(
+        horizontal_fov_degrees=90.0,
+        camera_height_m=1.2,
+        horizon_y_ratio=0.28,
+        unit_dimensions={
+            "Blue crate": {
+                "width_m": 0.42,
+                "height_m": 0.31,
+                "depth_m": 0.28,
+            },
+            "cardboard box": {
+                "width_m": 99.0,
+                "height_m": 99.0,
+                "depth_m": 99.0,
+            },
+        },
+    )
+
+    measurement = analyzer.measure(
+        frame_shape=(1080, 1920, 3),
+        class_name="stack of cardboard boxes",
+        box=(830, 380, 1100, 490),
+        inventory_name="Blue crate",
+    )
+
+    assert measurement.inventory_name == "Blue crate"
+    assert measurement.quantity > 1
+    assert measurement.quantity_grid[0] > 1
