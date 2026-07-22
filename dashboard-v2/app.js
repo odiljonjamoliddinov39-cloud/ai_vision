@@ -1522,24 +1522,9 @@ function renderAccountModule() {
       })
       .join("");
     els.moduleContent.innerHTML = `
-      <p class="chart-note">NVR connections: ${config.nvrs.length}/${MAX_NVRS} — each NVR can expose up to ${MAX_NVR_SLOTS} camera channels. Cameras must be reachable from this server over the internet (a public IP, port-forward, or DDNS hostname) — local-only addresses like 192.168.x.x won't connect from the cloud.</p>
-      <div class="cc-list">${nvrCards || `<p class="empty">No NVRs connected yet — add the first one below.</p>`}</div>
-      <form class="cc-add cc-add-role nvr-form" data-acc-form="nvr" ${atLimit ? "hidden" : ""}>
-        <input name="name" placeholder="NVR name (e.g. Warehouse North)" required maxlength="60" autocomplete="off" />
-        <input name="host" placeholder="Host, host:port, or a full rtsp://user:pass@host:port/path URL" required maxlength="200" autocomplete="off" />
-        <select name="protocol" aria-label="Stream protocol">
-          <option value="rtsp" selected>RTSP</option>
-          <option value="http">HTTP</option>
-          <option value="https">HTTPS</option>
-        </select>
-        <input name="port" type="number" min="1" max="65535" placeholder="Port (default 554)" />
-        <input name="username" placeholder="Username (optional)" autocomplete="off" />
-        <input name="password" type="password" placeholder="Password (optional)" autocomplete="new-password" />
-        <input name="channels" type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" required aria-label="Camera channels" />
-        <input name="streamPath" placeholder="Stream path template (optional, e.g. /Streaming/Channels/{channel}01)" maxlength="200" autocomplete="off" />
-        <button type="submit">Add NVR</button>
-      </form>
-      ${atLimit ? `<p class="empty">NVR limit reached (${MAX_NVRS}). Remove one to add another.</p>` : ""}
+      <p class="chart-note">Connected devices: ${config.nvrs.length}/${MAX_NVRS}. Enter a device's public IP or hostname and AI Vision discovers its available services automatically — no RTSP URL, stream path, or vendor needed. The device must be reachable over the internet (public IP, port-forward, or DDNS); local-only addresses like 192.168.x.x won't connect from the cloud.</p>
+      <div class="cc-list">${nvrCards || `<p class="empty">No devices connected yet — discover the first one below.</p>`}</div>
+      ${atLimit ? `<p class="empty">Device limit reached (${MAX_NVRS}). Remove one to add another.</p>` : `<div class="discovery-panel" data-discovery-panel></div>`}
       <section class="acc-block quality-block">
         <h3>Vision quality</h3>
         <p class="chart-note">Lower quality serves video faster over slow connections.</p>
@@ -1555,6 +1540,8 @@ function renderAccountModule() {
         </div>
       </section>
     `;
+    const discoveryPanel = els.moduleContent.querySelector("[data-discovery-panel]");
+    if (discoveryPanel) renderDiscoveryPanel(discoveryPanel);
     return;
   }
 
@@ -1603,6 +1590,276 @@ function renderAccountModule() {
     els.moduleContent.innerHTML = `<p class="empty">Loading 3D recognition results…</p>`;
     void renderCatalogDimensions(els.moduleContent);
     return;
+  }
+}
+
+// ---- Device-first discovery flow -------------------------------------------
+// State for the multi-step discovery interaction lives here so the panel can
+// re-render itself (search -> services -> auth-if-needed -> connect) without a
+// full module re-render wiping progress between steps.
+let discoveryState = {
+  host: "",
+  scanning: false,
+  result: null,
+  selectedPort: null,
+  selectedProtocol: null,
+  selectedRequiresAuth: false,
+  connecting: false,
+  error: null,
+};
+
+function resetDiscoveryState() {
+  discoveryState = {
+    host: "",
+    scanning: false,
+    result: null,
+    selectedPort: null,
+    selectedProtocol: null,
+    selectedRequiresAuth: false,
+    connecting: false,
+    error: null,
+  };
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replaceAll('"', "&quot;");
+}
+
+const DEVICE_TYPE_LABELS = {
+  nvr_or_dvr: "NVR / DVR",
+  ip_camera: "IP camera",
+  unknown: "Unknown device",
+};
+
+function manualNvrFormHtml() {
+  // The legacy manual path, kept only as a rarely-needed escape hatch behind
+  // the Advanced disclosure. Still handled by handleAccountSubmit's "nvr" case.
+  return `
+    <form class="cc-add cc-add-role nvr-form" data-acc-form="nvr">
+      <input name="name" placeholder="Name (e.g. Warehouse North)" required maxlength="60" autocomplete="off" />
+      <input name="host" placeholder="Host, host:port, or full rtsp://user:pass@host:port/path" required maxlength="200" autocomplete="off" />
+      <select name="protocol" aria-label="Stream protocol">
+        <option value="rtsp" selected>RTSP</option>
+        <option value="http">HTTP</option>
+        <option value="https">HTTPS</option>
+      </select>
+      <input name="port" type="number" min="1" max="65535" placeholder="Port (default 554)" />
+      <input name="username" placeholder="Username (optional)" autocomplete="off" />
+      <input name="password" type="password" placeholder="Password (optional)" autocomplete="new-password" />
+      <input name="channels" type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" required aria-label="Camera channels" />
+      <input name="streamPath" placeholder="Stream path template (optional)" maxlength="200" autocomplete="off" />
+      <button type="submit">Add manually</button>
+    </form>
+  `;
+}
+
+function discoveryConnectFormHtml(isNvr) {
+  const needsAuth = discoveryState.selectedRequiresAuth;
+  return `
+    <div class="discovery-connect">
+      <input placeholder="Name this device (e.g. Warehouse North)" maxlength="60" autocomplete="off" data-discovery-name />
+      ${needsAuth
+        ? `<input placeholder="Username" autocomplete="off" data-discovery-username />
+           <input type="password" placeholder="Password" autocomplete="new-password" data-discovery-password />`
+        : ""}
+      ${isNvr
+        ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" data-discovery-channels aria-label="Channels to connect" title="How many channels to connect" />`
+        : ""}
+      <button type="button" data-discovery-connect ${discoveryState.connecting ? "disabled" : ""}>
+        ${discoveryState.connecting ? "Connecting…" : "Connect"}
+      </button>
+    </div>
+  `;
+}
+
+function discoveryResultsHtml(result) {
+  const services = result.services || [];
+  const vendor = result.fingerprint?.vendor;
+  const isNvr = result.fingerprint?.device_type === "nvr_or_dvr";
+  const typeLabel = DEVICE_TYPE_LABELS[result.fingerprint?.device_type] || "Device";
+  const serviceButtons = services
+    .map((svc) => {
+      const protocol = String(svc.protocol || "").toLowerCase();
+      const selected =
+        discoveryState.selectedPort === svc.port && discoveryState.selectedProtocol === protocol;
+      const badge =
+        svc.status === "available"
+          ? "Available"
+          : svc.status === "requires_auth"
+            ? "Needs sign-in"
+            : "Unreachable";
+      return `
+        <button type="button" class="discovery-service ${selected ? "selected" : ""} ${svc.status}"
+                data-discovery-service data-port="${svc.port}" data-protocol="${escapeAttr(protocol)}"
+                data-requires-auth="${svc.requires_auth ? "true" : "false"}"
+                ${svc.status === "unreachable" ? "disabled" : ""}>
+          <span class="discovery-service-proto">${escapeHtml(svc.protocol)}</span>
+          <span class="discovery-service-port">Port ${svc.port}</span>
+          <span class="discovery-service-status">${badge}</span>
+        </button>
+      `;
+    })
+    .join("");
+  return `
+    <div class="discovery-device">
+      <p class="cc-cred"><em>Discovered:</em> ${escapeHtml(typeLabel)}${vendor ? ` · ${escapeHtml(vendor)}` : ""}</p>
+      <p class="chart-note">Select a service to connect to:</p>
+      <div class="discovery-services">${serviceButtons || '<p class="empty">No connectable services were exposed.</p>'}</div>
+      ${discoveryState.selectedPort ? discoveryConnectFormHtml(isNvr) : ""}
+    </div>
+  `;
+}
+
+function renderDiscoveryPanel(container) {
+  const st = discoveryState;
+  const result = st.result;
+  container.innerHTML = `
+    <form class="discovery-search" data-discovery-search>
+      <input name="host" value="${escapeAttr(st.host)}" placeholder="Device IP or hostname (e.g. 87.192.242.82)"
+             required maxlength="255" autocomplete="off" ${st.scanning ? "disabled" : ""} />
+      <button type="submit" ${st.scanning ? "disabled" : ""}>${st.scanning ? "Searching…" : "Search"}</button>
+    </form>
+    ${st.scanning ? `<p class="discovery-progress">Scanning ${escapeHtml(st.host)} for available services…</p>` : ""}
+    ${st.error ? `<p class="nvr-status bad">${escapeHtml(st.error)}</p>` : ""}
+    ${result && !result.reachable && !st.scanning ? `<p class="nvr-status bad">${escapeHtml(result.error || "No services found on this device.")}</p>` : ""}
+    ${result && result.reachable ? discoveryResultsHtml(result) : ""}
+    <details class="discovery-advanced">
+      <summary>Advanced — enter a stream URL manually</summary>
+      ${manualNvrFormHtml()}
+    </details>
+  `;
+
+  container.querySelector("[data-discovery-search]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    discoverySearch(container, event.target.elements.host.value);
+  });
+  container.querySelectorAll("[data-discovery-service]").forEach((btn) =>
+    btn.addEventListener("click", () => discoverySelectService(container, btn))
+  );
+  container.querySelector("[data-discovery-connect]")?.addEventListener("click", () =>
+    discoveryConnect(container)
+  );
+}
+
+async function discoverySearch(container, hostValue) {
+  const host = (hostValue || "").trim();
+  if (!host) return;
+  discoveryState = {
+    ...discoveryState,
+    host,
+    scanning: true,
+    result: null,
+    error: null,
+    selectedPort: null,
+    selectedProtocol: null,
+    selectedRequiresAuth: false,
+  };
+  renderDiscoveryPanel(container);
+  try {
+    const result = await accountsApi("/api/discovery/scan", {
+      method: "POST",
+      body: JSON.stringify({ host }),
+    });
+    discoveryState = { ...discoveryState, scanning: false, result };
+  } catch (error) {
+    discoveryState = { ...discoveryState, scanning: false, error: error.message };
+  }
+  if (container.isConnected) renderDiscoveryPanel(container);
+}
+
+function discoverySelectService(container, btn) {
+  discoveryState = {
+    ...discoveryState,
+    selectedPort: Number(btn.dataset.port),
+    selectedProtocol: btn.dataset.protocol,
+    selectedRequiresAuth: btn.dataset.requiresAuth === "true",
+  };
+  renderDiscoveryPanel(container);
+}
+
+async function discoveryConnect(container) {
+  const st = discoveryState;
+  const name = container.querySelector("[data-discovery-name]")?.value.trim() || st.host;
+  const username = container.querySelector("[data-discovery-username]")?.value.trim() || "";
+  const password = container.querySelector("[data-discovery-password]")?.value || "";
+  const channels = Math.min(
+    MAX_NVR_SLOTS,
+    Math.max(1, Number(container.querySelector("[data-discovery-channels]")?.value) || 1)
+  );
+  const vendor = st.result?.fingerprint?.vendor || null;
+
+  discoveryState = { ...discoveryState, connecting: true };
+  renderDiscoveryPanel(container);
+
+  const payload = {
+    host: st.host,
+    protocol: st.selectedProtocol,
+    port: st.selectedPort,
+    vendor,
+    channel_count: channels,
+    name,
+  };
+  if (username) {
+    payload.username = username;
+    payload.password = password;
+  }
+
+  try {
+    const response = await accountsApi("/api/discovery/connect", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    await persistDiscoveredDevice({
+      name,
+      host: st.host,
+      protocol: st.selectedProtocol,
+      port: st.selectedPort,
+      channels,
+      response,
+    });
+    resetDiscoveryState();
+    renderAccountModule();
+  } catch (error) {
+    discoveryState = { ...discoveryState, connecting: false };
+    toast(error.message);
+    if (container.isConnected) renderDiscoveryPanel(container);
+  }
+}
+
+async function persistDiscoveredDevice({ name, host, protocol, port, channels, response }) {
+  const { company } = accountState;
+  const channelsDetail = (response.results || []).map((result) => ({
+    camera_id: result.camera_id,
+    channel: result.channel,
+    slot_number: result.slot_number,
+    status: result.status,
+    message: result.message,
+    active: result.active,
+  }));
+  const transmitting = channelsDetail.filter((channel) => channel.active).length;
+  const previousNvrs = company.cameraConfig.nvrs;
+  const newNvr = {
+    id: newId(),
+    name,
+    host,
+    protocol,
+    port,
+    channels,
+    controllerMessage: `Connected via ${response.provider} — ${transmitting}/${channelsDetail.length} transmitting.`,
+    channelsDetail,
+  };
+  company.cameraConfig.nvrs = [...previousNvrs, newNvr];
+  try {
+    await persistAccountCompany();
+    if (transmitting > 0) {
+      toast(`"${name}" connected — ${transmitting}/${channelsDetail.length} channels transmitting.`);
+    } else {
+      toast(`"${name}" registered, but no channels are transmitting yet.`);
+    }
+  } catch (error) {
+    company.cameraConfig.nvrs = previousNvrs;
+    await deleteNvrCameras(newNvr);
+    toast(error.message);
   }
 }
 

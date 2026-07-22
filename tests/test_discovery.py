@@ -340,3 +340,32 @@ def test_discovery_connect_rejects_a_disallowed_host(monkeypatch):
             json={"host": "192.168.1.10", "protocol": "rtsp", "vendor": "hikvision"},
         )
     assert response.status_code == 400
+
+
+# --- Frontend device-first discovery flow ----------------------------------
+
+def _app_js() -> str:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return (root / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+
+def test_camera_page_uses_device_first_discovery_not_the_manual_form():
+    source = _app_js()
+    # The camera page renders the discovery panel, and the search/connect flow
+    # is wired to the discovery endpoints.
+    assert "data-discovery-panel" in source
+    assert "function renderDiscoveryPanel(container)" in source
+    assert 'accountsApi("/api/discovery/scan"' in source
+    assert 'accountsApi("/api/discovery/connect"' in source
+    assert "function discoverySelectService(container, btn)" in source
+
+
+def test_manual_stream_entry_is_kept_only_as_an_advanced_override():
+    source = _app_js()
+    # The legacy manual form still exists but only inside the Advanced
+    # disclosure, not as the primary path.
+    assert "discovery-advanced" in source
+    assert "Advanced — enter a stream URL manually" in source
+    assert "function manualNvrFormHtml()" in source
