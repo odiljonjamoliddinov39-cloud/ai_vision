@@ -3,7 +3,7 @@ import time
 import numpy as np
 
 from streams.frame_source import StreamFrameCamera
-from streams.manager import StreamManager, StreamSessionConfig
+from streams.manager import StreamManager, StreamSessionConfig, _ffmpeg_command
 
 
 def test_stream_manager_publishes_live_frame_without_ai(tmp_path):
@@ -78,3 +78,12 @@ def test_start_validation_does_not_open_rtsp(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_test_camera_stream", fail_if_called)
 
     server._validate_active_cameras_for_start()
+
+
+def test_stream_manager_ffmpeg_outputs_scaled_preview_jpegs():
+    command = _ffmpeg_command("rtsp://example.test/Streaming/Channels/101")
+
+    assert "-vf" in command
+    assert command[command.index("-vf") + 1] == "fps=4,scale=480:-2"
+    assert "-q:v" in command
+    assert command[command.index("-q:v") + 1] == "16"

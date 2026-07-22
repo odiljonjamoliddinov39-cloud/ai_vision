@@ -28,7 +28,7 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
 
     assert source.count("data-live-frame data-live-slot") == 3
     assert "window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS)" in source
-    assert "const LIVE_FRAME_REFRESH_BATCH = 2;" in source
+    assert "const LIVE_FRAME_REFRESH_BATCH = 4;" in source
     assert "new IntersectionObserver(" in source
     assert 'image.dataset.liveVisible !== "false"' in source
     assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
@@ -108,7 +108,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=42" in html
+    assert "/dashboard-v2/assets/app.js?v=43" in html
     assert "/dashboard-v2/assets/styles.css?v=37" in html
 
 

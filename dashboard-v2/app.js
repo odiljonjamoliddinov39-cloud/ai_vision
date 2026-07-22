@@ -49,7 +49,7 @@ let loadRetryTimer = null;
 // Refresh in small batches instead of stampeding every mounted camera at once:
 // a 26-camera grid feels much faster when visible tiles are updated smoothly.
 const LIVE_FRAME_REFRESH_MS = 150;
-const LIVE_FRAME_REFRESH_BATCH = 2;
+const LIVE_FRAME_REFRESH_BATCH = 4;
 let liveFrameTimer = null;
 let liveFrameCursor = 0;
 let liveFrameVisibilityObserver = null;

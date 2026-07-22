@@ -29,8 +29,9 @@ class StreamSessionConfig:
     source: str
     slot_number: int | None = None
     snapshot_dir: str | Path = "snapshots"
-    width: int = 640
-    jpeg_quality: int = 42
+    width: int = 480
+    jpeg_quality: int = 36
+    preview_fps: float = 4.0
 
 
 @dataclass
@@ -218,7 +219,12 @@ class _ManagedStreamSession:
 
     def _run_ffmpeg(self) -> None:
         process = subprocess.Popen(
-            _ffmpeg_command(self.config.source),
+            _ffmpeg_command(
+                self.config.source,
+                width=self.config.width,
+                jpeg_quality=self.config.jpeg_quality,
+                fps=self.config.preview_fps,
+            ),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -243,9 +249,7 @@ class _ManagedStreamSession:
                 end = buffer.find(b"\xff\xd9", start + 2) if start != -1 else -1
                 while start != -1 and end != -1:
                     jpeg = buffer[start : end + 2]
-                    frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    if frame is not None:
-                        self._publish(frame)
+                    self._publish_jpeg(jpeg)
                     buffer = buffer[end + 2 :]
                     start = buffer.find(b"\xff\xd8")
                     end = buffer.find(b"\xff\xd9", start + 2) if start != -1 else -1
@@ -306,6 +310,23 @@ class _ManagedStreamSession:
             # fully to V2 stream endpoints.
             self._write_atomic(self.config.snapshot_dir / f"latest_slot_{self.config.slot_number}.jpg", data)
 
+    def _publish_jpeg(self, data: bytes) -> None:
+        if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
+            return
+
+        self.status_data.status = "online"
+        self.status_data.width = max(240, min(int(self.config.width), 1280))
+        self.status_data.height = None
+        self.status_data.fps = float(self.config.preview_fps)
+        self.status_data.last_frame_at = datetime.now().isoformat(timespec="seconds")
+        self.status_data.last_error = None
+
+        safe_name = _safe_name(self.config.name)
+        self._write_atomic(self.config.snapshot_dir / f"latest_stream_{safe_name}.jpg", data)
+        if self.config.slot_number is not None:
+            self._write_atomic(self.config.snapshot_dir / f"latest_stream_slot_{self.config.slot_number}.jpg", data)
+            self._write_atomic(self.config.snapshot_dir / f"latest_slot_{self.config.slot_number}.jpg", data)
+
     @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -329,8 +350,13 @@ class _RateLimitedWarnings:
         return True
 
 
-def _ffmpeg_command(source: str) -> list[str]:
+def _ffmpeg_command(source: str, width: int = 480, jpeg_quality: int = 36, fps: float = 4.0) -> list[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    preview_width = max(240, min(int(width), 1280))
+    preview_fps = max(1.0, min(float(fps), 10.0))
+    # OpenCV JPEG quality is 0..100, while ffmpeg's mjpeg qscale is roughly
+    # 2(best)..31(worst). Keep previews small enough for 20+ camera grids.
+    qscale = max(4, min(18, round((100 - max(20, min(int(jpeg_quality), 90))) / 4)))
     return [
         ffmpeg,
         "-rtsp_transport",
@@ -341,12 +367,14 @@ def _ffmpeg_command(source: str) -> list[str]:
         "+discardcorrupt",
         "-i",
         source,
+        "-vf",
+        f"fps={preview_fps:g},scale={preview_width}:-2",
         "-f",
         "image2pipe",
         "-vcodec",
         "mjpeg",
         "-q:v",
-        "5",
+        str(qscale),
         "-an",
         "-threads",
         "1",
