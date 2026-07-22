@@ -1413,6 +1413,31 @@ def _catalog_frame_embeddings(health: dict[str, Any]) -> dict[str, list[float]]:
     return embeddings
 
 
+def _catalog_health_snapshot() -> dict[str, Any]:
+    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    if (
+        health.get("cameras")
+        or health.get("last_spatial_objects_by_camera")
+        or health.get("last_spatial_objects")
+    ):
+        return health
+
+    streams = (health.get("stream_manager") or {}).get("streams") or []
+    if not streams:
+        try:
+            streams = _get_stream_manager().status().get("streams", [])
+        except Exception:  # noqa: BLE001 - recognition can still return an empty run
+            streams = []
+
+    cameras = [
+        {"name": str(stream.get("name") or f"slot-{stream.get('slot_number')}"), "slot_number": stream.get("slot_number")}
+        for stream in streams
+        if stream.get("slot_number") is not None
+        and str(stream.get("status") or "").lower() not in {"offline", "stopped"}
+    ]
+    return {**health, "cameras": cameras}
+
+
 def _catalog_crop_candidates(health: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         import cv2
@@ -1645,7 +1670,7 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
 
     db = _get_catalog_db()
     items = db.list_items(scope_id, active_only=True)
-    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    health = _catalog_health_snapshot()
     cameras = health.get("cameras") or []
     by_camera = health.get("last_spatial_objects_by_camera") or {}
     if not by_camera and health.get("last_spatial_objects"):
@@ -1762,7 +1787,7 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
 def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
     """Create one immutable catalog-only count snapshot for a scope."""
     db = _get_catalog_db()
-    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    health = _catalog_health_snapshot()
     cameras = health.get("cameras") or []
     interval = _catalog_interval_hours()
     run_id = db.start_run(scope_id, interval, len(cameras))

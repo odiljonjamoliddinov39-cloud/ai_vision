@@ -451,6 +451,63 @@ def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similar
     }
 
 
+def test_catalog_recognition_uses_stream_manager_when_detector_health_has_no_cameras(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    frame[40:120, 50:170] = _reference_image((35, 160, 220))
+    cv2.imwrite(str(snapshot_dir / "latest_stream_slot_29.jpg"), frame)
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(json.dumps({"state": "starting", "cameras": []}), encoding="utf-8")
+
+    class FakeStreamManager:
+        def status(self):
+            return {
+                "streams": [
+                    {
+                        "name": "NVR Camera 2",
+                        "slot_number": 29,
+                        "status": "online",
+                    }
+                ]
+            }
+
+    class FakeDetector:
+        def __init__(self, **kwargs):
+            self.prompts = kwargs["class_prompts"]
+
+        def detect(self, _frame):
+            detection = type(
+                "Detection",
+                (),
+                {
+                    "class_name": "box",
+                    "confidence": 0.81,
+                    "box": (50, 40, 170, 120),
+                    "quantity": 1,
+                },
+            )()
+            return [detection]
+
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+    monkeypatch.setattr(server, "Detector", FakeDetector)
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: FakeStreamManager())
+    monkeypatch.setattr(server, "_catalog_yolo_detector", None)
+    monkeypatch.setattr(server, "_catalog_yolo_detector_key", None)
+    monkeypatch.setattr(server, "_read_yaml", lambda _path: {"detection": {}, "spatial_analysis": {"enabled": False}})
+
+    payload = server._run_catalog_recognition("warehouse-a")
+
+    assert payload["run"]["camera_count"] == 1
+    assert payload["results"][0]["item_name"] == "Baget Box"
+    assert payload["results"][0]["quantity"] == 1
+    assert payload["results"][0]["confidence"] == pytest.approx(0.81)
+
+
 def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
