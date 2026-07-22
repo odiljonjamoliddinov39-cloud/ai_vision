@@ -1,5 +1,7 @@
 import time
+from pathlib import Path
 
+import cv2
 import numpy as np
 
 from streams.frame_source import StreamFrameCamera
@@ -84,6 +86,28 @@ def test_stream_manager_ffmpeg_outputs_scaled_preview_jpegs():
     command = _ffmpeg_command("rtsp://example.test/Streaming/Channels/101")
 
     assert "-vf" in command
-    assert command[command.index("-vf") + 1] == "fps=4,scale=480:-2"
+    assert command[command.index("-vf") + 1] == "fps=2,scale=360:-2"
     assert "-q:v" in command
-    assert command[command.index("-q:v") + 1] == "16"
+    assert command[command.index("-q:v") + 1] == "18"
+    assert "-probesize" in command
+    assert command[command.index("-fflags") + 1] == "+nobuffer+discardcorrupt"
+    assert command[command.index("-flags") + 1] == "low_delay"
+
+
+def test_analytics_frame_source_skips_unchanged_stream_frame(tmp_path):
+    ok, jpg = cv2.imencode(".jpg", np.zeros((80, 120, 3), dtype="uint8"))
+    assert ok
+    (tmp_path / "latest_stream_slot_1.jpg").write_bytes(jpg.tobytes())
+    camera = StreamFrameCamera("Demo", slot_number=1, source="rtsp://example.invalid/stream", snapshot_dir=tmp_path)
+
+    first = camera.read()
+
+    assert isinstance(first, np.ndarray)
+    assert camera.read() is None
+
+
+def test_detector_stream_first_skips_cameras_outside_ai_queue():
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+
+    assert "if stream_first and cam.name not in inference_camera_names:" in source
+    assert "continue" in source

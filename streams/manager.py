@@ -29,9 +29,9 @@ class StreamSessionConfig:
     source: str
     slot_number: int | None = None
     snapshot_dir: str | Path = "snapshots"
-    width: int = 480
-    jpeg_quality: int = 36
-    preview_fps: float = 4.0
+    width: int = 360
+    jpeg_quality: int = 30
+    preview_fps: float = 2.0
 
 
 @dataclass
@@ -350,7 +350,7 @@ class _RateLimitedWarnings:
         return True
 
 
-def _ffmpeg_command(source: str, width: int = 480, jpeg_quality: int = 36, fps: float = 4.0) -> list[str]:
+def _ffmpeg_command(source: str, width: int = 360, jpeg_quality: int = 30, fps: float = 2.0) -> list[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     preview_width = max(240, min(int(width), 1280))
     preview_fps = max(1.0, min(float(fps), 10.0))
@@ -361,10 +361,16 @@ def _ffmpeg_command(source: str, width: int = 480, jpeg_quality: int = 36, fps: 
         ffmpeg,
         "-rtsp_transport",
         "tcp",
+        "-probesize",
+        "32768",
+        "-analyzeduration",
+        "0",
         "-skip_frame",
         "nokey",
         "-fflags",
-        "+discardcorrupt",
+        "+nobuffer+discardcorrupt",
+        "-flags",
+        "low_delay",
         "-i",
         source,
         "-vf",

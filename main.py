@@ -270,6 +270,8 @@ def main():
 
             any_frame = False
             for cam in cameras:
+                if stream_first and cam.name not in inference_camera_names:
+                    continue
                 frame = cam.read()
                 if frame is None:
                     continue

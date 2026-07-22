@@ -39,6 +39,9 @@ class StreamFrameCamera:
 
         try:
             current_mtime = path.stat().st_mtime
+            if current_mtime <= self._last_mtime:
+                time.sleep(0.02)
+                return None
             data = path.read_bytes()
         except OSError:
             return None

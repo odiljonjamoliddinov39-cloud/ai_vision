@@ -8,10 +8,10 @@ cameras:
 detection:
   model_path: yolov8s-world.pt
   confidence_threshold: 0.08
-  image_size: 640
+  image_size: 512
   class_agnostic_nms: true
   device: cpu
-  target_fps: 1.5
+  target_fps: 0.5
   max_concurrent_cameras: 4
   classes: null
   class_prompts:
