@@ -420,7 +420,7 @@ def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similar
                 (),
                 {
                     "class_name": "cardboard box",
-                    "confidence": 0.76,
+                    "confidence": 0.56,
                     "box": (50, 40, 170, 120),
                     "quantity": 3,
                     "width_m": 0.8,
@@ -445,7 +445,7 @@ def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similar
         "item_id": str(item["id"]),
         "item_name": "Baget Box",
         "quantity": 3,
-        "confidence": pytest.approx(0.76),
+        "confidence": pytest.approx(0.75),
         "dimensions_m": (0.8, 0.6, 0.4),
         "measurement_method": "monocular_ground_plane",
     }

@@ -1682,7 +1682,13 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                     if _catalog_detection_matches_item_prompt(candidate["detection"], str(item["name"]))
                 ]
                 if prompt_matches:
-                    confidence = max(_catalog_detection_confidence(detection) for detection in prompt_matches)
+                    min_confidence = float(
+                        os.getenv("CATALOG_SINGLE_ITEM_ACCEPTED_CONFIDENCE", "0.75")
+                    )
+                    confidence = max(
+                        min_confidence,
+                        max(_catalog_detection_confidence(detection) for detection in prompt_matches),
+                    )
                     quantity = sum(
                         max(1, int(detection.get("quantity") or 1))
                         for detection in prompt_matches
