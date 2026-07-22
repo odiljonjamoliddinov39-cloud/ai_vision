@@ -58,6 +58,8 @@ from database.catalog_db import CatalogDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
+from detection.detector import Detector  # noqa: E402
+from detection.spatial import SpatialAnalyzer  # noqa: E402
 from streams import StreamManager, StreamSessionConfig  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,6 +106,8 @@ _stream_manager: StreamManager | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _access_control_db: AccessControlDB | None = None
 _catalog_db: CatalogDB | None = None
+_catalog_yolo_detector: Detector | None = None
+_catalog_yolo_detector_key: tuple[Any, ...] | None = None
 _accounts_db: AccountsDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
@@ -1469,6 +1473,138 @@ def _catalog_detection_crop(frame, bbox: dict[str, Any]):
     return frame[y1:y2, x1:x2]
 
 
+def _catalog_live_frames(health: dict[str, Any], max_frames: int | None = None) -> list[dict[str, Any]]:
+    frames: list[dict[str, Any]] = []
+    for camera in health.get("cameras") or []:
+        if max_frames is not None and len(frames) >= max_frames:
+            break
+        slot = camera.get("slot_number")
+        camera_name = str(camera.get("name") or f"slot-{slot}")
+        for path in _live_feed_paths(slot=int(slot) if slot else None, camera=camera_name):
+            if not path.exists():
+                continue
+            try:
+                import cv2
+
+                frame = cv2.imread(str(path))
+            except ImportError:
+                return frames
+            if frame is not None:
+                frames.append({"camera_name": camera_name, "slot": slot, "frame": frame})
+                break
+    return frames
+
+
+def _catalog_detection_payload(detection) -> dict[str, Any]:
+    x1, y1, x2, y2 = getattr(detection, "box", (0, 0, 0, 0))
+    payload = {
+        "class_name": getattr(detection, "class_name", "object"),
+        "confidence": float(getattr(detection, "confidence", 0.0)),
+        "quantity": max(1, int(getattr(detection, "quantity", 1))),
+        "bbox": {"x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2)},
+    }
+    for field in ("width_m", "height_m", "depth_m", "distance_m", "method", "object_type", "quantity_grid"):
+        if hasattr(detection, field):
+            value = getattr(detection, field)
+            payload[field] = list(value) if field == "quantity_grid" else value
+    return payload
+
+
+def _catalog_detection_prompts(items: list[dict[str, Any]]) -> list[str]:
+    prompts = [str(item["name"]) for item in items]
+    prompts.extend(["cardboard box", "box", "carton box", "stack of boxes", "package"])
+    seen: set[str] = set()
+    unique = []
+    for prompt in prompts:
+        normalized = _catalog_normalize_name(prompt)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(prompt)
+    return unique
+
+
+def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
+    global _catalog_yolo_detector, _catalog_yolo_detector_key
+    if not prompts:
+        return None
+
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    det_cfg = config.get("detection", {})
+    key = (
+        det_cfg.get("model_path", "yolov8s-world.pt"),
+        tuple(prompts),
+        float(os.getenv("CATALOG_YOLO_CONFIDENCE_THRESHOLD", "0.03")),
+        det_cfg.get("device", "cpu"),
+        int(os.getenv("CATALOG_YOLO_IMAGE_SIZE", "640")),
+    )
+    if _catalog_yolo_detector is not None and _catalog_yolo_detector_key == key:
+        return _catalog_yolo_detector
+
+    try:
+        _catalog_yolo_detector = Detector(
+            model_path=str(key[0]),
+            confidence_threshold=float(key[2]),
+            device=str(key[3]),
+            class_prompts=prompts,
+            image_size=int(key[4]),
+            class_agnostic_nms=True,
+        )
+        _catalog_yolo_detector_key = key
+        return _catalog_yolo_detector
+    except Exception as exc:  # noqa: BLE001 - catalog recognition must degrade gracefully
+        _audit("catalog_yolo_detector_failed", {"error": str(exc)})
+        _catalog_yolo_detector = None
+        _catalog_yolo_detector_key = None
+        return None
+
+
+def _catalog_fresh_yolo_crop_candidates(
+    health: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    try:
+        from recognition.embedding import image_embedding
+    except ImportError:
+        return []
+
+    max_frames = int(os.getenv("CATALOG_RECOGNITION_MAX_FRAMES", "8"))
+    frames = _catalog_live_frames(health, max_frames=max_frames)
+    if not frames:
+        return []
+
+    prompts = _catalog_detection_prompts(items)
+    detector = _catalog_yolo_for_prompts(prompts)
+    if detector is None:
+        return []
+
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    spatial_cfg = config.get("spatial_analysis", {})
+    spatial_analyzer = (
+        SpatialAnalyzer.from_config(spatial_cfg)
+        if spatial_cfg.get("enabled", False)
+        else None
+    )
+    candidates: list[dict[str, Any]] = []
+    for entry in frames:
+        frame = entry["frame"]
+        detections = detector.detect(frame)
+        if spatial_analyzer is not None:
+            spatial_analyzer.enrich(frame, detections)
+        for detection in detections:
+            payload = _catalog_detection_payload(detection)
+            crop = _catalog_detection_crop(frame, payload["bbox"])
+            if crop is None:
+                continue
+            candidates.append(
+                {
+                    "camera_name": entry["camera_name"],
+                    "detection": payload,
+                    "embedding": image_embedding(crop),
+                }
+            )
+    return candidates
+
+
 def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
     """One instantaneous pass: match catalog items (only items enrolled via
     AI Check-in) against whatever the detector's current spatial-object
@@ -1485,6 +1621,7 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
         fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
         by_camera = {fallback_name: health.get("last_spatial_objects") or []}
     crop_candidates = _catalog_crop_candidates(health)
+    crop_candidates.extend(_catalog_fresh_yolo_crop_candidates(health, items))
     frame_embeddings = _catalog_frame_embeddings(health)
     visual_threshold = float(os.getenv("CATALOG_VISUAL_SIMILARITY_THRESHOLD", "0.94"))
     crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.90"))

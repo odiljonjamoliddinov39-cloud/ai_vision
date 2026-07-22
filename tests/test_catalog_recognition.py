@@ -338,6 +338,58 @@ def test_catalog_recognition_matches_checked_in_item_from_yolo_crop(tmp_path, mo
     assert matches[0]["confidence"] >= 0.9
 
 
+def test_catalog_recognition_runs_fresh_yolo_when_cached_detections_are_empty(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    frame[40:120, 50:170] = _reference_image((220, 60, 20))
+    cv2.imwrite(str(snapshot_dir / "latest_stream_slot_1.jpg"), frame)
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [{"name": "NVR Camera 2", "slot_number": 1}],
+                "last_spatial_objects_by_camera": {"NVR Camera 2": []},
+                "last_detections_by_camera": {"NVR Camera 2": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeDetector:
+        def __init__(self, **kwargs):
+            self.prompts = kwargs["class_prompts"]
+
+        def detect(self, _frame):
+            detection = type(
+                "Detection",
+                (),
+                {
+                    "class_name": "box",
+                    "confidence": 0.82,
+                    "box": (50, 40, 170, 120),
+                    "quantity": 1,
+                },
+            )()
+            return [detection]
+
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+    monkeypatch.setattr(server, "Detector", FakeDetector)
+    monkeypatch.setattr(server, "_catalog_yolo_detector", None)
+    monkeypatch.setattr(server, "_catalog_yolo_detector_key", None)
+
+    matches = server._catalog_match_current_frame("warehouse-a")
+
+    assert matches[0]["item_id"] == item["id"]
+    assert matches[0]["item_name"] == "Baget Box"
+    assert matches[0]["quantity"] == 1
+    assert matches[0]["confidence"] >= 0.9
+
+
 def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -398,10 +450,10 @@ def test_dashboard_run_recognition_button_uses_immediate_catalog_pass():
     assert "Recognition complete." in source
 
 
-def test_catalog_results_panel_falls_back_to_live_ai_check_ins():
+def test_catalog_results_panel_does_not_show_cached_warehouse_movements():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "function liveAiCheckInTableHtml(movements)" in source
-    assert 'accountsApi("/api/warehouse/movements?limit=50")' in source
-    assert "catalogResultsTableHtml(payload.results, activity.movements)" in source
-    assert "AI Check in -" in source
+    assert "function liveAiCheckInTableHtml(movements)" not in source
+    assert 'accountsApi("/api/warehouse/movements?limit=50")' not in source
+    assert "catalogResultsTableHtml(payload.results)" in source
+    assert "No checked-in AI item was recognized" in source
