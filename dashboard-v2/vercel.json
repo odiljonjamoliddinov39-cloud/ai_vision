@@ -1,8 +1,19 @@
 {
-  "cleanUrls": true,
   "rewrites": [
-    { "source": "/dashboard-v2/assets/:path*", "destination": "/:path*" },
-    { "source": "/assets/:path*", "destination": "/:path*" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/", "destination": "https://67-205-160-8.sslip.io/dashboard-v2" },
+    { "source": "/dashboard-v2", "destination": "https://67-205-160-8.sslip.io/dashboard-v2" },
+    { "source": "/dashboard-v2/:path*", "destination": "https://67-205-160-8.sslip.io/dashboard-v2/:path*" },
+    { "source": "/api/:path*", "destination": "https://67-205-160-8.sslip.io/api/:path*" },
+    { "source": "/snapshots/:path*", "destination": "https://67-205-160-8.sslip.io/snapshots/:path*" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
+      ]
+    }
   ]
 }
