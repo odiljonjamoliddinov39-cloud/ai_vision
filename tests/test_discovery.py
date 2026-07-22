@@ -398,3 +398,50 @@ def test_discovery_connect_form_always_offers_optional_credentials():
     assert 'placeholder="Username (optional)"' in source
     assert 'placeholder="Password (optional)"' in source
     assert "const needsAuth = discoveryState.selectedRequiresAuth;" not in source
+
+
+def test_connect_form_lets_the_operator_pick_the_vendor():
+    # Auto-detection is unreliable, so the connect form exposes an explicit
+    # vendor selector whose value overrides the detected fingerprint.
+    source = _app_js()
+    assert "data-discovery-vendor" in source
+    assert "DISCOVERY_VENDOR_OPTIONS" in source
+    assert 'container.querySelector("[data-discovery-vendor]")?.value' in source
+
+
+def test_explicit_hikvision_vendor_builds_channel_paths_even_without_detection(tmp_path, monkeypatch):
+    # The reported failure: an NVR whose brand wasn't detected fell back to the
+    # generic single-stream provider. An explicit "hikvision" choice must
+    # produce the real channel paths regardless of what discovery detected.
+    from database.camera_db import CameraDB
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db = CameraDB(str(tmp_path / "cameras.db"))
+    monkeypatch.setattr(server, "_get_camera_db", lambda: db)
+    monkeypatch.setattr(server, "_sync_config_active_cameras", lambda db: None)
+    monkeypatch.setattr(server, "_status", lambda: {"running": False})
+    monkeypatch.setattr(server, "stop_detection", lambda: None)
+    monkeypatch.setattr(server, "start_detection", lambda request: None)
+    monkeypatch.setattr(server, "_test_camera_stream", lambda url: {"status": "connected", "message": "ok"})
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/discovery/connect",
+            json={
+                "host": "8.8.8.8",
+                "protocol": "rtsp",
+                "port": 554,
+                "username": "admin",
+                "password": "secret",
+                "vendor": "hikvision",  # explicit, even though detection found nothing
+                "channel_count": 2,
+                "name": "NVR main",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "hikvision"
+    urls = sorted(row["masked_stream_url"] for row in body["cameras"])
+    assert urls[0].endswith("/Streaming/Channels/101")
+    assert urls[1].endswith("/Streaming/Channels/201")

@@ -1653,6 +1653,12 @@ function manualNvrFormHtml() {
   `;
 }
 
+const DISCOVERY_VENDOR_OPTIONS = [
+  { value: "hikvision", label: "Hikvision (Streaming/Channels)" },
+  { value: "dahua", label: "Dahua (realmonitor)" },
+  { value: "generic", label: "Generic — single RTSP stream" },
+];
+
 function discoveryConnectFormHtml(isNvr) {
   // Credentials are always enterable (optional): auth detection from an RTSP
   // OPTIONS probe is unreliable - it can report "Available" for a stream that
@@ -1661,12 +1667,27 @@ function discoveryConnectFormHtml(isNvr) {
   const authHint = discoveryState.selectedRequiresAuth
     ? '<p class="discovery-auth-hint">This service asked for sign-in — enter the device credentials.</p>'
     : "";
+  // Vendor auto-detection from a scan banner is unreliable (many NVRs don't
+  // advertise their brand on the open ports), and the wrong vendor builds the
+  // wrong stream path - so let the operator confirm/override it. Default to
+  // what was detected, else Hikvision for an NVR/DVR (by far the most common),
+  // else the generic single stream.
+  const detectedVendor = discoveryState.result?.fingerprint?.vendor || "";
+  const defaultVendor = detectedVendor || (isNvr ? "hikvision" : "generic");
+  const vendorSelect = `
+    <select data-discovery-vendor aria-label="Device type" title="Stream format for this device">
+      ${DISCOVERY_VENDOR_OPTIONS.map(
+        (option) =>
+          `<option value="${option.value}" ${option.value === defaultVendor ? "selected" : ""}>${option.label}</option>`
+      ).join("")}
+    </select>`;
   return `
     ${authHint}
     <div class="discovery-connect">
       <input placeholder="Name this device (e.g. Warehouse North)" maxlength="60" autocomplete="off" data-discovery-name />
       <input placeholder="Username (optional)" autocomplete="off" data-discovery-username />
       <input type="password" placeholder="Password (optional)" autocomplete="new-password" data-discovery-password />
+      ${vendorSelect}
       ${isNvr
         ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" data-discovery-channels aria-label="Channels to connect" title="How many channels to connect" />`
         : ""}
@@ -1791,7 +1812,8 @@ async function discoveryConnect(container) {
     MAX_NVR_SLOTS,
     Math.max(1, Number(container.querySelector("[data-discovery-channels]")?.value) || 1)
   );
-  const vendor = st.result?.fingerprint?.vendor || null;
+  // The operator's explicit choice wins over the (unreliable) detected vendor.
+  const vendor = container.querySelector("[data-discovery-vendor]")?.value || st.result?.fingerprint?.vendor || null;
 
   discoveryState = { ...discoveryState, connecting: true };
   renderDiscoveryPanel(container);

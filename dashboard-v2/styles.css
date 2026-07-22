@@ -789,7 +789,8 @@ input {
   padding-top: 4px;
 }
 
-.discovery-connect input {
+.discovery-connect input,
+.discovery-connect select {
   flex: 1;
   min-width: 140px;
   min-height: 38px;
@@ -798,6 +799,7 @@ input {
   background: var(--panel);
   color: var(--text);
   padding: 0 12px;
+  font: inherit;
 }
 
 .discovery-connect input[data-discovery-channels] {
