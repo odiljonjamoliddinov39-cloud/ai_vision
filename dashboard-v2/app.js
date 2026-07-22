@@ -1504,51 +1504,23 @@ async function renderCatalogResults(container) {
   }
 }
 
-// Recognition only needs an instant snapshot of the detector's current
-// spatial objects, but a moving or briefly-occluded item can be missed by
-// any single frame. This samples repeatedly over a few minutes instead
-// (server-side: /api/catalog/recognition/run-live), polling for progress
-// and updating the results table live as matches come in - only ever
-// against items enrolled via AI Check-in, same catalog the scheduled
-// recognition already uses.
+// Recognition runs immediately against items enrolled via AI Check-in. The
+// backend compares the current YOLO detection crops to those catalog reference
+// images, so generic objects are ignored unless they match a checked-in item.
 async function startLiveCatalogRecognition(container, button) {
   button.disabled = true;
   button.textContent = "Recognizing…";
   try {
-    const status = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live"), { method: "POST" });
-    pollLiveCatalogRecognition(container, button, status);
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/recognition/run"), { method: "POST" });
+    await refreshCatalogResultsTable(container, payload.results || []);
+    button.disabled = false;
+    button.textContent = "Run recognition now";
+    toast("Recognition complete.");
   } catch (error) {
-    if (String(error.message || "").includes("already active")) {
-      pollLiveCatalogRecognition(container, button, { running: true });
-    } else {
-      button.disabled = false;
-      button.textContent = "Run recognition now";
-      toast(error.message);
-    }
+    button.disabled = false;
+    button.textContent = "Run recognition now";
+    toast(error.message);
   }
-}
-
-function pollLiveCatalogRecognition(container, button, status) {
-  if (!container.isConnected) return;
-  if (status.results) {
-    void refreshCatalogResultsTable(container, status.results);
-  }
-  if (!status.running) {
-    void renderCatalogResults(container);
-    return;
-  }
-  const remaining = Number.isFinite(status.remaining_seconds) ? `${status.remaining_seconds}s left` : "…";
-  button.textContent = `Recognizing… ${remaining}`;
-  window.setTimeout(async () => {
-    if (!container.isConnected) return;
-    try {
-      const next = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live/status"));
-      pollLiveCatalogRecognition(container, button, next);
-    } catch {
-      button.disabled = false;
-      button.textContent = "Run recognition now";
-    }
-  }, 3000);
 }
 
 async function renderCatalogDimensions(container) {

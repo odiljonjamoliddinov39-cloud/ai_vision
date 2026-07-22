@@ -288,6 +288,56 @@ def test_live_catalog_recognition_only_matches_catalog_items(tmp_path, monkeypat
     assert [match["item_name"] for match in matches] == ["Blue crate"]
 
 
+def test_catalog_recognition_matches_checked_in_item_from_yolo_crop(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    frame[40:120, 50:170] = _reference_image((220, 60, 20))
+    cv2.imwrite(str(snapshot_dir / "latest_stream_slot_1.jpg"), frame)
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [{"name": "NVR Camera 2", "slot_number": 1}],
+                "last_spatial_objects_by_camera": {"NVR Camera 2": []},
+                "last_detections_by_camera": {
+                    "NVR Camera 2": [
+                        {
+                            "class_name": "cardboard box",
+                            "quantity": 4,
+                            "width_m": 0.91,
+                            "height_m": 0.79,
+                            "depth_m": 0.5,
+                            "method": "monocular_ground_plane",
+                            "bbox": {"x1": 50, "y1": 40, "x2": 170, "y2": 120},
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+
+    matches = server._catalog_match_current_frame("warehouse-a")
+
+    assert matches == [
+        {
+            "item_id": str(item["id"]),
+            "item_name": "Baget Box",
+            "quantity": 4,
+            "confidence": matches[0]["confidence"],
+            "dimensions_m": (0.91, 0.79, 0.5),
+            "measurement_method": "monocular_ground_plane",
+        }
+    ]
+    assert matches[0]["confidence"] >= 0.9
+
+
 def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -337,15 +387,15 @@ def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monke
         assert results["results"][0]["item_id"] == item["id"]
 
 
-def test_dashboard_has_a_run_recognition_now_button_that_polls_live_progress():
+def test_dashboard_run_recognition_button_uses_immediate_catalog_pass():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
     assert 'data-run-live-recognition' in source
     assert '"Run recognition now"' in source
-    assert 'catalogApiPath("/api/catalog/recognition/run-live")' in source
-    assert 'catalogApiPath("/api/catalog/recognition/run-live/status")' in source
-    assert "function pollLiveCatalogRecognition(container, button, status)" in source
-    assert '"already active"' in source
+    assert 'catalogApiPath("/api/catalog/recognition/run")' in source
+    assert 'catalogApiPath("/api/catalog/recognition/run-live/status")' not in source
+    assert "s left" not in source
+    assert "Recognition complete." in source
 
 
 def test_catalog_results_panel_falls_back_to_live_ai_check_ins():

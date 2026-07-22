@@ -1409,6 +1409,66 @@ def _catalog_frame_embeddings(health: dict[str, Any]) -> dict[str, list[float]]:
     return embeddings
 
 
+def _catalog_crop_candidates(health: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        import cv2
+        from recognition.embedding import image_embedding
+    except ImportError:
+        return []
+
+    slots_by_camera = {
+        str(camera.get("name") or f"slot-{camera.get('slot_number')}"): camera.get("slot_number")
+        for camera in health.get("cameras") or []
+    }
+    candidates: list[dict[str, Any]] = []
+    by_camera = health.get("last_detections_by_camera") or {}
+    for camera_name, detections in by_camera.items():
+        slot = slots_by_camera.get(str(camera_name))
+        frame = None
+        for path in _live_feed_paths(slot=int(slot) if slot else None, camera=str(camera_name)):
+            frame = cv2.imread(str(path)) if path.exists() else None
+            if frame is not None:
+                break
+        if frame is None:
+            continue
+
+        for detection in detections or []:
+            crop = _catalog_detection_crop(frame, detection.get("bbox") or {})
+            if crop is None:
+                continue
+            candidates.append(
+                {
+                    "camera_name": str(camera_name),
+                    "detection": detection,
+                    "embedding": image_embedding(crop),
+                }
+            )
+    return candidates
+
+
+def _catalog_detection_crop(frame, bbox: dict[str, Any]):
+    try:
+        x1 = int(float(bbox["x1"]))
+        y1 = int(float(bbox["y1"]))
+        x2 = int(float(bbox["x2"]))
+        y2 = int(float(bbox["y2"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    height, width = frame.shape[:2]
+    box_width = max(1, x2 - x1)
+    box_height = max(1, y2 - y1)
+    pad_x = max(4, int(box_width * 0.08))
+    pad_y = max(4, int(box_height * 0.08))
+    x1 = max(0, x1 - pad_x)
+    y1 = max(0, y1 - pad_y)
+    x2 = min(width, x2 + pad_x)
+    y2 = min(height, y2 + pad_y)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return frame[y1:y2, x1:x2]
+
+
 def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
     """One instantaneous pass: match catalog items (only items enrolled via
     AI Check-in) against whatever the detector's current spatial-object
@@ -1424,12 +1484,15 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
     if not by_camera and health.get("last_spatial_objects"):
         fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
         by_camera = {fallback_name: health.get("last_spatial_objects") or []}
+    crop_candidates = _catalog_crop_candidates(health)
     frame_embeddings = _catalog_frame_embeddings(health)
     visual_threshold = float(os.getenv("CATALOG_VISUAL_SIMILARITY_THRESHOLD", "0.94"))
+    crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.90"))
 
     matches: list[dict[str, Any]] = []
     for item in items:
         target = _catalog_normalize_name(item["name"])
+        references = db.list_images(str(item["id"]), include_embeddings=True)
         matched_objects: list[dict[str, Any]] = []
         for objects in by_camera.values():
             matched_objects.extend(
@@ -1444,7 +1507,28 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
         method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
 
         if not matched_objects:
-            references = db.list_images(str(item["id"]), include_embeddings=True)
+            crop_matches: list[tuple[float, dict[str, Any]]] = []
+            for candidate in crop_candidates:
+                score = max(
+                    (
+                        cosine_similarity(candidate["embedding"], ref.get("embedding") or [])
+                        for ref in references
+                    ),
+                    default=0.0,
+                )
+                if score >= crop_threshold:
+                    crop_matches.append((score, candidate["detection"]))
+
+            if crop_matches:
+                confidence = max(score for score, _ in crop_matches)
+                quantity = sum(
+                    max(1, int(detection.get("quantity") or 1))
+                    for _, detection in crop_matches
+                )
+                measurement = crop_matches[0][1]
+                method = str(measurement.get("method") or "catalog-crop-reference-and-3d")
+
+        if not matched_objects and quantity <= 0:
             best: tuple[float, str] | None = None
             for camera_name, frame_embedding in frame_embeddings.items():
                 score = max(
