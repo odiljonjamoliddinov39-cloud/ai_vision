@@ -53,9 +53,6 @@ let liveFrameTimer = null;
 // A 404 means the slot has no live camera (nothing is misbehaving) - back off
 // instead of hammering the endpoint at the full 500ms cadence every tick.
 const LIVE_FRAME_404_BACKOFF_MS = 3000;
-const LIVE_FRAME_PLACEHOLDER =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='9' viewBox='0 0 16 9'%3E%3Crect width='16' height='9' fill='%23f8fafc'/%3E%3C/svg%3E";
-
 function liveFrameUrl(slot) {
   const url = new URL(`${API_BASE}/api/live_frame`);
   url.searchParams.set("slot", slot);
@@ -70,7 +67,33 @@ function setFeedBadgeLive(image, isLive) {
   badge.classList.toggle("feed-stale-badge", !isLive);
 }
 
+function attachLiveFrameHandlers(image) {
+  if (image.dataset.liveHandlersAttached === "true") return;
+  image.dataset.liveHandlersAttached = "true";
+  image.addEventListener("load", () => {
+    delete image.dataset.livePriming;
+    image.classList.remove("feed-stale");
+    image.removeAttribute("title");
+    image.dataset.liveLastUpdate = new Date().toISOString();
+    setFeedBadgeLive(image, true);
+  });
+  image.addEventListener("error", () => {
+    delete image.dataset.livePriming;
+    image.classList.add("feed-stale");
+    image.title = "Waiting for a fresh camera frame";
+    setFeedBadgeLive(image, false);
+  });
+  if (image.complete && image.naturalWidth > 0) {
+    delete image.dataset.livePriming;
+    image.classList.remove("feed-stale");
+    image.removeAttribute("title");
+    setFeedBadgeLive(image, true);
+  }
+}
+
 async function refreshLiveFrameImage(image) {
+  attachLiveFrameHandlers(image);
+  if (image.dataset.livePriming === "true") return;
   if (image.dataset.liveLoading === "true") return;
   const slot = image.dataset.liveSlot;
   if (!slot) return;
@@ -122,7 +145,10 @@ async function refreshLiveFrameImage(image) {
 
 function refreshLiveFrames() {
   if (document.hidden) return;
-  els.moduleContent.querySelectorAll("img[data-live-frame]").forEach(refreshLiveFrameImage);
+  els.moduleContent.querySelectorAll("img[data-live-frame]").forEach((image) => {
+    attachLiveFrameHandlers(image);
+    refreshLiveFrameImage(image);
+  });
 }
 
 function stopLiveFrameRefresh() {
@@ -1586,7 +1612,7 @@ function renderAccountModule() {
           ? channels
               .map((channel) => {
                 if (channel.active && channel.slot_number != null) {
-                  return `<figure><span class="feed-transmitting feed-stale-badge">Waiting for video</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" src="${LIVE_FRAME_PLACEHOLDER}" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="Waiting for the first camera frame" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
+                  return `<figure><span class="feed-transmitting feed-stale-badge">Waiting for video</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="Waiting for the first camera frame" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
                 }
                 return `<figure class="feed-empty"><div>${escapeHtml(channel.message || "No signal yet")}</div><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
               })
