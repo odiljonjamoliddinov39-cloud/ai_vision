@@ -1,5 +1,52 @@
 # AI Vision Assistant — Phase 1 MVP
 
+## AI Vision V2 Architecture
+
+AI Vision V2 is device-first and stream-first:
+
+```text
+Network device
+-> Discovery Engine
+-> Stream Manager
+-> Live Dashboard
+-> YOLO Analytics
+-> Detection metadata / Tracking / Events / Database
+```
+
+The normal connection flow starts from only a device IP address or hostname.
+Users do not enter RTSP URLs, stream paths, vendors, or connection types in
+the dashboard. The Discovery Engine scans reachable services, fingerprints the
+device, and enumerates channels through ONVIF-first/provider fallback logic.
+
+`streams/manager.py` owns video-source connections and publishes clean live
+frames to `snapshots/latest_stream_slot_N.jpg`. The dashboard reads those
+frames through `/api/live_frame?slot=N` or `/api/v2/channels/{channel_id}/live`.
+YOLO is a secondary consumer: when the API starts analytics, `main.py` runs
+with `AI_VISION_STREAM_FIRST=1` and reads Stream Manager frame files instead
+of opening the RTSP/NVR stream directly.
+
+V2 API flow:
+
+```bash
+curl -X POST http://localhost:8000/api/v2/devices/discover \
+  -H "Content-Type: application/json" \
+  -d '{"host":"82.192.242.82"}'
+
+curl -X POST http://localhost:8000/api/v2/devices/1/authenticate \
+  -H "Content-Type: application/json" \
+  -d '{"protocol":"rtsp","port":554,"username":"USER","password":"PASS","channel_count":4}'
+
+curl -X POST http://localhost:8000/api/v2/channels/1/stream/start
+curl -X POST http://localhost:8000/api/v2/channels/1/analytics/start
+```
+
+Run and verify:
+
+```bash
+uvicorn api.server:app --reload --host 0.0.0.0 --port 8000
+python -m pytest tests/test_v2_stream_architecture.py tests/test_discovery.py tests/test_live_feed_refresh.py tests/test_camera_connection.py -q
+```
+
 Real-time camera object detection with bounding boxes, live counts,
 snapshots, and an event log. Built as the foundation for the full
 roadmap (tracking → memory → alerts → voice assistant) described in

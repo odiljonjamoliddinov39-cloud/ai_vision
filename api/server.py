@@ -52,11 +52,13 @@ from discovery.portscan import DiscoveryHostError, resolve_and_guard  # noqa: E4
 from discovery.providers import StreamCredentials, enumerate_streams  # noqa: E402
 from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
+from database.device_db import DeviceDB  # noqa: E402
 from database.accounts_db import AccountsDB  # noqa: E402
 from database.catalog_db import CatalogDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
+from streams import StreamManager, StreamSessionConfig  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -69,6 +71,7 @@ DASHBOARD_V2_DIR = ROOT / "dashboard-v2"
 TRACKING_DB_PATH = ROOT / "database" / "tracking.db"
 WAREHOUSE_DB_PATH = ROOT / "database" / "warehouse.db"
 CAMERA_DB_PATH = ROOT / "database" / "cameras.db"
+DEVICE_DB_PATH = ROOT / "database" / "devices.db"
 SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
 CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
@@ -96,6 +99,8 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 _tracking_db: TrackingDB | None = None
 _warehouse_db: WarehouseDB | None = None
 _camera_db: CameraDB | None = None
+_device_db: DeviceDB | None = None
+_stream_manager: StreamManager | None = None
 _security_audit_db: SecurityAuditDB | None = None
 _access_control_db: AccessControlDB | None = None
 _catalog_db: CatalogDB | None = None
@@ -300,6 +305,40 @@ def _get_camera_db() -> CameraDB:
             stream_url=str(first_camera.get("source", 0)),
         )
     return _camera_db
+
+
+def _get_device_db() -> DeviceDB:
+    global _device_db
+    if _device_db is None:
+        _device_db = DeviceDB(db_path=str(DEVICE_DB_PATH))
+    return _device_db
+
+
+def _get_stream_manager() -> StreamManager:
+    global _stream_manager
+    if _stream_manager is None:
+        _stream_manager = StreamManager(snapshot_dir=SNAPSHOT_DIR)
+    return _stream_manager
+
+
+def _ensure_streams_from_active_cameras() -> dict[str, Any]:
+    db = _get_camera_db()
+    if db is None or not hasattr(db, "list_active_cameras"):
+        return {"streams": []}
+    active = db.list_active_cameras(include_secret=True)
+    return _get_stream_manager().ensure_from_cameras(active)
+
+
+def _start_stream_for_camera(camera: dict[str, Any]) -> dict[str, Any]:
+    return _get_stream_manager().start(
+        StreamSessionConfig(
+            channel_id=str(camera["id"]),
+            name=str(camera["name"]),
+            source=str(camera["stream_url"]),
+            slot_number=camera.get("slot_number"),
+            snapshot_dir=SNAPSHOT_DIR,
+        )
+    )
 
 
 def _seed_cameras_from_environment(db: CameraDB) -> None:
@@ -784,6 +823,42 @@ class DiscoveryConnectRequest(BaseModel):
     test_streams: bool = True
 
 
+class V2DeviceDiscoverRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=80)
+
+
+class V2DeviceAuthenticateRequest(BaseModel):
+    protocol: str = Field(default="rtsp", pattern="^(rtsp|http|https)$")
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = None
+    password: str | None = None
+    channel_count: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
+    make_active: bool = True
+    test_streams: bool = False
+
+
+def _v2_stream_vendor_hint(device: dict[str, Any], request: V2DeviceAuthenticateRequest) -> str | None:
+    vendor = device.get("vendor")
+    if vendor:
+        return str(vendor)
+
+    # Some public NVR forwards expose only RTSP/554 and do not return a brand
+    # banner to the unauthenticated OPTIONS probe. The RTSP root almost never
+    # carries usable video for those devices; the common Hikvision channel
+    # profile is a better automatic first template while keeping vendor/path
+    # choices out of the operator UI.
+    if request.protocol.lower() == "rtsp":
+        device_type = str(device.get("device_type") or "")
+        if device_type in {"nvr_or_dvr", "ip_camera"} or request.channel_count > 1:
+            return "hikvision"
+    return None
+
+
+class V2StreamStartRequest(BaseModel):
+    slot_number: int | None = Field(default=None, ge=1, le=MAX_CAMERA_SLOTS)
+
+
 class CameraControllerCreate(BaseModel):
     name: str = Field(default="Camera Controller", min_length=1)
     host: str = Field(min_length=1)
@@ -1072,6 +1147,7 @@ def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str,
 import json
 import os
 import subprocess
+import shutil
 import sys
 import cv2
 
@@ -1098,8 +1174,9 @@ def try_ffmpeg(url, timeout_seconds):
     # This pre-flight check has to use the exact same method the real
     # detector process does, or a camera that would actually work could
     # still get wrongly rejected here before it's ever tried for real.
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     command = [
-        "ffmpeg", "-rtsp_transport", "tcp", "-skip_frame", "nokey", "-i", url,
+        ffmpeg, "-rtsp_transport", "tcp", "-skip_frame", "nokey", "-fflags", "+discardcorrupt", "-i", url,
         "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
         "-an", "-threads", "1", "-loglevel", "error", "-frames:v", "1", "-",
     ]
@@ -1115,10 +1192,12 @@ def try_ffmpeg(url, timeout_seconds):
             process.communicate(timeout=2.0)
         except Exception:
             pass
-        return True, False
-    return True, (b"\xff\xd8" in data and b"\xff\xd9" in data)
+        return True, False, "waiting_for_frame"
+    has_jpeg = b"\xff\xd8" in data and b"\xff\xd9" in data
+    return has_jpeg, has_jpeg, None
 
 try:
+    note = None
     if isinstance(source, int) and os.name == "nt":
         cap = None
         opened = False
@@ -1129,11 +1208,11 @@ try:
                 break
         cap.release()
     elif isinstance(source, str) and source.lower().startswith("rtsp://"):
-        opened, ok = try_ffmpeg(source, inner_timeout)
+        opened, ok, note = try_ffmpeg(source, inner_timeout)
     else:
         cap, opened, ok = try_open((source,))
         cap.release()
-    print(json.dumps({"ok": bool(opened and ok), "opened": opened, "frame_read": bool(ok)}))
+    print(json.dumps({"ok": bool(opened and ok), "opened": opened, "frame_read": bool(ok), "note": note}))
 except Exception as exc:
     print(json.dumps({"ok": False, "error": str(exc)}))
 """
@@ -1173,6 +1252,27 @@ except Exception as exc:
                 "endpoint_reachable": True,
                 "opencv_opened": True,
                 "frame_read": True,
+            }
+        return response
+
+    if payload.get("opened") and payload.get("note") == "waiting_for_frame":
+        response = {
+            "status": "connected",
+            "message": (
+                "Camera endpoint is reachable and FFmpeg stayed connected, but no keyframe "
+                "arrived before the short test timeout. Stream Manager will keep waiting "
+                "and reconnecting until live frames arrive."
+            ),
+        }
+        if endpoint is not None:
+            response["details"] = {
+                "host": endpoint["host"],
+                "port": endpoint["port"],
+                "scheme": endpoint["scheme"],
+                "endpoint_reachable": True,
+                "opencv_opened": True,
+                "frame_read": False,
+                "waiting_for_frame": True,
             }
         return response
 
@@ -1743,33 +1843,13 @@ def _validate_active_cameras_for_start() -> None:
             detail="Assign at least one active camera slot before starting detection.",
         )
 
-    reachable_cameras: list[dict[str, Any]] = []
-    failures: list[str] = []
     for camera in active_cameras:
-        result = _test_camera_stream(str(camera["stream_url"]))
-        db.set_status(camera["id"], result["status"])
-        if result["status"] == "connected":
-            reachable_cameras.append(camera)
-        else:
-            slot = camera.get("slot_number") or "-"
-            failures.append(f"Slot {slot} ({camera['name']}): {result['message']}")
+        db.set_status(camera["id"], "stream_managed")
 
-    if not reachable_cameras:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot start detection - none of the active camera slots are reachable "
-            "right now. " + " ".join(failures),
-        )
-
-    # One unreachable/misconfigured camera used to block every other camera
-    # from starting - the whole detection process would refuse to launch
-    # until every single active slot passed a real stream test. That
-    # contradicts main.py's own load_cameras(), which already tolerates a
-    # camera failing to open so one bad camera doesn't take down the app.
-    # Cameras that fail here stay active in the database (so they keep
-    # showing up and get retried on the next start) but are left out of the
-    # config the detector process actually opens.
-    _set_config_active_cameras(reachable_cameras)
+    # V2: analytics never opens RTSP for validation. The Stream Manager owns
+    # the upstream connection and is allowed to be starting/reconnecting while
+    # YOLO comes online as a secondary frame consumer.
+    _set_config_active_cameras(active_cameras)
 
 
 def _status() -> dict[str, Any]:
@@ -1783,6 +1863,7 @@ def _status() -> dict[str, Any]:
         else 0,
         "last_exit_code": _last_exit_code,
         "health": _read_json(DETECTION_HEALTH_PATH),
+        "streams": _get_stream_manager().status().get("streams", []),
         "stdout_tail": _tail_file(DETECTION_STDOUT_PATH, 40),
         "stderr_tail": _tail_file(DETECTION_STDERR_PATH, 40),
     }
@@ -2448,10 +2529,12 @@ def save_camera(camera: CameraCreate) -> dict[str, Any]:
     )
 
     active = None
+    stream = None
     if camera.make_active and test_result["status"] == "connected":
         slot_number = camera.slot_number or _next_available_slot(db.list_cameras(include_secret=False))
         active = db.assign_slot(saved["id"], slot_number)
         _sync_config_active_cameras(db)
+        stream = _start_stream_for_camera(active)
         if _status()["running"]:
             stop_detection()
             start_detection(StartRequest())
@@ -2463,6 +2546,7 @@ def save_camera(camera: CameraCreate) -> dict[str, Any]:
         "active_camera": db.get_camera(active["id"], include_secret=False) if active else None,
         "active_cameras": active_cameras,
         "test": test_result,
+        "stream": stream,
         "cameras": cameras,
     }
 
@@ -2537,6 +2621,7 @@ def _register_controller_channels(
 
         active = None
         assigned_slot = None
+        stream_status = None
         message = test_result["message"]
         if controller.make_active and test_result["status"] == "connected":
             while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
@@ -2546,6 +2631,7 @@ def _register_controller_channels(
                 used_slots.add(next_slot)
                 assigned_slot = next_slot
                 next_slot += 1
+                stream_status = _start_stream_for_camera(active)
             else:
                 message = (
                     f"Reachable, but no free camera slot is available right now "
@@ -2562,6 +2648,7 @@ def _register_controller_channels(
                 "status": test_result["status"],
                 "message": message,
                 "active": active is not None,
+                "stream": stream_status,
             }
         )
 
@@ -2595,6 +2682,121 @@ async def discovery_scan(request: DiscoveryScanRequest) -> dict[str, Any]:
         },
     )
     return result.to_dict()
+
+
+@app.post("/api/v2/devices/discover")
+async def v2_discover_device(request: V2DeviceDiscoverRequest) -> dict[str, Any]:
+    """V2 entry point: discovery starts from only an IP address or hostname."""
+    result = await asyncio.to_thread(discover_device, request.host.strip())
+    payload = result.to_dict()
+    device = _get_device_db().upsert_device_from_discovery(
+        name=(request.name or request.host).strip(),
+        host=request.host.strip(),
+        result=payload,
+    )
+    _audit(
+        "v2_device_discover",
+        {
+            "device_id": device.get("id"),
+            "host": request.host.strip(),
+            "reachable": payload.get("reachable"),
+            "service_count": len(payload.get("services") or []),
+        },
+    )
+    return {"device": device, "discovery": payload}
+
+
+@app.get("/api/v2/devices")
+def v2_list_devices() -> dict[str, Any]:
+    return {"devices": _get_device_db().list_devices()}
+
+
+@app.post("/api/v2/devices/{device_id}/authenticate")
+def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest) -> dict[str, Any]:
+    """Authenticate only after service selection, then enumerate channels."""
+    db = _get_device_db()
+    device = db.get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found.")
+
+    port = request.port or STREAM_DEFAULT_PORTS.get(request.protocol.lower(), 554)
+    credentials = StreamCredentials(request.username or "", request.password or "")
+    enumeration = enumerate_streams(
+        host=str(device["host"]),
+        port=port,
+        protocol=request.protocol,
+        credentials=credentials,
+        vendor=_v2_stream_vendor_hint(device, request),
+        channel_count=request.channel_count,
+    )
+    if enumeration.requires_auth and not request.username:
+        raise HTTPException(
+            status_code=401,
+            detail="This service requires authentication. Provide credentials after selecting the service.",
+        )
+    if not enumeration.channels:
+        raise HTTPException(
+            status_code=502,
+            detail=_redact_sensitive_text(enumeration.error or "No channels were discovered."),
+        )
+
+    camera_db = _get_camera_db()
+    used_slots = {
+        int(camera["slot_number"])
+        for camera in camera_db.list_active_cameras(include_secret=False)
+        if camera.get("slot_number") is not None
+    }
+    next_slot = 1
+    channels = []
+    stream_statuses = []
+    for stream in enumeration.channels:
+        camera = camera_db.add_camera(
+            name=f"{device['name']} {stream.name}",
+            stream_url=stream.stream_url,
+            status="connected" if not request.test_streams else _test_camera_stream(stream.stream_url)["status"],
+        )
+        assigned_slot = None
+        active = None
+        if request.make_active:
+            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+                next_slot += 1
+            if next_slot <= MAX_CAMERA_SLOTS:
+                active = camera_db.assign_slot(camera["id"], next_slot)
+                assigned_slot = next_slot
+                used_slots.add(next_slot)
+                next_slot += 1
+
+        channel = db.add_channel(
+            device_id=device_id,
+            external_channel_id=str(stream.channel),
+            name=f"{device['name']} {stream.name}",
+            profile=stream.description,
+            stream_reference=stream.stream_url,
+            camera_id=camera["id"],
+            slot_number=assigned_slot,
+        )
+        if active is not None:
+            status = _start_stream_for_camera(active)
+            db.update_stream_session(channel["id"], status)
+            stream_statuses.append(status)
+        channels.append(channel)
+
+    _sync_config_active_cameras(camera_db)
+    _audit("v2_device_authenticate", {"device_id": device_id, "channels": len(channels)})
+    return {
+        "provider": enumeration.provider,
+        "device": db.get_device(device_id),
+        "channels": channels,
+        "streams": stream_statuses,
+    }
+
+
+@app.get("/api/v2/devices/{device_id}/channels")
+def v2_device_channels(device_id: int) -> dict[str, Any]:
+    device = _get_device_db().get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found.")
+    return {"device": device, "channels": device.get("channels", [])}
 
 
 def _register_discovered_channels(
@@ -2631,6 +2833,7 @@ def _register_discovered_channels(
 
         active = None
         assigned_slot = None
+        stream_status = None
         message = test_result["message"]
         if make_active and test_result["status"] == "connected":
             while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
@@ -2640,6 +2843,7 @@ def _register_discovered_channels(
                 used_slots.add(next_slot)
                 assigned_slot = next_slot
                 next_slot += 1
+                stream_status = _start_stream_for_camera(active)
             else:
                 message = (
                     f"Reachable, but no free camera slot is available right now "
@@ -2655,6 +2859,7 @@ def _register_discovered_channels(
                 "status": test_result["status"],
                 "message": message,
                 "active": active is not None,
+                "stream": stream_status,
             }
         )
     return results
@@ -2778,6 +2983,107 @@ def save_camera_controller(controller: CameraControllerCreate) -> dict[str, Any]
     }
 
 
+@app.post("/api/v2/channels/{channel_id}/stream/start")
+def v2_start_stream(channel_id: int, request: V2StreamStartRequest | None = None) -> dict[str, Any]:
+    request = request or V2StreamStartRequest()
+    device_db = _get_device_db()
+    channel = device_db.get_channel(channel_id, include_secret=True)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found.")
+
+    slot_number = request.slot_number or channel.get("slot_number")
+    if slot_number is None and channel.get("camera_id"):
+        camera = _get_camera_db().assign_slot(
+            int(channel["camera_id"]),
+            _next_available_slot(_get_camera_db().list_cameras(include_secret=False)),
+        )
+        slot_number = camera.get("slot_number") if camera else None
+        _sync_config_active_cameras(_get_camera_db())
+
+    status = _get_stream_manager().start(
+        StreamSessionConfig(
+            channel_id=str(channel_id),
+            name=str(channel["name"]),
+            source=str(channel["stream_reference"]),
+            slot_number=slot_number,
+            snapshot_dir=SNAPSHOT_DIR,
+        )
+    )
+    device_db.update_stream_session(channel_id, status)
+    return {"channel": device_db.get_channel(channel_id, include_secret=False), "stream": status}
+
+
+@app.post("/api/v2/channels/{channel_id}/stream/stop")
+def v2_stop_stream(channel_id: int) -> dict[str, Any]:
+    stopped = _get_stream_manager().stop(str(channel_id))
+    status = {"channel_id": str(channel_id), "status": "offline"}
+    _get_device_db().update_stream_session(channel_id, status)
+    return {"stopped": stopped, "stream": status}
+
+
+@app.get("/api/v2/streams/health")
+def v2_stream_health() -> dict[str, Any]:
+    return _get_stream_manager().status()
+
+
+@app.get("/api/v2/channels/{channel_id}/stream/health")
+def v2_channel_stream_health(channel_id: int) -> dict[str, Any]:
+    return _get_stream_manager().status(str(channel_id))
+
+
+@app.get("/api/v2/channels/{channel_id}/live")
+async def v2_channel_live_frame(channel_id: int):
+    channel = _get_device_db().get_channel(channel_id, include_secret=False)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found.")
+    return await live_frame(slot=channel.get("slot_number"))
+
+
+@app.post("/api/v2/channels/{channel_id}/analytics/start")
+def v2_start_analytics(channel_id: int) -> dict[str, Any]:
+    channel = _get_device_db().set_analytics_enabled(channel_id, True)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found.")
+    if _detector_pid() is None:
+        try:
+            start_detection(StartRequest())
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+    return {"channel": channel, "analytics": _status()}
+
+
+@app.post("/api/v2/channels/{channel_id}/analytics/stop")
+def v2_stop_analytics(channel_id: int) -> dict[str, Any]:
+    channel = _get_device_db().set_analytics_enabled(channel_id, False)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found.")
+    return {"channel": channel, "analytics": _status()}
+
+
+@app.get("/api/v2/analytics/health")
+def v2_analytics_health() -> dict[str, Any]:
+    status = _status()
+    return {
+        "status": "online" if status.get("running") else "offline",
+        "pid": status.get("pid"),
+        "health": status.get("health"),
+    }
+
+
+@app.get("/api/v2/detections/latest")
+def v2_latest_detections() -> dict[str, Any]:
+    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    return {
+        "state": health.get("state", "offline"),
+        "updated_at": health.get("updated_at"),
+        "detections": health.get("last_detections_by_camera") or {},
+        "spatial": health.get("last_spatial_objects_by_camera")
+        or health.get("last_spatial_objects")
+        or {},
+    }
+
+
 @app.post("/api/cameras/{camera_id}/test")
 def test_saved_camera(camera_id: int) -> dict[str, Any]:
     db = _get_camera_db()
@@ -2873,6 +3179,7 @@ def set_active_camera(
         raise HTTPException(status_code=404, detail="Camera not found.")
 
     _sync_config_active_cameras(db)
+    stream = _start_stream_for_camera(active)
     restarted = False
     if _status()["running"]:
         stop_detection()
@@ -2885,6 +3192,7 @@ def set_active_camera(
         "active_camera": db.get_camera(camera_id, include_secret=False),
         "active_cameras": active_cameras,
         "cameras": cameras,
+        "stream": stream,
         "restarted": restarted,
     }
 
@@ -2898,7 +3206,13 @@ def clear_camera_slot(slot_number: int) -> dict[str, Any]:
         )
 
     db = _get_camera_db()
+    active_before = [
+        camera for camera in db.list_active_cameras(include_secret=False)
+        if camera.get("slot_number") == slot_number
+    ]
     db.clear_slot(slot_number)
+    for camera in active_before:
+        _get_stream_manager().stop(str(camera["id"]))
     _sync_config_active_cameras(db)
     restarted = False
     if _status()["running"]:
@@ -2934,8 +3248,8 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     # making the detector process only slot 1 while the dashboard has many active
     # NVR/controller channels saved in SQLite.
     _sync_config_active_cameras(_get_camera_db())
+    stream_status = _ensure_streams_from_active_cameras()
     _validate_active_cameras_for_start()
-    _clear_live_frames()
 
     DETECTION_STDOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _stdout_handle = DETECTION_STDOUT_PATH.open("w", encoding="utf-8", buffering=1)
@@ -2950,6 +3264,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
                 "last_frame_at": None,
                 "last_detection_count": 0,
                 "last_tracked_count": 0,
+                "stream_manager": stream_status,
                 "updated_at": _now_iso(),
             },
             indent=2,
@@ -2971,7 +3286,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
         cwd=ROOT,
         stdout=_stdout_handle,
         stderr=_stderr_handle,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "AI_VISION_STREAM_FIRST": "1"},
         start_new_session=os.name != "nt",
     )
     _started_at = time.time()
@@ -3632,15 +3947,22 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
 
 def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
     if slot is not None:
-        return SNAPSHOT_DIR / f"latest_slot_{slot}.jpg"
+        return SNAPSHOT_DIR / f"latest_stream_slot_{slot}.jpg"
     if camera:
         safe_name = "".join(ch if ch.isalnum() else "_" for ch in camera).strip("_") or "camera"
-        return SNAPSHOT_DIR / f"latest_{safe_name}.jpg"
-    return SNAPSHOT_DIR / "latest.jpg"
+        return SNAPSHOT_DIR / f"latest_stream_{safe_name}.jpg"
+    return SNAPSHOT_DIR / "latest_stream.jpg"
 
 
 def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list[Path]:
-    return [_live_feed_path(slot=slot, camera=camera)]
+    paths = [_live_feed_path(slot=slot, camera=camera)]
+    if slot is not None:
+        paths.append(SNAPSHOT_DIR / f"latest_slot_{slot}.jpg")
+    if camera:
+        safe_name = "".join(ch if ch.isalnum() else "_" for ch in camera).strip("_") or "camera"
+        paths.append(SNAPSHOT_DIR / f"latest_{safe_name}.jpg")
+    paths.append(SNAPSHOT_DIR / "latest.jpg")
+    return paths
 
 
 app.mount("/dashboard-v2/assets", StaticFiles(directory=DASHBOARD_V2_DIR), name="dashboard-v2-assets")

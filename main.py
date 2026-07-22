@@ -38,6 +38,7 @@ import cv2
 import yaml
 
 from cameras.camera import load_cameras
+from streams.frame_source import load_processing_cameras
 from detection.detector import Detector
 from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
 from detection.spatial import SpatialAnalyzer
@@ -77,8 +78,19 @@ def main():
     config = load_config(args.config)
     display_cfg = config.get("display", {})
 
-    # --- Cameras (FR-1) ---
-    cameras = load_cameras(config["cameras"])
+    # --- Frame source (V2 stream-first architecture) ---
+    #
+    # The API server starts the Stream Manager and sets AI_VISION_STREAM_FIRST=1.
+    # In that mode YOLO consumes already-published frames from snapshots instead
+    # of opening RTSP/NVR connections directly. Direct camera loading remains as
+    # a local developer fallback for running this file by hand.
+    snap_cfg = config.get("snapshots", {})
+    snapshots_dir = snap_cfg.get("save_dir", "snapshots")
+    stream_first = os.getenv("AI_VISION_STREAM_FIRST", "1") != "0"
+    if stream_first:
+        cameras = load_processing_cameras(config["cameras"], snapshot_dir=snapshots_dir)
+    else:
+        cameras = load_cameras(config["cameras"])
     if not cameras:
         _write_detection_health(
             "logs/detection_health.json",
@@ -196,7 +208,6 @@ def main():
             product_recognizer = None
 
     # --- Snapshots (FR-5) ---
-    snap_cfg = config.get("snapshots", {})
     snapshot_saver = None
     if snap_cfg.get("enabled", True):
         snapshot_saver = SnapshotSaver(
@@ -205,7 +216,6 @@ def main():
             cooldown_seconds=snap_cfg.get("cooldown_seconds", 5),
         )
     # ensure snapshots dir exists for live feed
-    snapshots_dir = snap_cfg.get("save_dir", "snapshots")
     os.makedirs(snapshots_dir, exist_ok=True)
     live_feed_enabled = display_cfg.get("live_feed_enabled", True)
 
@@ -229,6 +239,7 @@ def main():
     last_frame_at = None
     last_spatial_objects = []
     last_spatial_objects_by_camera = {}
+    last_detections_by_camera = {}
 
     prev_time = time.time()
     frame_number = 0
@@ -304,6 +315,9 @@ def main():
                     last_tracked_count = 0
 
                 last_detection_count = len(detections)
+                last_detections_by_camera[cam.name] = [
+                    _serialize_detection(det, frame) for det in detections
+                ]
                 if product_recognizer is not None:
                     product_recognizer.annotate(cam.name, frame, detections)
 
@@ -346,7 +360,7 @@ def main():
                     for path in saved:
                         print(f"[{cam.name}] Snapshot saved: {path}")
 
-                if live_feed_enabled:
+                if live_feed_enabled and not stream_first:
                     _write_live_frame(
                         snapshots_dir,
                         cam,
@@ -408,6 +422,7 @@ def main():
                     "spatial_analysis_enabled": spatial_analyzer is not None,
                     "last_spatial_objects": last_spatial_objects,
                     "last_spatial_objects_by_camera": last_spatial_objects_by_camera,
+                    "last_detections_by_camera": last_detections_by_camera,
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
@@ -435,6 +450,26 @@ def main():
 def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
     y = min(520, 170 + frame_index * 5)
     return [TrackedObject(track_id=1, class_name="box", confidence=0.95, box=(430, y, 530, y + 80))]
+
+
+def _serialize_detection(det, frame) -> dict:
+    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = getattr(det, "box", (0, 0, 0, 0))
+    return {
+        "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+        "frame_width": width,
+        "frame_height": height,
+        "class_id": getattr(det, "class_id", None),
+        "class_name": getattr(det, "class_name", "object"),
+        "confidence": float(getattr(det, "confidence", 0.0)),
+        "track_id": getattr(det, "track_id", None),
+        "bbox": {
+            "x1": float(x1),
+            "y1": float(y1),
+            "x2": float(x2),
+            "y2": float(y2),
+        },
+    }
 
 
 def _write_detection_health(path: str, payload: dict) -> None:

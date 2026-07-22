@@ -198,7 +198,8 @@ def test_dashboard_exposes_multi_image_catalog_results_excel_and_3d_views():
     assert "Export to Excel" in source
     assert 'class="detected-list-head"' in source
     assert "renderCatalogDimensions" in source
-    assert "Transmitting live" in source
+    assert "Waiting for video" in source
+    assert "setFeedBadgeLive(image, true)" in source
     assert "not recording continuous video" in source
     assert ".detected-list-head" in styles
     assert ".dimension-visual" in styles

@@ -53,6 +53,8 @@ let liveFrameTimer = null;
 // A 404 means the slot has no live camera (nothing is misbehaving) - back off
 // instead of hammering the endpoint at the full 500ms cadence every tick.
 const LIVE_FRAME_404_BACKOFF_MS = 3000;
+const LIVE_FRAME_PLACEHOLDER =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='9' viewBox='0 0 16 9'%3E%3Crect width='16' height='9' fill='%23f8fafc'/%3E%3C/svg%3E";
 
 function liveFrameUrl(slot) {
   const url = new URL(`${API_BASE}/api/live_frame`);
@@ -64,7 +66,7 @@ function liveFrameUrl(slot) {
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
   if (!badge) return;
-  badge.textContent = isLive ? "Transmitting live" : "No signal";
+  badge.textContent = isLive ? "Live" : "Waiting for video";
   badge.classList.toggle("feed-stale-badge", !isLive);
 }
 
@@ -653,7 +655,7 @@ function renderCompanyControl(container) {
             </div>
           </header>
           ${roles || `<p class="empty">No roles yet.</p>`}
-          <form class="cc-add cc-add-role" data-cc-form="role" data-company="${company.id}">
+          <form class="cc-add cc-add-role" data-cc-form="role" data-company="${company.id}" novalidate>
             <input name="name" placeholder="Role name" required maxlength="60" autocomplete="off" />
             <input name="login" placeholder="Username (login)" required maxlength="60" autocomplete="off" />
             <input name="password" type="password" placeholder="Password" required maxlength="120" autocomplete="new-password" />
@@ -666,7 +668,7 @@ function renderCompanyControl(container) {
 
   container.innerHTML = `
     <p class="chart-note">Companies and accounts are stored on the server — links work on any device.</p>
-    <form class="cc-add cc-add-company" data-cc-form="company">
+    <form class="cc-add cc-add-company" data-cc-form="company" novalidate>
       <input name="name" placeholder="Company name" required maxlength="60" autocomplete="off" />
       <button type="submit">Add company</button>
     </form>
@@ -697,7 +699,11 @@ async function handleCompanySubmit(event) {
 
   if (kind === "company") {
     const name = form.elements.name.value.trim();
-    if (!name) return;
+    if (!name) {
+      toast("Enter a company name.");
+      form.elements.name.focus();
+      return;
+    }
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
     try {
@@ -718,7 +724,11 @@ async function handleCompanySubmit(event) {
     const name = form.elements.name.value.trim();
     const login = form.elements.login.value.trim();
     const password = form.elements.password.value;
-    if (!name || !login || !password) return;
+    if (!name || !login || !password) {
+      toast("Enter a role name, login, and password.");
+      (form.elements.name.value.trim() ? form.elements.login.value.trim() ? form.elements.password : form.elements.login : form.elements.name).focus();
+      return;
+    }
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
     try {
@@ -1216,6 +1226,16 @@ function accountMenus(role) {
   return menus;
 }
 
+function nvrControllerMessage(nvr, assigned, total) {
+  const message = String(nvr.controllerMessage || "");
+  if (!message || message.includes("transmitting")) {
+    return assigned > 0
+      ? `Connected via ${nvr.provider || "stream manager"} — ${assigned}/${total} slot${assigned === 1 ? "" : "s"} assigned. Waiting for live video frames.`
+      : "Registered, but no slots are assigned yet.";
+  }
+  return message;
+}
+
 function dimBoxSvg({ w, h, d }) {
   const stroke = currentTheme() === "dark" ? "#38bdf8" : "#2563eb";
   const rgb = currentTheme() === "dark" ? "56,189,248" : "37,99,235";
@@ -1486,14 +1506,16 @@ function renderAccountModule() {
     const nvrCards = config.nvrs
       .map((nvr) => {
         const channels = nvr.channelsDetail || [];
-        const transmitting = channels.filter((channel) => channel.active).length;
-        const overallOk = channels.length > 0 && transmitting > 0;
+        const assigned = channels.filter((channel) => channel.slot_number != null).length;
+        const totalChannels = channels.length || nvr.channels || 0;
+        const overallOk = channels.length > 0 && assigned > 0;
         const channelRows = channels.length
           ? `<ul class="nvr-channels">${channels
               .map((channel) => {
-                const stateClass = channel.active ? "ok" : channel.status === "connected" ? "pending" : "bad";
-                const label = channel.active
-                  ? "Transmitting"
+                const hasSlot = channel.slot_number != null;
+                const stateClass = hasSlot ? "pending" : channel.status === "connected" ? "pending" : "bad";
+                const label = hasSlot
+                  ? "Waiting for video"
                   : channel.status === "connected"
                     ? "Waiting for a free slot"
                     : "Not connected";
@@ -1514,8 +1536,8 @@ function renderAccountModule() {
               <button type="button" class="cc-remove" data-acc-action="remove-nvr" data-nvr="${nvr.id}" aria-label="Remove NVR">✕</button>
             </header>
             <p class="cc-cred"><em>Address:</em> <span class="nvr-rtsp" title="${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}">${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}</span></p>
-            <p class="cc-cred"><em>Channels:</em> ${transmitting}/${channels.length || nvr.channels || 0} transmitting</p>
-            <p class="nvr-status ${overallOk ? "ok" : "bad"}">${escapeHtml(nvr.controllerMessage || "Not tested yet.")}</p>
+            <p class="cc-cred"><em>Channels:</em> ${assigned}/${totalChannels} slot${assigned === 1 ? "" : "s"} assigned</p>
+            <p class="nvr-status ${overallOk ? "ok" : "bad"}">${escapeHtml(nvrControllerMessage(nvr, assigned, totalChannels))}</p>
             ${channelRows}
           </article>
         `;
@@ -1564,7 +1586,7 @@ function renderAccountModule() {
           ? channels
               .map((channel) => {
                 if (channel.active && channel.slot_number != null) {
-                  return `<figure><span class="feed-transmitting">Transmitting live</span><img data-live-frame data-live-slot="${channel.slot_number}" src="${API_BASE}/api/live_frame?slot=${channel.slot_number}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
+                  return `<figure><span class="feed-transmitting feed-stale-badge">Waiting for video</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" src="${LIVE_FRAME_PLACEHOLDER}" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="Waiting for the first camera frame" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
                 }
                 return `<figure class="feed-empty"><div>${escapeHtml(channel.message || "No signal yet")}</div><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
               })
@@ -1604,6 +1626,7 @@ let discoveryState = {
   selectedPort: null,
   selectedProtocol: null,
   selectedRequiresAuth: false,
+  deviceId: null,
   connecting: false,
   error: null,
 };
@@ -1616,6 +1639,7 @@ function resetDiscoveryState() {
     selectedPort: null,
     selectedProtocol: null,
     selectedRequiresAuth: false,
+    deviceId: null,
     connecting: false,
     error: null,
   };
@@ -1631,63 +1655,20 @@ const DEVICE_TYPE_LABELS = {
   unknown: "Unknown device",
 };
 
-function manualNvrFormHtml() {
-  // The legacy manual path, kept only as a rarely-needed escape hatch behind
-  // the Advanced disclosure. Still handled by handleAccountSubmit's "nvr" case.
-  return `
-    <form class="cc-add cc-add-role nvr-form" data-acc-form="nvr">
-      <input name="name" placeholder="Name (e.g. Warehouse North)" required maxlength="60" autocomplete="off" />
-      <input name="host" placeholder="Host, host:port, or full rtsp://user:pass@host:port/path" required maxlength="200" autocomplete="off" />
-      <select name="protocol" aria-label="Stream protocol">
-        <option value="rtsp" selected>RTSP</option>
-        <option value="http">HTTP</option>
-        <option value="https">HTTPS</option>
-      </select>
-      <input name="port" type="number" min="1" max="65535" placeholder="Port (default 554)" />
-      <input name="username" placeholder="Username (optional)" autocomplete="off" />
-      <input name="password" type="password" placeholder="Password (optional)" autocomplete="new-password" />
-      <input name="channels" type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" required aria-label="Camera channels" />
-      <input name="streamPath" placeholder="Stream path template (optional)" maxlength="200" autocomplete="off" />
-      <button type="submit">Add manually</button>
-    </form>
-  `;
-}
-
-const DISCOVERY_VENDOR_OPTIONS = [
-  { value: "hikvision", label: "Hikvision (Streaming/Channels)" },
-  { value: "dahua", label: "Dahua (realmonitor)" },
-  { value: "generic", label: "Generic — single RTSP stream" },
-];
-
 function discoveryConnectFormHtml(isNvr) {
   // Credentials are always enterable (optional): auth detection from an RTSP
   // OPTIONS probe is unreliable - it can report "Available" for a stream that
   // actually needs a password - so we never hide the fields behind it. The
-  // needs-sign-in hint just clarifies why they matter for this service.
+  // sign-in hint just clarifies why they matter for this service.
   const authHint = discoveryState.selectedRequiresAuth
-    ? '<p class="discovery-auth-hint">This service asked for sign-in — enter the device credentials.</p>'
+    ? '<p class="discovery-auth-hint">This service asked for sign-in - enter the device credentials.</p>'
     : "";
-  // Vendor auto-detection from a scan banner is unreliable (many NVRs don't
-  // advertise their brand on the open ports), and the wrong vendor builds the
-  // wrong stream path - so let the operator confirm/override it. Default to
-  // what was detected, else Hikvision for an NVR/DVR (by far the most common),
-  // else the generic single stream.
-  const detectedVendor = discoveryState.result?.fingerprint?.vendor || "";
-  const defaultVendor = detectedVendor || (isNvr ? "hikvision" : "generic");
-  const vendorSelect = `
-    <select data-discovery-vendor aria-label="Device type" title="Stream format for this device">
-      ${DISCOVERY_VENDOR_OPTIONS.map(
-        (option) =>
-          `<option value="${option.value}" ${option.value === defaultVendor ? "selected" : ""}>${option.label}</option>`
-      ).join("")}
-    </select>`;
   return `
     ${authHint}
     <div class="discovery-connect">
       <input placeholder="Name this device (e.g. Warehouse North)" maxlength="60" autocomplete="off" data-discovery-name />
       <input placeholder="Username (optional)" autocomplete="off" data-discovery-username />
       <input type="password" placeholder="Password (optional)" autocomplete="new-password" data-discovery-password />
-      ${vendorSelect}
       ${isNvr
         ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" data-discovery-channels aria-label="Channels to connect" title="How many channels to connect" />`
         : ""}
@@ -1749,10 +1730,6 @@ function renderDiscoveryPanel(container) {
     ${st.error ? `<p class="nvr-status bad">${escapeHtml(st.error)}</p>` : ""}
     ${result && !result.reachable && !st.scanning ? `<p class="nvr-status bad">${escapeHtml(result.error || "No services found on this device.")}</p>` : ""}
     ${result && result.reachable ? discoveryResultsHtml(result) : ""}
-    <details class="discovery-advanced">
-      <summary>Advanced — enter a stream URL manually</summary>
-      ${manualNvrFormHtml()}
-    </details>
   `;
 
   container.querySelector("[data-discovery-search]")?.addEventListener("submit", (event) => {
@@ -1779,14 +1756,20 @@ async function discoverySearch(container, hostValue) {
     selectedPort: null,
     selectedProtocol: null,
     selectedRequiresAuth: false,
+    deviceId: null,
   };
   renderDiscoveryPanel(container);
   try {
-    const result = await accountsApi("/api/discovery/scan", {
+    const response = await accountsApi("/api/v2/devices/discover", {
       method: "POST",
-      body: JSON.stringify({ host }),
+      body: JSON.stringify({ host, name: host }),
     });
-    discoveryState = { ...discoveryState, scanning: false, result };
+    discoveryState = {
+      ...discoveryState,
+      scanning: false,
+      result: response.discovery,
+      deviceId: response.device?.id,
+    };
   } catch (error) {
     discoveryState = { ...discoveryState, scanning: false, error: error.message };
   }
@@ -1812,19 +1795,15 @@ async function discoveryConnect(container) {
     MAX_NVR_SLOTS,
     Math.max(1, Number(container.querySelector("[data-discovery-channels]")?.value) || 1)
   );
-  // The operator's explicit choice wins over the (unreliable) detected vendor.
-  const vendor = container.querySelector("[data-discovery-vendor]")?.value || st.result?.fingerprint?.vendor || null;
-
   discoveryState = { ...discoveryState, connecting: true };
   renderDiscoveryPanel(container);
 
   const payload = {
-    host: st.host,
     protocol: st.selectedProtocol,
     port: st.selectedPort,
-    vendor,
     channel_count: channels,
-    name,
+    make_active: true,
+    test_streams: false,
   };
   if (username) {
     payload.username = username;
@@ -1832,7 +1811,7 @@ async function discoveryConnect(container) {
   }
 
   try {
-    const response = await accountsApi("/api/discovery/connect", {
+    const response = await accountsApi(`/api/v2/devices/${st.deviceId}/authenticate`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -1855,15 +1834,17 @@ async function discoveryConnect(container) {
 
 async function persistDiscoveredDevice({ name, host, protocol, port, channels, response }) {
   const { company } = accountState;
-  const channelsDetail = (response.results || []).map((result) => ({
+  const responseChannels = response.channels || response.results || [];
+  const channelsDetail = responseChannels.map((result) => ({
     camera_id: result.camera_id,
-    channel: result.channel,
+    channel_id: result.id,
+    channel: result.external_channel_id || result.channel,
     slot_number: result.slot_number,
-    status: result.status,
-    message: result.message,
-    active: result.active,
+    status: result.slot_number != null ? "connected" : result.status || "registered",
+    message: result.masked_stream_reference || result.message || "Stream managed by AI Vision.",
+    active: result.slot_number != null,
   }));
-  const transmitting = channelsDetail.filter((channel) => channel.active).length;
+  const assigned = channelsDetail.filter((channel) => channel.slot_number != null).length;
   const previousNvrs = company.cameraConfig.nvrs;
   const newNvr = {
     id: newId(),
@@ -1872,16 +1853,16 @@ async function persistDiscoveredDevice({ name, host, protocol, port, channels, r
     protocol,
     port,
     channels,
-    controllerMessage: `Connected via ${response.provider} — ${transmitting}/${channelsDetail.length} transmitting.`,
+    controllerMessage: `Connected via ${response.provider} — ${assigned}/${channelsDetail.length} slot${assigned === 1 ? "" : "s"} assigned. Waiting for live video frames.`,
     channelsDetail,
   };
   company.cameraConfig.nvrs = [...previousNvrs, newNvr];
   try {
     await persistAccountCompany();
-    if (transmitting > 0) {
-      toast(`"${name}" connected — ${transmitting}/${channelsDetail.length} channels transmitting.`);
+    if (assigned > 0) {
+      toast(`"${name}" connected — ${assigned}/${channelsDetail.length} slot${assigned === 1 ? "" : "s"} assigned. Waiting for video.`);
     } else {
-      toast(`"${name}" registered, but no channels are transmitting yet.`);
+      toast(`"${name}" registered, but no slots are assigned yet.`);
     }
   } catch (error) {
     company.cameraConfig.nvrs = previousNvrs;

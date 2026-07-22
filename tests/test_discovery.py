@@ -357,18 +357,18 @@ def test_camera_page_uses_device_first_discovery_not_the_manual_form():
     # is wired to the discovery endpoints.
     assert "data-discovery-panel" in source
     assert "function renderDiscoveryPanel(container)" in source
-    assert 'accountsApi("/api/discovery/scan"' in source
-    assert 'accountsApi("/api/discovery/connect"' in source
+    assert 'accountsApi("/api/v2/devices/discover"' in source
+    assert "/api/v2/devices/${st.deviceId}/authenticate" in source
     assert "function discoverySelectService(container, btn)" in source
 
 
-def test_manual_stream_entry_is_kept_only_as_an_advanced_override():
+def test_manual_stream_entry_is_removed_from_normal_discovery_flow():
     source = _app_js()
     # The legacy manual form still exists but only inside the Advanced
     # disclosure, not as the primary path.
-    assert "discovery-advanced" in source
-    assert "Advanced — enter a stream URL manually" in source
-    assert "function manualNvrFormHtml()" in source
+    assert "discovery-advanced" not in source
+    assert "stream URL manually" not in source
+    assert "function manualNvrFormHtml()" not in source
 
 
 def test_open_port_with_a_flaky_probe_stays_available_not_unreachable(monkeypatch):
@@ -393,20 +393,17 @@ def test_open_port_with_a_flaky_probe_stays_available_not_unreachable(monkeypatc
 
 def test_discovery_connect_form_always_offers_optional_credentials():
     source = _app_js()
-    # Auth detection is unreliable, so username/password are always enterable
-    # and no longer hidden behind the requires-auth hint.
+    # RTSP auth probing is best-effort; an "Available" port can still require
+    # credentials for the real channel profile.
     assert 'placeholder="Username (optional)"' in source
     assert 'placeholder="Password (optional)"' in source
-    assert "const needsAuth = discoveryState.selectedRequiresAuth;" not in source
+    assert "discoveryState.selectedRequiresAuth" in source
 
 
-def test_connect_form_lets_the_operator_pick_the_vendor():
-    # Auto-detection is unreliable, so the connect form exposes an explicit
-    # vendor selector whose value overrides the detected fingerprint.
+def test_connect_form_hides_vendor_selection_from_operator():
     source = _app_js()
-    assert "data-discovery-vendor" in source
-    assert "DISCOVERY_VENDOR_OPTIONS" in source
-    assert 'container.querySelector("[data-discovery-vendor]")?.value' in source
+    assert "data-discovery-vendor" not in source
+    assert 'container.querySelector("[data-discovery-vendor]")?.value' not in source
 
 
 def test_explicit_hikvision_vendor_builds_channel_paths_even_without_detection(tmp_path, monkeypatch):
@@ -445,3 +442,51 @@ def test_explicit_hikvision_vendor_builds_channel_paths_even_without_detection(t
     urls = sorted(row["masked_stream_url"] for row in body["cameras"])
     assert urls[0].endswith("/Streaming/Channels/101")
     assert urls[1].endswith("/Streaming/Channels/201")
+
+
+def test_v2_unknown_rtsp_defaults_to_hikvision_channel_path(tmp_path, monkeypatch):
+    from database.camera_db import CameraDB
+    from database.device_db import DeviceDB
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    camera_db = CameraDB(str(tmp_path / "cameras.db"))
+    device_db = DeviceDB(str(tmp_path / "devices.db"))
+    monkeypatch.setattr(server, "_get_camera_db", lambda: camera_db)
+    monkeypatch.setattr(server, "_get_device_db", lambda: device_db)
+    monkeypatch.setattr(server, "_sync_config_active_cameras", lambda db: None)
+    monkeypatch.setattr(
+        server,
+        "_start_stream_for_camera",
+        lambda camera: {"channel_id": str(camera["id"]), "status": "starting"},
+    )
+
+    device = device_db.upsert_device_from_discovery(
+        name="Unknown RTSP Camera",
+        host="8.8.8.8",
+        result={
+            "reachable": True,
+            "fingerprint": {"vendor": None, "device_type": "ip_camera", "banners": {}},
+            "services": [
+                {"protocol": "RTSP", "port": 554, "status": "available", "requires_auth": False}
+            ],
+        },
+    )
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            f"/api/v2/devices/{device['id']}/authenticate",
+            json={
+                "protocol": "rtsp",
+                "port": 554,
+                "username": "admin",
+                "password": "secret",
+                "channel_count": 1,
+                "make_active": True,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "hikvision"
+    assert body["channels"][0]["masked_stream_reference"].endswith("/Streaming/Channels/101")
+    assert "secret" not in body["channels"][0]["masked_stream_reference"]

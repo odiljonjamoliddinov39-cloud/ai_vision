@@ -72,13 +72,17 @@ def test_next_available_camera_slot_uses_first_gap():
 
 
 def test_live_feed_path_can_target_slot():
-    assert _live_feed_path(slot=3).name == "latest_slot_3.jpg"
+    assert _live_feed_path(slot=3).name == "latest_stream_slot_3.jpg"
 
 
 def test_live_feed_paths_do_not_fall_back_to_global_latest_for_slots():
     paths = _live_feed_paths(slot=3)
 
-    assert [path.name for path in paths] == ["latest_slot_3.jpg"]
+    assert [path.name for path in paths] == [
+        "latest_stream_slot_3.jpg",
+        "latest_slot_3.jpg",
+        "latest.jpg",
+    ]
 
 
 def test_camera_stream_bare_ip_returns_actionable_message():
@@ -112,6 +116,23 @@ def test_local_webcam_source_still_uses_opencv():
     run.assert_called_once()
 
 
+def test_camera_stream_check_allows_rtsp_waiting_for_first_keyframe():
+    completed = subprocess.CompletedProcess(
+        args=["python"],
+        returncode=0,
+        stdout='{"ok": false, "opened": true, "frame_read": false, "note": "waiting_for_frame"}\n',
+        stderr="",
+    )
+    with patch("api.server.socket.create_connection"):
+        with patch("api.server.subprocess.run", return_value=completed):
+            result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
+
+    assert result["status"] == "connected"
+    assert result["details"]["endpoint_reachable"] is True
+    assert result["details"]["waiting_for_frame"] is True
+    assert "Stream Manager will keep waiting" in result["message"]
+
+
 def test_camera_stream_check_uses_a_real_ffmpeg_subprocess_for_rtsp(monkeypatch, tmp_path):
     # Runs the real subprocess (not a mocked one), with a fake `ffmpeg`
     # executable on PATH so the actual embedded validation logic executes
@@ -120,15 +141,22 @@ def test_camera_stream_check_uses_a_real_ffmpeg_subprocess_for_rtsp(monkeypatch,
     # a perfectly valid RTSP source with no other OpenCV backend to fall
     # back to, so this pre-flight check shells out to ffmpeg directly too -
     # it has to agree with what the real detector can actually achieve.
-    fake_ffmpeg = tmp_path / "ffmpeg"
-    fake_ffmpeg.write_text(
-        "#!/usr/bin/env python3\n"
-        "import sys\n"
-        "sys.stdout.buffer.write(b'\\xff\\xd8fake-jpeg-data\\xff\\xd9')\n"
-        "sys.stdout.buffer.flush()\n",
-        encoding="utf-8",
-    )
-    fake_ffmpeg.chmod(0o755)
+    if os.name == "nt":
+        fake_ffmpeg = tmp_path / "ffmpeg.cmd"
+        fake_ffmpeg.write_text(
+            f'@echo off\r\n"{sys.executable}" -c "import sys; sys.stdout.buffer.write(bytes([255,216])+b\'fake-jpeg-data\'+bytes([255,217]))"\r\n',
+            encoding="utf-8",
+        )
+    else:
+        fake_ffmpeg = tmp_path / "ffmpeg"
+        fake_ffmpeg.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "sys.stdout.buffer.write(b'\\xff\\xd8fake-jpeg-data\\xff\\xd9')\n"
+            "sys.stdout.buffer.flush()\n",
+            encoding="utf-8",
+        )
+        fake_ffmpeg.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
 
     with patch("api.server.socket.create_connection"):
@@ -269,7 +297,7 @@ def test_start_detection_clears_manual_stop_latch_even_when_validation_fails(mon
     assert server._manual_stop_requested is False
 
 
-def test_validate_active_cameras_excludes_unreachable_cameras_instead_of_blocking_all(
+def test_validate_active_cameras_syncs_all_active_slots_without_rtsp_preflight(
     monkeypatch, tmp_path
 ):
     camera_db_path = tmp_path / "cameras.db"
@@ -291,16 +319,14 @@ def test_validate_active_cameras_excludes_unreachable_cameras_instead_of_blockin
     db.assign_slot(good["id"], 1)
     db.assign_slot(bad["id"], 2)
 
-    # One unreachable camera used to make the whole call raise, blocking
-    # every other (working) camera from starting too.
     server._validate_active_cameras_for_start()
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert [camera["name"] for camera in config["cameras"]] == ["Good Camera"]
+    assert [camera["name"] for camera in config["cameras"]] == ["Good Camera", "Bad Camera"]
 
     statuses = {camera["name"]: camera["status"] for camera in db.list_cameras(include_secret=False)}
-    assert statuses["Good Camera"] == "connected"
-    assert statuses["Bad Camera"] == "failed"
+    assert statuses["Good Camera"] == "stream_managed"
+    assert statuses["Bad Camera"] == "stream_managed"
 
     # The bad camera stays active (so it keeps showing up and gets retried
     # on the next start) - it's only excluded from the detector's config.
@@ -310,7 +336,7 @@ def test_validate_active_cameras_excludes_unreachable_cameras_instead_of_blockin
     assert active_names == {"Good Camera", "Bad Camera"}
 
 
-def test_validate_active_cameras_still_raises_when_none_are_reachable(monkeypatch, tmp_path):
+def test_validate_active_cameras_only_requires_an_active_slot(monkeypatch, tmp_path):
     camera_db_path = tmp_path / "cameras.db"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -325,12 +351,10 @@ def test_validate_active_cameras_still_raises_when_none_are_reachable(monkeypatc
     bad = db.add_camera("Bad Camera", "192.168.137.87", "unknown")
     db.assign_slot(bad["id"], 1)
 
-    try:
-        server._validate_active_cameras_for_start()
-        assert False, "expected HTTPException"
-    except server.HTTPException as exc:
-        assert exc.status_code == 400
-        assert "none of the active camera slots are reachable" in exc.detail
+    server._validate_active_cameras_for_start()
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert [camera["name"] for camera in config["cameras"]] == ["Bad Camera"]
 
 
 def test_camera_controller_registers_more_channels_than_free_slots_without_failing(
@@ -746,7 +770,7 @@ def test_camera_stream_check_only_decodes_keyframes():
     server_path = os.path.join(os.path.dirname(__file__), "..", "api", "server.py")
     with open(server_path, encoding="utf-8") as handle:
         source = handle.read()
-    assert '"-rtsp_transport", "tcp", "-skip_frame", "nokey", "-i", url,' in source
+    assert '"-rtsp_transport", "tcp", "-skip_frame", "nokey", "-fflags", "+discardcorrupt", "-i", url,' in source
 
 
 def test_camera_raises_when_ffmpeg_exits_immediately(monkeypatch):

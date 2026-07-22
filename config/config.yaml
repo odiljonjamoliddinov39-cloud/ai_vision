@@ -2,6 +2,9 @@ cameras:
 - name: Demo Camera
   source: dummy
   slot_number: 1
+- name: 87.192.242.82 Stream
+  source: rtsp://87.192.242.82:554/
+  slot_number: 2
 detection:
   model_path: yolov8s-world.pt
   confidence_threshold: 0.08
