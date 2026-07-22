@@ -234,6 +234,7 @@ def main():
     window_prefix = display_cfg.get("window_prefix", "AI Vision -")
     health_path = log_cfg.get("health_file", "logs/detection_health.json")
     frames_read = 0
+    last_frame_seen_at = 0.0
     last_detection_count = 0
     last_tracked_count = 0
     last_frame_at = None
@@ -276,6 +277,7 @@ def main():
                 if frame is None:
                     continue
                 any_frame = True
+                last_frame_seen_at = now
                 frames_read += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
 
@@ -394,15 +396,23 @@ def main():
                         f"{event.class_name} (dwell {duration_str})"
                     )
 
-            if not any_frame:
+            frames_recent = last_frame_seen_at > 0 and (time.time() - last_frame_seen_at) < max(
+                5.0, min_detection_interval * 3.0
+            )
+
+            if not any_frame and not frames_recent:
                 print("No frames available from any camera. Retrying...")
                 time.sleep(1)
+            elif not any_frame:
+                time.sleep(0.05)
 
             _write_detection_health(
                 health_path,
                 {
                     "state": "running",
-                    "error": None if any_frame else "No frames available from any camera.",
+                    "error": None
+                    if any_frame or frames_recent
+                    else "No frames available from any camera.",
                     "camera_count": len(cameras),
                     "cameras": [
                         {"name": cam.name, "slot_number": cam.slot_number}
