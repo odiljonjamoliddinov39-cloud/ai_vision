@@ -346,3 +346,12 @@ def test_dashboard_has_a_run_recognition_now_button_that_polls_live_progress():
     assert 'catalogApiPath("/api/catalog/recognition/run-live/status")' in source
     assert "function pollLiveCatalogRecognition(container, button, status)" in source
     assert '"already active"' in source
+
+
+def test_catalog_results_panel_falls_back_to_live_ai_check_ins():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "function liveAiCheckInTableHtml(movements)" in source
+    assert 'accountsApi("/api/warehouse/movements?limit=50")' in source
+    assert "catalogResultsTableHtml(payload.results, activity.movements)" in source
+    assert "AI Check in -" in source

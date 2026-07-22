@@ -1371,6 +1371,14 @@ function catalogDimensions(result) {
   };
 }
 
+function movementCatalogDimensions(movement) {
+  return catalogDimensions({
+    width_m: movement.estimated_width_m,
+    height_m: movement.estimated_height_m,
+    depth_m: movement.estimated_depth_m,
+  });
+}
+
 async function renderCatalogEnrollment(container) {
   try {
     const payload = await catalogRequest(catalogApiPath("/api/catalog/items"));
@@ -1417,7 +1425,29 @@ async function renderCatalogEnrollment(container) {
   }
 }
 
-function catalogResultsTableHtml(results) {
+function liveAiCheckInTableHtml(movements) {
+  const rows = (movements || [])
+    .filter((movement) => movement.direction === "IN")
+    .slice(0, 12)
+    .map((movement) => {
+      const dims = movementCatalogDimensions(movement);
+      const confidence = Number(movement.confidence || 0);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(movement.product_name)}</strong><small>AI Check in - ${escapeHtml(movement.camera_id || "Camera")}</small></td>
+          <td class="count-cell">${Number(movement.quantity || 1).toLocaleString()}</td>
+          <td>${Math.round(confidence * 100)}%</td>
+          <td>${dims ? `${dims.w} × ${dims.h} × ${dims.d} cm` : "Pending 3D measurement"}</td>
+        </tr>
+      `;
+    })
+    .join("");
+  return rows
+    ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<p class="empty">No AI Check-in item has been counted yet.</p>`;
+}
+
+function catalogResultsTableHtml(results, movements = []) {
   const rows = (results || [])
     .map((result) => {
       const dims = catalogDimensions(result);
@@ -1433,18 +1463,29 @@ function catalogResultsTableHtml(results) {
     .join("");
   return rows
     ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
-    : `<p class="empty">No checked-in catalog item was detected in the latest run yet.</p>`;
+    : liveAiCheckInTableHtml(movements);
+}
+
+async function refreshCatalogResultsTable(container, results = []) {
+  const table = container.querySelector("[data-catalog-table]");
+  if (!table) return;
+  const { movements } = await accountsApi("/api/warehouse/movements?limit=50");
+  if (!container.isConnected) return;
+  table.innerHTML = catalogResultsTableHtml(results, movements);
 }
 
 async function renderCatalogResults(container) {
   try {
-    const payload = await catalogRequest(catalogApiPath("/api/catalog/results"));
+    const [payload, activity] = await Promise.all([
+      catalogRequest(catalogApiPath("/api/catalog/results")),
+      accountsApi("/api/warehouse/movements?limit=50"),
+    ]);
     if (!container.isConnected || accountModule !== "analytics") return;
     container.innerHTML = `
       <section class="detected-list">
         <header class="detected-list-head">
           <div>
-            <h3>Detected catalog items</h3>
+            <h3>Detected AI Check-in items</h3>
             <p>Latest 12-hour recognition run: ${escapeHtml(formatCatalogTime(payload.run?.completed_at))}</p>
           </div>
           <div class="detected-list-actions">
@@ -1452,7 +1493,7 @@ async function renderCatalogResults(container) {
             <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
           </div>
         </header>
-        <div data-catalog-table>${catalogResultsTableHtml(payload.results)}</div>
+        <div data-catalog-table>${catalogResultsTableHtml(payload.results, activity.movements)}</div>
         <p class="catalog-next-run">Next automatic recognition: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</p>
       </section>
     `;
@@ -1490,8 +1531,7 @@ async function startLiveCatalogRecognition(container, button) {
 function pollLiveCatalogRecognition(container, button, status) {
   if (!container.isConnected) return;
   if (status.results) {
-    const table = container.querySelector("[data-catalog-table]");
-    if (table) table.innerHTML = catalogResultsTableHtml(status.results);
+    void refreshCatalogResultsTable(container, status.results);
   }
   if (!status.running) {
     void renderCatalogResults(container);
