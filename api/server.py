@@ -1523,6 +1523,37 @@ def _catalog_detection_prompts(items: list[dict[str, Any]]) -> list[str]:
     return unique
 
 
+def _catalog_detection_matches_item_prompt(detection: dict[str, Any], item_name: str) -> bool:
+    target = _catalog_normalize_name(item_name)
+    labels = [
+        _catalog_normalize_name(str(detection.get("inventory_name") or "")),
+        _catalog_normalize_name(str(detection.get("class_name") or "")),
+        _catalog_normalize_name(str(detection.get("object_type") or "")),
+    ]
+    labels = [label for label in labels if label]
+    if any(label == target or label in target or target in label for label in labels):
+        return True
+
+    if "box" in target:
+        return any(
+            any(term in label for term in ("box", "carton", "package", "cardboard"))
+            for label in labels
+        )
+
+    if any(term in target for term in ("sack", "bag")):
+        return any(any(term in label for term in ("sack", "bag")) for label in labels)
+
+    return False
+
+
+def _catalog_detection_confidence(detection: dict[str, Any], fallback: float = 0.9) -> float:
+    try:
+        confidence = float(detection.get("confidence"))
+    except (TypeError, ValueError):
+        return fallback
+    return confidence if confidence > 0 else fallback
+
+
 def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
     global _catalog_yolo_detector, _catalog_yolo_detector_key
     if not prompts:
@@ -1644,6 +1675,34 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
         method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
 
         if not matched_objects:
+            if len(items) == 1:
+                prompt_matches = [
+                    candidate["detection"]
+                    for candidate in crop_candidates
+                    if _catalog_detection_matches_item_prompt(candidate["detection"], str(item["name"]))
+                ]
+                if prompt_matches:
+                    confidence = max(_catalog_detection_confidence(detection) for detection in prompt_matches)
+                    quantity = sum(
+                        max(1, int(detection.get("quantity") or 1))
+                        for detection in prompt_matches
+                    )
+                    measurement = prompt_matches[0]
+                    method = str(measurement.get("method") or "catalog-single-item-yolo-and-3d")
+
+            if quantity > 0:
+                matches.append(
+                    {
+                        "item_id": str(item["id"]),
+                        "item_name": str(item["name"]),
+                        "quantity": quantity,
+                        "confidence": confidence,
+                        "dimensions_m": _catalog_dimensions(measurement),
+                        "measurement_method": method,
+                    }
+                )
+                continue
+
             crop_matches: list[tuple[float, dict[str, Any]]] = []
             for candidate in crop_candidates:
                 score = max(

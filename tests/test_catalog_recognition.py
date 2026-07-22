@@ -387,7 +387,68 @@ def test_catalog_recognition_runs_fresh_yolo_when_cached_detections_are_empty(tm
     assert matches[0]["item_id"] == item["id"]
     assert matches[0]["item_name"] == "Baget Box"
     assert matches[0]["quantity"] == 1
-    assert matches[0]["confidence"] >= 0.9
+    assert matches[0]["confidence"] == pytest.approx(0.82)
+
+
+def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similarity_is_low(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    frame[40:120, 50:170] = _reference_image((35, 160, 220))
+    cv2.imwrite(str(snapshot_dir / "latest_stream_slot_1.jpg"), frame)
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [{"name": "NVR Camera 2", "slot_number": 1}],
+                "last_spatial_objects_by_camera": {"NVR Camera 2": []},
+                "last_detections_by_camera": {"NVR Camera 2": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeDetector:
+        def __init__(self, **kwargs):
+            self.prompts = kwargs["class_prompts"]
+
+        def detect(self, _frame):
+            detection = type(
+                "Detection",
+                (),
+                {
+                    "class_name": "cardboard box",
+                    "confidence": 0.76,
+                    "box": (50, 40, 170, 120),
+                    "quantity": 3,
+                    "width_m": 0.8,
+                    "height_m": 0.6,
+                    "depth_m": 0.4,
+                    "method": "monocular_ground_plane",
+                },
+            )()
+            return [detection]
+
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+    monkeypatch.setattr(server, "Detector", FakeDetector)
+    monkeypatch.setattr(server, "_catalog_yolo_detector", None)
+    monkeypatch.setattr(server, "_catalog_yolo_detector_key", None)
+    monkeypatch.setattr(server, "_read_yaml", lambda _path: {"detection": {}, "spatial_analysis": {"enabled": False}})
+
+    matches = server._catalog_match_current_frame("warehouse-a")
+
+    assert matches[0] == {
+        "item_id": str(item["id"]),
+        "item_name": "Baget Box",
+        "quantity": 3,
+        "confidence": pytest.approx(0.76),
+        "dimensions_m": (0.8, 0.6, 0.4),
+        "measurement_method": "monocular_ground_plane",
+    }
 
 
 def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monkeypatch):
