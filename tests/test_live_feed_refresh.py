@@ -28,20 +28,26 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
 
     assert source.count("data-live-frame data-live-slot") == 3
     assert "window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS)" in source
+    assert "const LIVE_FRAME_REFRESH_BATCH = 2;" in source
+    assert "new IntersectionObserver(" in source
+    assert 'image.dataset.liveVisible !== "false"' in source
     assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
     assert "new MutationObserver((mutations) => {" in source
     assert 'fetch(liveFrameUrl(slot), { cache: "no-store" })' in source
     assert "URL.revokeObjectURL(previousObjectUrl)" in source
     assert 'data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}"' in source
+    assert 'loading="lazy" decoding="async"' in source
     assert 'if (image.dataset.livePriming === "true") return;' in source
     assert "image.complete && image.naturalWidth > 0" in source
 
 
-def test_dashboard_targets_two_live_frame_updates_per_second():
+def test_dashboard_refreshes_live_frames_in_small_visible_batches():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "const LIVE_FRAME_REFRESH_MS = 500;" in source
+    assert "const LIVE_FRAME_REFRESH_MS = 150;" in source
     assert 'if (image.dataset.liveLoading === "true") return;' in source
+    assert "const count = Math.min(LIVE_FRAME_REFRESH_BATCH, visibleImages.length);" in source
+    assert "liveFrameCursor = (liveFrameCursor + count) % visibleImages.length;" in source
 
 
 def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
@@ -102,7 +108,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=41" in html
+    assert "/dashboard-v2/assets/app.js?v=42" in html
     assert "/dashboard-v2/assets/styles.css?v=37" in html
 
 

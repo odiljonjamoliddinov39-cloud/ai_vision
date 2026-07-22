@@ -46,10 +46,13 @@ let loadRetryTimer = null;
 // The backend intentionally exposes stable JPEG snapshots instead of one
 // long-lived MJPEG connection per camera. Refresh only the images that are
 // currently mounted so camera pages stay live without rebuilding any module.
-// Target two updates per second. The per-image loading guard below makes this
-// self-throttling on slower links instead of stacking duplicate requests.
-const LIVE_FRAME_REFRESH_MS = 500;
+// Refresh in small batches instead of stampeding every mounted camera at once:
+// a 26-camera grid feels much faster when visible tiles are updated smoothly.
+const LIVE_FRAME_REFRESH_MS = 150;
+const LIVE_FRAME_REFRESH_BATCH = 2;
 let liveFrameTimer = null;
+let liveFrameCursor = 0;
+let liveFrameVisibilityObserver = null;
 
 // A 404 means the slot has no live camera (nothing is misbehaving) - back off
 // instead of hammering the endpoint at the full 500ms cadence every tick.
@@ -92,8 +95,30 @@ function attachLiveFrameHandlers(image) {
   }
 }
 
-async function refreshLiveFrameImage(image) {
+function ensureLiveFrameVisibilityObserver() {
+  if (!("IntersectionObserver" in window)) return null;
+  if (liveFrameVisibilityObserver) return liveFrameVisibilityObserver;
+  liveFrameVisibilityObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        entry.target.dataset.liveVisible = entry.isIntersecting ? "true" : "false";
+      });
+    },
+    { root: null, rootMargin: "300px 0px", threshold: 0.01 }
+  );
+  return liveFrameVisibilityObserver;
+}
+
+function observeLiveFrameImage(image) {
   attachLiveFrameHandlers(image);
+  if (image.dataset.liveObserved === "true") return;
+  image.dataset.liveObserved = "true";
+  image.dataset.liveVisible = "true";
+  ensureLiveFrameVisibilityObserver()?.observe(image);
+}
+
+async function refreshLiveFrameImage(image) {
+  observeLiveFrameImage(image);
   if (image.dataset.livePriming === "true") return;
   if (image.dataset.liveLoading === "true") return;
   const slot = image.dataset.liveSlot;
@@ -146,10 +171,17 @@ async function refreshLiveFrameImage(image) {
 
 function refreshLiveFrames() {
   if (document.hidden) return;
-  els.moduleContent.querySelectorAll("img[data-live-frame]").forEach((image) => {
-    attachLiveFrameHandlers(image);
+  const images = Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]"));
+  images.forEach(observeLiveFrameImage);
+  const visibleImages = images.filter((image) => image.dataset.liveVisible !== "false");
+  if (!visibleImages.length) return;
+
+  const count = Math.min(LIVE_FRAME_REFRESH_BATCH, visibleImages.length);
+  for (let index = 0; index < count; index += 1) {
+    const image = visibleImages[(liveFrameCursor + index) % visibleImages.length];
     refreshLiveFrameImage(image);
-  });
+  }
+  liveFrameCursor = (liveFrameCursor + count) % visibleImages.length;
 }
 
 function stopLiveFrameRefresh() {
@@ -157,6 +189,11 @@ function stopLiveFrameRefresh() {
     window.clearInterval(liveFrameTimer);
     liveFrameTimer = null;
   }
+  if (liveFrameVisibilityObserver) {
+    liveFrameVisibilityObserver.disconnect();
+    liveFrameVisibilityObserver = null;
+  }
+  liveFrameCursor = 0;
 }
 
 function syncLiveFrameRefresh() {
@@ -386,7 +423,7 @@ function renderModuleContent() {
       <div class="live-preview">
         ${Array.from({ length: Math.min(Number(summary.active_cameras || health.camera_count || 10), 10) }, (_, index) => {
           const slot = index + 1;
-          return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+          return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="lazy" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
         }).join("")}
       </div>
     `;
@@ -1119,7 +1156,7 @@ function livePreviewHtml(summary, health) {
     <div class="live-preview">
       ${Array.from({ length: slots }, (_, index) => {
         const slot = index + 1;
-        return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+        return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="lazy" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
       }).join("")}
     </div>
   `;
@@ -1627,7 +1664,7 @@ function renderAccountModule() {
           ? channels
               .map((channel) => {
                 if (channel.active && channel.slot_number != null) {
-                  return `<figure><span class="feed-transmitting feed-stale-badge">Waiting for video</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="Waiting for the first camera frame" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
+                  return `<figure><span class="feed-transmitting feed-stale-badge">Waiting for video</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="lazy" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="Waiting for the first camera frame" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
                 }
                 return `<figure class="feed-empty"><div>${escapeHtml(channel.message || "No signal yet")}</div><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
               })
