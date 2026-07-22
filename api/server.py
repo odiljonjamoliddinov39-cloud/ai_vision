@@ -47,6 +47,7 @@ from webauthn.helpers.structs import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from discovery import discover_device  # noqa: E402
 from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
 from database.accounts_db import AccountsDB  # noqa: E402
@@ -762,6 +763,10 @@ class CameraSlotRequest(BaseModel):
 
 class CameraCleanupRequest(BaseModel):
     name_prefix: str = Field(min_length=1)
+
+
+class DiscoveryScanRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
 
 
 class CameraControllerCreate(BaseModel):
@@ -2553,6 +2558,28 @@ def _register_controller_channels(
         "saved_cameras": saved_cameras,
         "test_results": test_results,
     }
+
+
+@app.post("/api/discovery/scan")
+async def discovery_scan(request: DiscoveryScanRequest) -> dict[str, Any]:
+    """Device-first discovery: given only an IP/hostname, report what the
+    device is and which streaming services it exposes, with no RTSP URL,
+    stream path, or vendor supplied by the operator.
+
+    The scan is CPU-light but network-bound (several socket probes), so it runs
+    off the event loop. The Discovery Engine itself enforces the target-host
+    safety policy (see discovery.portscan.resolve_and_guard)."""
+    result = await asyncio.to_thread(discover_device, request.host.strip())
+    _audit(
+        "discovery_scan",
+        {
+            "host": request.host.strip(),
+            "reachable": result.reachable,
+            "vendor": result.fingerprint.vendor,
+            "service_count": len(result.services),
+        },
+    )
+    return result.to_dict()
 
 
 @app.post("/api/camera-controller")

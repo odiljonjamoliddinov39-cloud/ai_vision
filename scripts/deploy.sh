@@ -39,7 +39,7 @@ fi
 build_required="false"
 if [ -z "$before" ] || [ "$before" = "$after" ]; then
   build_required="false"
-elif printf '%s\n' "$changed_files" | grep -Eq '(^Dockerfile$|^requirements.*\.txt$|^docker-compose\.yml$|^ai/|^api/|^cameras/|^database/|^detection/|^recognition/|^tracking/|^main\.py$)'; then
+elif printf '%s\n' "$changed_files" | grep -Eq '(^Dockerfile$|^requirements.*\.txt$|^docker-compose\.yml$|^ai/|^api/|^cameras/|^database/|^detection/|^discovery/|^recognition/|^tracking/|^main\.py$)'; then
   build_required="true"
 fi
 
