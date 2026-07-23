@@ -79,6 +79,12 @@ class CatalogDB:
                 )
                 """
             )
+            self._ensure_results_camera_counts_column(conn)
+
+    def _ensure_results_camera_counts_column(self, conn) -> None:
+        columns = self.db.table_columns(conn, "catalog_recognition_results")
+        if "camera_counts" not in columns:
+            conn.execute("ALTER TABLE catalog_recognition_results ADD COLUMN camera_counts TEXT")
 
     def create_item(self, scope_id: str, name: str) -> dict[str, Any]:
         item_id = uuid.uuid4().hex
@@ -230,6 +236,7 @@ class CatalogDB:
         confidence: float,
         dimensions_m: tuple[float, float, float] | None = None,
         measurement_method: str | None = None,
+        camera_counts: list[dict[str, Any]] | None = None,
     ) -> None:
         result_id = uuid.uuid4().hex
         with self.db.connect() as conn:
@@ -238,8 +245,8 @@ class CatalogDB:
                     """
                     INSERT INTO catalog_recognition_results (
                         id, run_id, item_id, item_name, quantity, confidence,
-                        width_m, height_m, depth_m, measurement_method
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        width_m, height_m, depth_m, measurement_method, camera_counts
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
                 (
@@ -253,6 +260,7 @@ class CatalogDB:
                     dimensions_m[1] if dimensions_m else None,
                     dimensions_m[2] if dimensions_m else None,
                     measurement_method,
+                    json.dumps(camera_counts or [], separators=(",", ":")),
                 ),
             )
 
@@ -296,7 +304,7 @@ class CatalogDB:
             return []
         query = """
             SELECT r.id, r.run_id, r.item_id, r.item_name, r.quantity, r.confidence,
-                   r.width_m, r.height_m, r.depth_m, r.measurement_method, r.created_at
+                   r.width_m, r.height_m, r.depth_m, r.measurement_method, r.camera_counts, r.created_at
             FROM catalog_recognition_results r
             JOIN catalog_items i ON i.id = r.item_id AND i.active = 1
             WHERE r.run_id = ?
@@ -306,7 +314,7 @@ class CatalogDB:
         query += " ORDER BY r.quantity DESC, r.item_name"
         with self.db.connect() as conn:
             rows = conn.execute(self._sql(query), (latest["id"],)).fetchall()
-        return [dict(row) for row in rows]
+        return [self._result_payload(row) for row in rows]
 
     def _item_payload(self, row) -> dict[str, Any]:
         item = dict(row)
@@ -314,6 +322,17 @@ class CatalogDB:
         item["images"] = self.list_images(str(item["id"]))
         item["image_count"] = len(item["images"])
         return item
+
+    @staticmethod
+    def _result_payload(row) -> dict[str, Any]:
+        result = dict(row)
+        raw = result.get("camera_counts")
+        try:
+            parsed = json.loads(raw or "[]")
+        except json.JSONDecodeError:
+            parsed = []
+        result["camera_counts"] = parsed if isinstance(parsed, list) else []
+        return result
 
     @staticmethod
     def _iso_timestamp(value: Any) -> str | None:

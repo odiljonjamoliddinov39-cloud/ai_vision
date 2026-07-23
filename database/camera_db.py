@@ -93,6 +93,32 @@ class CameraDB:
                 camera_id = cursor.lastrowid
         return self.get_camera(camera_id, include_secret=False)
 
+    def upsert_camera_by_stream_url(self, name: str, stream_url: str, status: str = "unknown") -> dict:
+        existing = self.get_camera_by_stream_url(stream_url, include_secret=True)
+        if existing is not None:
+            with self._connect() as conn:
+                conn.execute(
+                    self._sql(
+                        """
+                        UPDATE cameras
+                        SET name = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """
+                    ),
+                    (name, status, existing["id"]),
+                )
+            return self.get_camera(existing["id"], include_secret=False)  # type: ignore[return-value]
+
+        return self.add_camera(name, stream_url, status)
+
+    def get_camera_by_stream_url(self, stream_url: str, include_secret: bool = False) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                self._sql("SELECT * FROM cameras WHERE stream_url = ? ORDER BY id DESC LIMIT 1"),
+                (stream_url,),
+            ).fetchone()
+        return self._serialize(row, include_secret=include_secret) if row else None
+
     def get_camera(self, camera_id: int, include_secret: bool = False) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(

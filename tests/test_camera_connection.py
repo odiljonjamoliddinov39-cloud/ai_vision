@@ -27,18 +27,48 @@ from cameras.camera import Camera, _is_benign_ffmpeg_noise, _mask_source
 from database.camera_db import CameraDB
 
 
-def test_camera_stream_closed_rtsp_port_fails_before_opencv():
-    with patch("api.server.socket.create_connection", side_effect=TimeoutError("timed out")):
-        with patch("api.server.subprocess.run") as run:
-            result = _test_camera_stream(
-                "rtsp://admin:secret@192.168.137.87:554/Streaming/Channels/101"
-            )
+class FakeProbeStreamManager:
+    def __init__(self, status: dict, frame: bytes | None = None):
+        self._status = status
+        self._frame = frame
+        self.started = []
+        self.stopped = []
+
+    def start(self, config):
+        self.started.append(config)
+        return self._status
+
+    def status(self, channel_id=None):
+        return self._status
+
+    def latest_frame_bytes(self, channel_id=None, slot_number=None, name=None):
+        return self._frame
+
+    def stop(self, channel_id):
+        self.stopped.append(channel_id)
+        return True
+
+
+def test_camera_stream_probe_reports_stream_manager_failure(monkeypatch):
+    manager = FakeProbeStreamManager(
+        {
+            "status": "reconnecting",
+            "last_error": "Cannot reach RTSP endpoint rtsp://admin:****@192.168.137.87:554/stream",
+        }
+    )
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: manager)
+    with patch("api.server.subprocess.run") as run:
+        result = _test_camera_stream(
+            "rtsp://admin:secret@192.168.137.87:554/Streaming/Channels/101"
+        )
 
     assert result["status"] == "failed"
-    assert "Cannot reach RTSP endpoint 192.168.137.87:554" in result["message"]
+    assert "Stream Manager could not read the camera stream" in result["message"]
     assert "secret" not in result["message"]
-    assert result["details"]["endpoint_reachable"] is False
+    assert result["details"]["stream_manager"] is True
     run.assert_not_called()
+    assert manager.started[0].source.startswith("rtsp://admin:secret@")
+    assert manager.stopped
 
 
 def test_status_log_redaction_masks_rtsp_password():
@@ -100,77 +130,56 @@ def test_camera_stream_bad_port_returns_validation_message():
     assert "secret" not in result["message"]
 
 
-def test_local_webcam_source_still_uses_opencv():
-    completed = subprocess.CompletedProcess(
-        args=["python"],
-        returncode=0,
-        stdout='{"ok": true, "opened": true, "frame_read": true}\n',
-        stderr="",
+def test_local_webcam_source_is_probed_through_stream_manager(monkeypatch):
+    manager = FakeProbeStreamManager(
+        {"status": "online"},
+        frame=b"\xff\xd8fake-jpeg-data\xff\xd9",
     )
-    with patch("api.server.socket.create_connection") as create_connection:
-        with patch("api.server.subprocess.run", return_value=completed) as run:
-            result = _test_camera_stream("0")
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: manager)
+    with patch("api.server.subprocess.run") as run:
+        result = _test_camera_stream("0")
 
     assert result["status"] == "connected"
-    create_connection.assert_not_called()
-    run.assert_called_once()
+    assert result["message"].startswith("Stream Manager opened")
+    run.assert_not_called()
 
 
-def test_camera_stream_check_allows_rtsp_waiting_for_first_keyframe():
-    completed = subprocess.CompletedProcess(
-        args=["python"],
-        returncode=0,
-        stdout='{"ok": false, "opened": true, "frame_read": false, "note": "waiting_for_frame"}\n',
-        stderr="",
-    )
-    with patch("api.server.socket.create_connection"):
-        with patch("api.server.subprocess.run", return_value=completed):
-            result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
+def test_camera_stream_check_allows_stream_manager_warmup(monkeypatch):
+    manager = FakeProbeStreamManager({"status": "starting"})
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: manager)
+
+    result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream", timeout_seconds=1)
 
     assert result["status"] == "connected"
-    assert result["details"]["endpoint_reachable"] is True
+    assert result["details"]["stream_manager"] is True
     assert result["details"]["waiting_for_frame"] is True
-    assert "Stream Manager will keep waiting" in result["message"]
+    assert "Stream Manager is connected or warming up" in result["message"]
 
 
-def test_camera_stream_check_uses_a_real_ffmpeg_subprocess_for_rtsp(monkeypatch, tmp_path):
-    # Runs the real subprocess (not a mocked one), with a fake `ffmpeg`
-    # executable on PATH so the actual embedded validation logic executes
-    # end to end, not a stand-in for it. Mirrors what Camera._open_ffmpeg()
-    # does in cameras/camera.py: OpenCV's bundled FFMPEG backend can refuse
-    # a perfectly valid RTSP source with no other OpenCV backend to fall
-    # back to, so this pre-flight check shells out to ffmpeg directly too -
-    # it has to agree with what the real detector can actually achieve.
-    if os.name == "nt":
-        fake_ffmpeg = tmp_path / "ffmpeg.cmd"
-        fake_ffmpeg.write_text(
-            f'@echo off\r\n"{sys.executable}" -c "import sys; sys.stdout.buffer.write(bytes([255,216])+b\'fake-jpeg-data\'+bytes([255,217]))"\r\n',
-            encoding="utf-8",
-        )
-    else:
-        fake_ffmpeg = tmp_path / "ffmpeg"
-        fake_ffmpeg.write_text(
-            "#!/usr/bin/env python3\n"
-            "import sys\n"
-            "sys.stdout.buffer.write(b'\\xff\\xd8fake-jpeg-data\\xff\\xd9')\n"
-            "sys.stdout.buffer.flush()\n",
-            encoding="utf-8",
-        )
-        fake_ffmpeg.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
-
-    with patch("api.server.socket.create_connection"):
+def test_camera_stream_check_routes_rtsp_through_stream_manager(monkeypatch):
+    manager = FakeProbeStreamManager(
+        {"status": "online"},
+        frame=b"\xff\xd8fake-jpeg-data\xff\xd9",
+    )
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: manager)
+    with patch("api.server.subprocess.run") as run:
         result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
 
     assert result["status"] == "connected"
+    assert result["details"]["stream_manager"] is True
+    run.assert_not_called()
 
 
-def test_camera_stream_check_reports_failure_when_ffmpeg_is_not_installed(monkeypatch):
-    monkeypatch.setenv("PATH", "/nonexistent-empty-bin-dir")
-    with patch("api.server.socket.create_connection"):
-        result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
+def test_camera_stream_check_reports_stream_manager_read_failure(monkeypatch):
+    manager = FakeProbeStreamManager(
+        {"status": "reconnecting", "last_error": "ffmpeg is not installed"}
+    )
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: manager)
+
+    result = _test_camera_stream("rtsp://admin:secret@203.0.113.10:554/stream")
 
     assert result["status"] == "failed"
+    assert "ffmpeg is not installed" in result["message"]
 
 
 def test_controller_stream_url_builds_channel_rtsp_url_with_credentials():
@@ -530,12 +539,9 @@ def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tm
     monkeypatch.setenv("CAMERA_CONTROLLER_PASSWORD", "secret")
     monkeypatch.setenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "3")
     monkeypatch.setenv("CAMERA_CONTROLLER_STREAM_TEMPLATE", "/Streaming/Channels/{channel}02")
-    # The seed path now actually tests connectivity/streams before
-    # activating a channel (it used to activate every channel
-    # unconditionally, which is exactly what let stale env-var credentials
-    # silently occupy real slots forever). Fake both checks as passing so
-    # this test exercises the seeding logic without a real network call.
-    monkeypatch.setattr(server, "_check_camera_endpoint", lambda endpoint, timeout_seconds=2.0: None)
+    # The seed path now tests streams through Stream Manager before activating
+    # a channel. Fake that as passing so the test exercises the seeding logic
+    # without a real network call.
     monkeypatch.setattr(
         server,
         "_test_camera_stream",
@@ -554,12 +560,10 @@ def test_environment_camera_controller_seed_creates_active_slots(monkeypatch, tm
 def test_environment_camera_controller_seed_does_not_activate_unreachable_channels(
     monkeypatch, tmp_path
 ):
-    # This is the actual bug: the seed path used to build a
-    # CameraControllerCreate with test_controller/test_streams fields that
-    # were never consulted by its own hand-rolled activation loop, so a
-    # stale or wrong CAMERA_CONTROLLER_* credential baked into the droplet's
-    # environment would silently occupy real slots forever, with nothing
-    # ever having actually verified it worked.
+    # This is the actual bug: stale or wrong CAMERA_CONTROLLER_* credentials
+    # baked into the environment must not silently occupy real slots forever.
+    # The stream probe is owned by Stream Manager, not by backend socket/ffmpeg
+    # preflight.
     camera_db_path = tmp_path / "cameras.db"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -579,8 +583,8 @@ def test_environment_camera_controller_seed_does_not_activate_unreachable_channe
     monkeypatch.setenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "3")
     monkeypatch.setattr(
         server,
-        "_check_camera_endpoint",
-        lambda endpoint, timeout_seconds=2.0: "connection refused",
+        "_test_camera_stream",
+        lambda stream_url, timeout_seconds=10: {"status": "failed", "message": "connection refused"},
     )
 
     db = server._get_camera_db()
@@ -766,11 +770,13 @@ def test_benign_ffmpeg_decoder_noise_is_filtered_but_real_errors_are_kept():
         assert _is_benign_ffmpeg_noise(real) is False
 
 
-def test_camera_stream_check_only_decodes_keyframes():
+def test_camera_stream_check_uses_stream_session_config_instead_of_backend_ffmpeg():
     server_path = os.path.join(os.path.dirname(__file__), "..", "api", "server.py")
     with open(server_path, encoding="utf-8") as handle:
         source = handle.read()
-    assert '"-rtsp_transport", "tcp", "-skip_frame", "nokey", "-fflags", "+discardcorrupt", "-i", url,' in source
+    assert "StreamSessionConfig(" in source
+    assert "socket.create_connection" not in source
+    assert '"-rtsp_transport", "tcp", "-skip_frame", "nokey", "-fflags", "+discardcorrupt", "-i", url,' not in source
 
 
 def test_camera_raises_when_ffmpeg_exits_immediately(monkeypatch):

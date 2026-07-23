@@ -32,6 +32,13 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
     assert "new IntersectionObserver(" in source
     assert 'image.dataset.liveVisible !== "false"' in source
     assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
+
+
+def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "for (let slot = 1; slot <= MAX_NVR_SLOTS; slot += 1)" in source
+    assert "Math.max(...usedSlots) + 1" not in source
     assert "new MutationObserver((mutations) => {" in source
     assert 'fetch(liveFrameUrl(slot), { cache: "no-store" })' in source
     assert "URL.revokeObjectURL(previousObjectUrl)" in source

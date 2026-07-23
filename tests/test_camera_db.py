@@ -63,3 +63,20 @@ def test_camera_db_deletes_camera(tmp_path):
     assert db.delete_camera(camera["id"]) is True
     assert db.get_camera(camera["id"]) is None
     assert db.delete_camera(camera["id"]) is False
+
+
+def test_upsert_camera_by_stream_url_reuses_existing_slot(tmp_path):
+    db = CameraDB(db_path=str(tmp_path / "cameras.db"))
+    first = db.add_camera("NVR Main Camera 1", "rtsp://example.test/Streaming/Channels/101", "connected")
+    active = db.assign_slot(first["id"], 7)
+
+    updated = db.upsert_camera_by_stream_url(
+        "NVR Main Ch 1",
+        "rtsp://example.test/Streaming/Channels/101",
+        "stream_managed",
+    )
+
+    assert updated["id"] == first["id"]
+    assert db.get_camera(first["id"])["name"] == "NVR Main Ch 1"
+    assert db.list_active_cameras()[0]["slot_number"] == active["slot_number"]
+    assert len(db.list_cameras()) == 1

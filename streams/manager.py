@@ -58,24 +58,47 @@ class StreamManager:
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, _ManagedStreamSession] = {}
+        self._aliases: dict[str, _ManagedStreamSession] = {}
         self._lock = threading.Lock()
 
     def start(self, config: StreamSessionConfig) -> dict[str, Any]:
         with self._lock:
-            existing = self._sessions.get(config.channel_id)
+            channel_id = str(config.channel_id)
+            existing = self._sessions.get(channel_id) or self._aliases.get(channel_id)
             if existing and existing.same_source(config):
-                return existing.status()
+                existing.add_alias(config)
+                return existing.status(config)
             if existing:
-                existing.stop()
+                self._remove_alias(channel_id)
+                if self._sessions.get(channel_id) is existing:
+                    existing.stop()
+                    self._sessions.pop(channel_id, None)
+
+            shared = self._find_same_source(config)
+            if shared is not None:
+                shared.add_alias(config)
+                self._aliases[channel_id] = shared
+                return shared.status(config)
 
             session = _ManagedStreamSession(config)
-            self._sessions[config.channel_id] = session
+            self._sessions[channel_id] = session
             session.start()
             return session.status()
 
     def stop(self, channel_id: str) -> bool:
         with self._lock:
-            session = self._sessions.pop(str(channel_id), None)
+            channel_id = str(channel_id)
+            alias = self._aliases.pop(channel_id, None)
+            if alias is not None:
+                alias.remove_alias(channel_id)
+                return True
+            session = self._sessions.pop(channel_id, None)
+            if session is not None:
+                self._aliases = {
+                    alias_id: alias_session
+                    for alias_id, alias_session in self._aliases.items()
+                    if alias_session is not session
+                }
         if session is None:
             return False
         session.stop()
@@ -85,15 +108,39 @@ class StreamManager:
         with self._lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
+            self._aliases.clear()
         for session in sessions:
             session.stop()
 
     def status(self, channel_id: str | None = None) -> dict[str, Any]:
         with self._lock:
             if channel_id is not None:
-                session = self._sessions.get(str(channel_id))
-                return session.status() if session else {"channel_id": str(channel_id), "status": "offline"}
-            return {"streams": [session.status() for session in self._sessions.values()]}
+                channel_id = str(channel_id)
+                session = self._sessions.get(channel_id) or self._aliases.get(channel_id)
+                return session.status_for_channel(channel_id) if session else {"channel_id": channel_id, "status": "offline"}
+            streams = []
+            for session in self._sessions.values():
+                streams.append(session.status())
+                streams.extend(session.alias_statuses())
+            return {"streams": streams, "upstream_count": len(self._sessions)}
+
+    def latest_frame_bytes(
+        self,
+        channel_id: str | None = None,
+        slot_number: int | None = None,
+        name: str | None = None,
+    ) -> bytes | None:
+        with self._lock:
+            session = None
+            if channel_id is not None:
+                channel_id = str(channel_id)
+                session = self._sessions.get(channel_id) or self._aliases.get(channel_id)
+            if session is None:
+                for candidate in self._sessions.values():
+                    if candidate.matches(slot_number=slot_number, name=name):
+                        session = candidate
+                        break
+        return session.latest_frame_bytes() if session is not None else None
 
     def ensure_from_cameras(self, cameras: list[dict[str, Any]]) -> dict[str, Any]:
         seen: set[str] = set()
@@ -117,9 +164,23 @@ class StreamManager:
 
         with self._lock:
             stale = [channel_id for channel_id in self._sessions if channel_id not in seen]
+            stale_aliases = [channel_id for channel_id in self._aliases if channel_id not in seen]
+        for channel_id in stale_aliases:
+            self.stop(channel_id)
         for channel_id in stale:
             self.stop(channel_id)
         return {"streams": statuses}
+
+    def _find_same_source(self, config: StreamSessionConfig) -> _ManagedStreamSession | None:
+        for session in self._sessions.values():
+            if session.same_source(config):
+                return session
+        return None
+
+    def _remove_alias(self, channel_id: str) -> None:
+        alias = self._aliases.pop(channel_id, None)
+        if alias is not None:
+            alias.remove_alias(channel_id)
 
 
 class _ManagedStreamSession:
@@ -134,13 +195,34 @@ class _ManagedStreamSession:
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
         self._warning_log = _RateLimitedWarnings()
+        self._latest_jpeg: bytes | None = None
+        self._latest_lock = threading.Lock()
+        self._aliases: dict[str, StreamSessionConfig] = {}
 
     def same_source(self, config: StreamSessionConfig) -> bool:
-        return (
-            self.config.source == config.source
-            and self.config.slot_number == config.slot_number
-            and self._thread is not None
-            and self._thread.is_alive()
+        if self._thread is None or not self._thread.is_alive():
+            return False
+        if str(self.config.channel_id) == str(config.channel_id):
+            return self.config.source == config.source
+        source = str(self.config.source).strip()
+        return bool(source and source.lower() != "dummy" and source == str(config.source).strip())
+
+    def add_alias(self, config: StreamSessionConfig) -> None:
+        self._aliases[str(config.channel_id)] = config
+        data = self.latest_frame_bytes()
+        if data is not None:
+            self._write_frame_files(config.name, config.slot_number, data)
+
+    def remove_alias(self, channel_id: str) -> None:
+        self._aliases.pop(str(channel_id), None)
+
+    def matches(self, slot_number: int | None = None, name: str | None = None) -> bool:
+        names_and_slots = [(self.config.name, self.config.slot_number)]
+        names_and_slots.extend((config.name, config.slot_number) for config in self._aliases.values())
+        return any(
+            (slot_number is not None and slot == slot_number)
+            or (name is not None and candidate_name == name)
+            for candidate_name, slot in names_and_slots
         )
 
     def start(self) -> None:
@@ -158,8 +240,27 @@ class _ManagedStreamSession:
             self._thread.join(timeout=2.0)
         self.status_data.status = "offline"
 
-    def status(self) -> dict[str, Any]:
-        return self.status_data.to_dict()
+    def status_for_channel(self, channel_id: str) -> dict[str, Any]:
+        config = self._aliases.get(str(channel_id))
+        if config is None and str(self.config.channel_id) != str(channel_id):
+            return {"channel_id": str(channel_id), "status": "offline"}
+        return self.status(config)
+
+    def alias_statuses(self) -> list[dict[str, Any]]:
+        return [self.status(config) for config in self._aliases.values()]
+
+    def latest_frame_bytes(self) -> bytes | None:
+        with self._latest_lock:
+            return bytes(self._latest_jpeg) if self._latest_jpeg is not None else None
+
+    def status(self, config: StreamSessionConfig | None = None) -> dict[str, Any]:
+        status = self.status_data.to_dict()
+        if config is not None:
+            status["channel_id"] = str(config.channel_id)
+            status["name"] = config.name
+            status["slot_number"] = config.slot_number
+        status["shared_source"] = bool(self._aliases)
+        return status
 
     def _run(self) -> None:
         backoff = 1.0
@@ -302,13 +403,7 @@ class _ManagedStreamSession:
         self.status_data.last_frame_at = datetime.now().isoformat(timespec="seconds")
         self.status_data.last_error = None
 
-        safe_name = _safe_name(self.config.name)
-        self._write_atomic(self.config.snapshot_dir / f"latest_stream_{safe_name}.jpg", data)
-        if self.config.slot_number is not None:
-            self._write_atomic(self.config.snapshot_dir / f"latest_stream_slot_{self.config.slot_number}.jpg", data)
-            # Compatibility path for existing dashboard code while the UI moves
-            # fully to V2 stream endpoints.
-            self._write_atomic(self.config.snapshot_dir / f"latest_slot_{self.config.slot_number}.jpg", data)
+        self._publish_jpeg_data(data)
 
     def _publish_jpeg(self, data: bytes) -> None:
         if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
@@ -321,11 +416,21 @@ class _ManagedStreamSession:
         self.status_data.last_frame_at = datetime.now().isoformat(timespec="seconds")
         self.status_data.last_error = None
 
-        safe_name = _safe_name(self.config.name)
+        self._publish_jpeg_data(data)
+
+    def _publish_jpeg_data(self, data: bytes) -> None:
+        with self._latest_lock:
+            self._latest_jpeg = data
+        self._write_frame_files(self.config.name, self.config.slot_number, data)
+        for alias in list(self._aliases.values()):
+            self._write_frame_files(alias.name, alias.slot_number, data)
+
+    def _write_frame_files(self, name: str, slot_number: int | None, data: bytes) -> None:
+        safe_name = _safe_name(name)
         self._write_atomic(self.config.snapshot_dir / f"latest_stream_{safe_name}.jpg", data)
-        if self.config.slot_number is not None:
-            self._write_atomic(self.config.snapshot_dir / f"latest_stream_slot_{self.config.slot_number}.jpg", data)
-            self._write_atomic(self.config.snapshot_dir / f"latest_slot_{self.config.slot_number}.jpg", data)
+        if slot_number is not None:
+            self._write_atomic(self.config.snapshot_dir / f"latest_stream_slot_{slot_number}.jpg", data)
+            self._write_atomic(self.config.snapshot_dir / f"latest_slot_{slot_number}.jpg", data)
 
     @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:

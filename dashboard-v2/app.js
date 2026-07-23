@@ -1230,8 +1230,10 @@ async function nextAvailableCameraSlot() {
   // failing the whole request (see _register_controller_channels). Without
   // this clamp, once every slot up to MAX_NVR_SLOTS is in use, adding any
   // new NVR fails outright instead of falling back to that behavior.
-  const next = usedSlots.length ? Math.max(...usedSlots) + 1 : 1;
-  return Math.min(next, MAX_NVR_SLOTS);
+  for (let slot = 1; slot <= MAX_NVR_SLOTS; slot += 1) {
+    if (!usedSlots.includes(slot)) return slot;
+  }
+  return MAX_NVR_SLOTS;
 }
 
 async function registerNvrController(fields) {
@@ -1371,6 +1373,53 @@ function catalogDimensions(result) {
   };
 }
 
+function catalogCameraCountsHtml(result) {
+  const cameraCounts = Array.isArray(result?.camera_counts) ? result.camera_counts : [];
+  const rows = cameraCounts
+    .filter((entry) => Number(entry.quantity) > 0)
+    .map(
+      (entry) =>
+        `<span class="camera-count-pill"><strong>${escapeHtml(entry.camera_name || "Camera")}</strong>${Number(entry.quantity).toLocaleString()}</span>`
+    )
+    .join("");
+  return rows || `<span class="muted">Unknown camera</span>`;
+}
+
+function catalogCameraTotals(results) {
+  const totals = new Map();
+  for (const result of results || []) {
+    const cameraCounts = Array.isArray(result?.camera_counts) ? result.camera_counts : [];
+    for (const entry of cameraCounts) {
+      const quantity = Number(entry.quantity || 0);
+      if (quantity <= 0) continue;
+      const cameraName = String(entry.camera_name || "Unknown camera");
+      totals.set(cameraName, (totals.get(cameraName) || 0) + quantity);
+    }
+  }
+  return Array.from(totals.entries())
+    .map(([cameraName, quantity]) => ({ cameraName, quantity }))
+    .sort((a, b) => b.quantity - a.quantity || a.cameraName.localeCompare(b.cameraName));
+}
+
+function catalogCameraTotalsHtml(results) {
+  const totals = catalogCameraTotals(results);
+  if (!totals.length) return "";
+  return `
+    <div class="catalog-camera-summary" aria-label="Recognized catalog objects by camera">
+      ${totals
+        .map(
+          (entry) => `
+            <div class="camera-total-row">
+              <span>${escapeHtml(entry.cameraName)}</span>
+              <strong>${entry.quantity.toLocaleString()} objects</strong>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 async function renderCatalogEnrollment(container) {
   try {
     const payload = await catalogRequest(catalogApiPath("/api/catalog/items"));
@@ -1425,6 +1474,7 @@ function catalogResultsTableHtml(results) {
         <tr>
           <td><strong>${escapeHtml(result.item_name)}</strong></td>
           <td class="count-cell">${Number(result.quantity).toLocaleString()}</td>
+          <td><div class="camera-count-list">${catalogCameraCountsHtml(result)}</div></td>
           <td>${Math.round(Number(result.confidence) * 100)}%</td>
           <td>${dims ? `${dims.w} × ${dims.h} × ${dims.d} cm` : "Pending 3D measurement"}</td>
         </tr>
@@ -1432,7 +1482,7 @@ function catalogResultsTableHtml(results) {
     })
     .join("");
   return rows
-    ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Camera / objects</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<p class="empty">No checked-in AI item was recognized in the current camera images yet.</p>`;
 }
 
@@ -1440,6 +1490,8 @@ async function refreshCatalogResultsTable(container, results = []) {
   const table = container.querySelector("[data-catalog-table]");
   if (!table) return;
   if (!container.isConnected) return;
+  const summary = container.querySelector("[data-catalog-camera-summary]");
+  if (summary) summary.innerHTML = catalogCameraTotalsHtml(results);
   table.innerHTML = catalogResultsTableHtml(results);
 }
 
@@ -1459,6 +1511,7 @@ async function renderCatalogResults(container) {
             <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
           </div>
         </header>
+        <div data-catalog-camera-summary>${catalogCameraTotalsHtml(payload.results)}</div>
         <div data-catalog-table>${catalogResultsTableHtml(payload.results)}</div>
         <p class="catalog-next-run">Next automatic recognition: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</p>
       </section>
@@ -1567,17 +1620,30 @@ function renderAccountModule() {
                 const hasSlot = channel.slot_number != null;
                 const stream = hasSlot ? streamsBySlot.get(Number(channel.slot_number)) : null;
                 const isLive = stream?.status === "online";
-                const stateClass = isLive ? "ok" : hasSlot || channel.status === "connected" ? "pending" : "bad";
+                const isStarting = stream?.status === "starting";
+                const isReconnecting = stream?.status === "reconnecting";
+                const stateClass = isLive
+                  ? "ok"
+                  : isReconnecting || stream?.status === "offline" || channel.status === "failed"
+                    ? "bad"
+                    : hasSlot || channel.status === "connected"
+                      ? "pending"
+                      : "bad";
                 const label = isLive
                   ? "Live"
+                  : isReconnecting
+                    ? "Reconnecting"
+                    : isStarting
+                      ? "Starting"
                   : hasSlot
                     ? "Waiting for video"
                     : channel.status === "connected"
                     ? "Waiting for a free slot"
                     : "Not connected";
+                const detail = stream?.last_error || channel.message || "";
                 const slotLabel = channel.slot_number != null ? `slot ${channel.slot_number}` : "no slot yet";
                 return `
-                  <li class="nvr-channel ${stateClass}">
+                  <li class="nvr-channel ${stateClass}" title="${escapeHtml(detail)}">
                     <span>Ch ${channel.channel} · ${slotLabel}</span>
                     <span class="nvr-channel-status">${label}</span>
                   </li>
@@ -2237,6 +2303,38 @@ function movementDimensionsText(movement) {
   return `${width.toFixed(2)} x ${height.toFixed(2)} x ${depth.toFixed(2)} m`;
 }
 
+function checkInCameraTotals(movements) {
+  const totals = new Map();
+  for (const movement of movements || []) {
+    if (movement.direction !== "IN") continue;
+    const cameraName = String(movement.camera_id || "Unknown camera");
+    const quantity = Math.max(1, Number(movement.quantity || 1));
+    totals.set(cameraName, (totals.get(cameraName) || 0) + quantity);
+  }
+  return Array.from(totals.entries())
+    .map(([cameraName, quantity]) => ({ cameraName, quantity }))
+    .sort((a, b) => b.quantity - a.quantity || a.cameraName.localeCompare(b.cameraName));
+}
+
+function checkInCameraTotalsHtml(movements) {
+  const totals = checkInCameraTotals(movements);
+  if (!totals.length) return "";
+  return `
+    <div class="camera-total-list" aria-label="Recognized objects by camera">
+      ${totals
+        .map(
+          (entry) => `
+            <div class="camera-total-row">
+              <span>${escapeHtml(entry.cameraName)}</span>
+              <strong>${entry.quantity.toLocaleString()} objects</strong>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function recentActivityHtml(movements) {
   const checkIns = (movements || []).filter((movement) => movement.direction === "IN");
   if (!checkIns.length) {
@@ -2245,7 +2343,8 @@ function recentActivityHtml(movements) {
       <div class="alert-main"><strong>No AI Check-ins yet</strong><small>YOLO will add items here when it recognizes stock in view, even if the item stays still.</small></div>
     </div>`;
   }
-  return checkIns
+  const cameraTotals = checkInCameraTotalsHtml(checkIns);
+  const recentRows = checkIns
     .slice(0, 10)
     .map((movement) => {
       const quantity = Number(movement.quantity || 1);
@@ -2262,6 +2361,7 @@ function recentActivityHtml(movements) {
       `;
     })
     .join("");
+  return `${cameraTotals}${recentRows}`;
 }
 function axisMax(value) {
   const candidates = [2, 4, 5, 8, 10, 20, 30, 40, 50, 60, 80, 100, 200, 500, 1000];

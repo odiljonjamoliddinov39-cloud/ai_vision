@@ -144,6 +144,7 @@ def test_recognition_run_counts_only_catalog_item_and_records_3d_measurement(tmp
     assert result["item_id"] == item["id"]
     assert result["item_name"] == "Blue crate"
     assert result["quantity"] == 7
+    assert result["camera_counts"] == [{"camera_name": "Camera 1", "quantity": 7}]
     assert result["confidence"] == 1.0
     assert result["width_m"] == 0.42
     assert result["measurement_method"] == "monocular_ground_plane"
@@ -162,6 +163,7 @@ def test_excel_export_is_formatted_and_immediately_readable(tmp_path, monkeypatc
         confidence=0.97,
         dimensions_m=(0.42, 0.31, 0.28),
         measurement_method="monocular_ground_plane",
+        camera_counts=[{"camera_name": "Camera 2", "quantity": 8}, {"camera_name": "Camera 4", "quantity": 4}],
     )
     db.complete_run(run_id)
     monkeypatch.setattr(server, "_catalog_db", db)
@@ -171,9 +173,10 @@ def test_excel_export_is_formatted_and_immediately_readable(tmp_path, monkeypatc
     sheet = workbook["Detected Items"]
 
     assert sheet["A1"].value == "AI Vision — Detected Item Count"
-    assert [sheet.cell(5, column).value for column in range(1, 8)] == [
+    assert [sheet.cell(5, column).value for column in range(1, 9)] == [
         "Item",
         "Count",
+        "Camera / objects",
         "Confidence",
         "Width (cm)",
         "Height (cm)",
@@ -182,7 +185,8 @@ def test_excel_export_is_formatted_and_immediately_readable(tmp_path, monkeypatc
     ]
     assert sheet["A6"].value == "Blue crate"
     assert sheet["B6"].value == 12
-    assert sheet["C6"].number_format == "0.0%"
+    assert sheet["C6"].value == "Camera 2: 8, Camera 4: 4"
+    assert sheet["D6"].number_format == "0.0%"
     assert sheet.freeze_panes == "A6"
     assert sheet.column_dimensions["A"].width >= 25
     assert "DetectedItems" in sheet.tables
@@ -508,6 +512,80 @@ def test_catalog_recognition_uses_stream_manager_when_detector_health_has_no_cam
     assert payload["results"][0]["confidence"] == pytest.approx(0.81)
 
 
+def test_live_catalog_recognition_persists_stream_manager_camera_count(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    frame[40:120, 50:170] = _reference_image((35, 160, 220))
+    cv2.imwrite(str(snapshot_dir / "latest_stream_slot_29.jpg"), frame)
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(json.dumps({"state": "starting", "cameras": []}), encoding="utf-8")
+
+    class FakeStreamManager:
+        def status(self):
+            return {
+                "streams": [
+                    {
+                        "name": "NVR Camera 2",
+                        "slot_number": 29,
+                        "status": "online",
+                    }
+                ]
+            }
+
+    class FakeDetector:
+        def __init__(self, **kwargs):
+            self.prompts = kwargs["class_prompts"]
+
+        def detect(self, _frame):
+            detection = type(
+                "Detection",
+                (),
+                {
+                    "class_name": "box",
+                    "confidence": 0.81,
+                    "box": (50, 40, 170, 120),
+                    "quantity": 1,
+                },
+            )()
+            return [detection]
+
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+    monkeypatch.setattr(server, "Detector", FakeDetector)
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: FakeStreamManager())
+    monkeypatch.setattr(server, "_catalog_yolo_detector", None)
+    monkeypatch.setattr(server, "_catalog_yolo_detector_key", None)
+    monkeypatch.setattr(server, "_read_yaml", lambda _path: {"detection": {}, "spatial_analysis": {"enabled": False}})
+    server._live_catalog_runs.clear()
+    started_at = server.datetime.now(server.timezone.utc)
+    ends_at = started_at + server.timedelta(seconds=0)
+    server._live_catalog_runs["warehouse-a"] = {
+        "status": "running",
+        "started_at": started_at.isoformat(),
+        "ends_at": ends_at.isoformat(),
+        "items": {
+            str(item["id"]): {
+                "item_id": str(item["id"]),
+                "item_name": "Baget Box",
+                "quantity": 1,
+                "confidence": 0.81,
+                "dimensions_m": None,
+                "measurement_method": "catalog-single-item-yolo-and-3d",
+            }
+        },
+    }
+
+    asyncio.run(server._run_live_catalog_recognition("warehouse-a", ends_at))
+
+    run = db.latest_run("warehouse-a")
+    assert run["camera_count"] == 1
+    assert db.latest_results("warehouse-a")[0]["item_name"] == "Baget Box"
+
+
 def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -575,3 +653,55 @@ def test_catalog_results_panel_does_not_show_cached_warehouse_movements():
     assert 'accountsApi("/api/warehouse/movements?limit=50")' not in source
     assert "catalogResultsTableHtml(payload.results)" in source
     assert "No checked-in AI item was recognized" in source
+
+
+def test_catalog_results_include_camera_object_breakdown(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [],
+                "last_spatial_objects_by_camera": {
+                    "Camera 1": [{"inventory_name": "Baget Box", "quantity": 2}],
+                    "Camera 3": [{"inventory_name": "Baget Box", "quantity": 5}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+
+    payload = server._run_catalog_recognition("warehouse-a")
+
+    assert payload["results"][0]["item_id"] == item["id"]
+    assert payload["results"][0]["quantity"] == 7
+    assert payload["results"][0]["camera_counts"] == [
+        {"camera_name": "Camera 1", "quantity": 2},
+        {"camera_name": "Camera 3", "quantity": 5},
+    ]
+
+
+def test_dashboard_catalog_results_show_camera_object_breakdown():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function catalogCameraCountsHtml(result)" in source
+    assert "function catalogCameraTotalsHtml(results)" in source
+    assert "data-catalog-camera-summary" in source
+    assert "Camera / objects" in source
+    assert "camera-count-pill" in source
+    assert ".camera-count-list" in styles
+    assert ".catalog-camera-summary" in styles
+
+
+def test_dashboard_ai_check_in_groups_objects_by_camera():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert "function checkInCameraTotals(movements)" in source
+    assert "function checkInCameraTotalsHtml(movements)" in source
+    assert "camera-total-row" in source
+    assert ".camera-total-list" in styles

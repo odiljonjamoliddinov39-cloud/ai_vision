@@ -4,7 +4,7 @@ main.py
 AI Vision Assistant entry point.
 
 What this does:
-  1. Connects to one or more webcam / RTSP cameras.          (FR-1)
+  1. Reads frames published by Stream Manager.                (FR-1)
   2. Runs YOLO object detection on every frame.               (FR-2)
   3. Draws bounding boxes, labels, confidence, FPS.           (FR-3)
   4. Shows live per-class object counts.                      (FR-4)
@@ -81,15 +81,17 @@ def main():
     # --- Frame source (V2 stream-first architecture) ---
     #
     # The API server starts the Stream Manager and sets AI_VISION_STREAM_FIRST=1.
-    # In that mode YOLO consumes already-published frames from snapshots instead
-    # of opening RTSP/NVR connections directly. Direct camera loading remains as
-    # a local developer fallback for running this file by hand.
+    # YOLO consumes already-published frames from snapshots instead of opening
+    # RTSP/NVR connections directly. Direct camera loading is reserved for an
+    # explicit local developer override and is not used by the backend path.
     snap_cfg = config.get("snapshots", {})
     snapshots_dir = snap_cfg.get("save_dir", "snapshots")
-    stream_first = os.getenv("AI_VISION_STREAM_FIRST", "1") != "0"
+    direct_camera_override = os.getenv("AI_VISION_ALLOW_DIRECT_CAMERA", "0") == "1"
+    stream_first = os.getenv("AI_VISION_STREAM_FIRST", "1") != "0" or not direct_camera_override
     if stream_first:
         cameras = load_processing_cameras(config["cameras"], snapshot_dir=snapshots_dir)
     else:
+        print("WARNING: direct camera mode is enabled for local development only.")
         cameras = load_cameras(config["cameras"])
     if not cameras:
         _write_detection_health(

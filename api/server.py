@@ -14,7 +14,6 @@ import os
 import re
 import secrets
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -1016,25 +1015,6 @@ def _camera_stream_endpoint(stream_url: str) -> tuple[dict[str, Any] | None, str
     return {"scheme": scheme, "host": parsed.hostname, "port": port}, None
 
 
-def _check_camera_endpoint(endpoint: dict[str, Any], timeout_seconds: float = 2.0) -> str | None:
-    host = endpoint["host"]
-    port = endpoint["port"]
-    scheme = endpoint["scheme"].upper()
-    try:
-        with socket.create_connection((host, port), timeout=timeout_seconds):
-            return None
-    except TimeoutError:
-        reason = "connection timed out"
-    except OSError as exc:
-        reason = exc.strerror or str(exc)
-
-    return (
-        f"Cannot reach {scheme} endpoint {host}:{port} ({reason}). "
-        "The camera is reachable only when this stream port is open; enable the camera stream service "
-        "or use the correct stream URL/port."
-    )
-
-
 def _normalize_controller_host(host: str) -> str:
     value = host.strip()
     if "://" in value:
@@ -1125,6 +1105,46 @@ def _next_available_slot(cameras: list[dict[str, Any]]) -> int:
     return slot_number
 
 
+def _activate_stream_managed_camera(
+    db: CameraDB,
+    camera_id: int,
+    next_slot: int,
+    used_slots: set[int],
+    *,
+    reuse_existing_slot: bool = True,
+) -> tuple[dict[str, Any] | None, int | None, int]:
+    current = db.get_camera(camera_id, include_secret=True)
+    if (
+        reuse_existing_slot
+        and current
+        and current.get("is_active")
+        and current.get("slot_number") is not None
+    ):
+        assigned_slot = int(current["slot_number"])
+        used_slots.add(assigned_slot)
+        return current, assigned_slot, next_slot
+
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
+    if next_slot > MAX_CAMERA_SLOTS:
+        return None, None, next_slot
+
+    active = db.assign_slot(camera_id, next_slot)
+    used_slots.add(next_slot)
+    assigned_slot = next_slot
+    return active, assigned_slot, next_slot + 1
+
+
+def _delete_duplicate_stream_url_cameras(db: CameraDB, stream_url: str, keep_id: int) -> None:
+    for stale in db.list_cameras(include_secret=True):
+        stale_id = int(stale["id"])
+        if stale_id == keep_id or stale.get("stream_url") != stream_url:
+            continue
+        if stale.get("is_active"):
+            _get_stream_manager().stop(str(stale_id))
+        db.delete_camera(stale_id)
+
+
 def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str, Any]:
     endpoint, validation_error = _camera_stream_endpoint(stream_url)
     if validation_error:
@@ -1133,139 +1153,48 @@ def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str,
     if stream_url.strip().lower() == "dummy":
         return {"status": "connected", "message": "Demo camera source is available."}
 
-    if endpoint is not None:
-        endpoint_error = _check_camera_endpoint(endpoint)
-        if endpoint_error:
-            return {
-                "status": "failed",
-                "message": endpoint_error,
-                "details": {
-                    "host": endpoint["host"],
-                    "port": endpoint["port"],
-                    "scheme": endpoint["scheme"],
-                    "endpoint_reachable": False,
-                },
-            }
-
-    code = r"""
-import json
-import os
-import subprocess
-import shutil
-import sys
-import cv2
-
-raw = sys.argv[1].strip()
-source = int(raw) if raw.isdigit() else raw
-inner_timeout = max(1, int(sys.argv[2]) - 1)
-
-def try_open(cap_args):
-    cap = cv2.VideoCapture(*cap_args)
-    opened = bool(cap.isOpened())
-    ok = False
-    if opened:
-        ok, _ = cap.read()
-    if not (opened and ok):
-        cap.release()
-    return cap, opened, ok
-
-def try_ffmpeg(url, timeout_seconds):
-    # Mirrors cameras/camera.py's Camera._open_ffmpeg(), including
-    # -skip_frame nokey (RTSP-over-TCP sessions commonly start mid-GOP,
-    # which HEVC decoders tolerate far worse than H.264 - confirmed live
-    # against a real Hikvision NVR streaming H.265 - so only decoding
-    # self-contained keyframes sidesteps that instead of erroring out).
-    # This pre-flight check has to use the exact same method the real
-    # detector process does, or a camera that would actually work could
-    # still get wrongly rejected here before it's ever tried for real.
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
-    command = [
-        ffmpeg, "-rtsp_transport", "tcp", "-skip_frame", "nokey", "-fflags", "+discardcorrupt", "-i", url,
-        "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
-        "-an", "-threads", "1", "-loglevel", "error", "-frames:v", "1", "-",
-    ]
-    try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except FileNotFoundError:
-        return False, False
-    try:
-        data, _ = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        try:
-            process.communicate(timeout=2.0)
-        except Exception:
-            pass
-        return True, False, "waiting_for_frame"
-    has_jpeg = b"\xff\xd8" in data and b"\xff\xd9" in data
-    return has_jpeg, has_jpeg, None
-
-try:
-    note = None
-    if isinstance(source, int) and os.name == "nt":
-        cap = None
-        opened = False
-        ok = False
-        for cap_args in [(source, cv2.CAP_DSHOW), (source,)]:
-            cap, opened, ok = try_open(cap_args)
-            if opened and ok:
-                break
-        cap.release()
-    elif isinstance(source, str) and source.lower().startswith("rtsp://"):
-        opened, ok, note = try_ffmpeg(source, inner_timeout)
-    else:
-        cap, opened, ok = try_open((source,))
-        cap.release()
-    print(json.dumps({"ok": bool(opened and ok), "opened": opened, "frame_read": bool(ok), "note": note}))
-except Exception as exc:
-    print(json.dumps({"ok": False, "error": str(exc)}))
-"""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code, stream_url, str(timeout_seconds)],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
+    probe_id = f"probe-{int(time.time() * 1000)}"
+    manager = _get_stream_manager()
+    manager.start(
+        StreamSessionConfig(
+            channel_id=probe_id,
+            name="Camera probe",
+            source=stream_url,
+            snapshot_dir=SNAPSHOT_DIR,
         )
-    except subprocess.TimeoutExpired:
-        response = {"status": "failed", "message": "OpenCV timed out while waiting for a video frame."}
-        if endpoint is not None:
-            response["details"] = {
-                "host": endpoint["host"],
-                "port": endpoint["port"],
-                "scheme": endpoint["scheme"],
-                "endpoint_reachable": True,
-            }
-        return response
-
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
+    )
+    deadline = time.time() + max(1, int(timeout_seconds))
+    status: dict[str, Any] = {"status": "starting"}
     try:
-        payload = json.loads(stdout.splitlines()[-1]) if stdout else {}
-    except (IndexError, json.JSONDecodeError):
-        payload = {}
+        while time.time() < deadline:
+            status = manager.status(probe_id)
+            frame = manager.latest_frame_bytes(channel_id=probe_id)
+            if status.get("status") == "online" and frame:
+                response = {
+                    "status": "connected",
+                    "message": "Stream Manager opened the camera stream and returned a frame.",
+                }
+                if endpoint is not None:
+                    response["details"] = {
+                        "host": endpoint["host"],
+                        "port": endpoint["port"],
+                        "scheme": endpoint["scheme"],
+                        "stream_manager": True,
+                        "frame_read": True,
+                    }
+                return response
+            if status.get("last_error") and status.get("status") == "reconnecting":
+                break
+            time.sleep(0.1)
+    finally:
+        manager.stop(probe_id)
 
-    if payload.get("ok"):
-        response = {"status": "connected", "message": "Camera stream opened and returned a frame."}
-        if endpoint is not None:
-            response["details"] = {
-                "host": endpoint["host"],
-                "port": endpoint["port"],
-                "scheme": endpoint["scheme"],
-                "endpoint_reachable": True,
-                "opencv_opened": True,
-                "frame_read": True,
-            }
-        return response
-
-    if payload.get("opened") and payload.get("note") == "waiting_for_frame":
+    last_error = status.get("last_error")
+    if last_error:
         response = {
-            "status": "connected",
-            "message": (
-                "Camera endpoint is reachable and FFmpeg stayed connected, but no keyframe "
-                "arrived before the short test timeout. Stream Manager will keep waiting "
-                "and reconnecting until live frames arrive."
+            "status": "failed",
+            "message": _redact_sensitive_text(
+                f"Stream Manager could not read the camera stream: {last_error}"
             ),
         }
         if endpoint is not None:
@@ -1273,23 +1202,25 @@ except Exception as exc:
                 "host": endpoint["host"],
                 "port": endpoint["port"],
                 "scheme": endpoint["scheme"],
-                "endpoint_reachable": True,
-                "opencv_opened": True,
+                "stream_manager": True,
                 "frame_read": False,
-                "waiting_for_frame": True,
             }
         return response
 
-    message = payload.get("error") or stderr or "Camera stream could not be opened or returned no frame."
-    response = {"status": "failed", "message": message}
+    response = {
+        "status": "connected",
+        "message": (
+            "Stream Manager is connected or warming up; it will keep waiting "
+            "for the first video keyframe."
+        ),
+    }
     if endpoint is not None:
         response["details"] = {
             "host": endpoint["host"],
             "port": endpoint["port"],
             "scheme": endpoint["scheme"],
-            "endpoint_reachable": True,
-            "opencv_opened": bool(payload.get("opened")),
-            "frame_read": bool(payload.get("frame_read")),
+            "stream_manager": True,
+            "waiting_for_frame": True,
         }
     return response
 
@@ -1579,6 +1510,31 @@ def _catalog_detection_confidence(detection: dict[str, Any], fallback: float = 0
     return confidence if confidence > 0 else fallback
 
 
+def _catalog_camera_label(value: Any) -> str:
+    return str(value or "Camera").strip() or "Camera"
+
+
+def _catalog_camera_counts_payload(counts: dict[str, int]) -> list[dict[str, Any]]:
+    return [
+        {"camera_name": camera_name, "quantity": int(quantity)}
+        for camera_name, quantity in sorted(counts.items())
+        if int(quantity) > 0
+    ]
+
+
+def _catalog_count_objects_by_camera(
+    entries: list[tuple[str, dict[str, Any]]],
+) -> tuple[int, dict[str, int]]:
+    counts: dict[str, int] = {}
+    total = 0
+    for camera_name, obj in entries:
+        quantity = max(1, int(obj.get("quantity") or 1))
+        label = _catalog_camera_label(camera_name)
+        counts[label] = counts.get(label, 0) + quantity
+        total += quantity
+    return total, counts
+
+
 def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
     global _catalog_yolo_detector, _catalog_yolo_detector_key
     if not prompts:
@@ -1686,23 +1642,24 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
     for item in items:
         target = _catalog_normalize_name(item["name"])
         references = db.list_images(str(item["id"]), include_embeddings=True)
-        matched_objects: list[dict[str, Any]] = []
-        for objects in by_camera.values():
-            matched_objects.extend(
-                obj
+        matched_entries: list[tuple[str, dict[str, Any]]] = []
+        for camera_name, objects in by_camera.items():
+            matched_entries.extend(
+                (_catalog_camera_label(camera_name), obj)
                 for obj in objects or []
                 if _catalog_normalize_name(obj.get("inventory_name")) == target
             )
 
-        confidence = 1.0 if matched_objects else 0.0
-        quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in matched_objects)
-        measurement = matched_objects[0] if matched_objects else None
+        camera_counts: dict[str, int] = {}
+        quantity, camera_counts = _catalog_count_objects_by_camera(matched_entries)
+        confidence = 1.0 if quantity > 0 else 0.0
+        measurement = matched_entries[0][1] if matched_entries else None
         method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
 
-        if not matched_objects:
+        if not matched_entries:
             if len(items) == 1:
                 prompt_matches = [
-                    candidate["detection"]
+                    candidate
                     for candidate in crop_candidates
                     if _catalog_detection_matches_item_prompt(candidate["detection"], str(item["name"]))
                 ]
@@ -1712,13 +1669,18 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                     )
                     confidence = max(
                         min_confidence,
-                        max(_catalog_detection_confidence(detection) for detection in prompt_matches),
+                        max(
+                            _catalog_detection_confidence(candidate["detection"])
+                            for candidate in prompt_matches
+                        ),
                     )
-                    quantity = sum(
-                        max(1, int(detection.get("quantity") or 1))
-                        for detection in prompt_matches
+                    quantity, camera_counts = _catalog_count_objects_by_camera(
+                        [
+                            (_catalog_camera_label(candidate.get("camera_name")), candidate["detection"])
+                            for candidate in prompt_matches
+                        ]
                     )
-                    measurement = prompt_matches[0]
+                    measurement = prompt_matches[0]["detection"]
                     method = str(measurement.get("method") or "catalog-single-item-yolo-and-3d")
 
             if quantity > 0:
@@ -1730,6 +1692,7 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                         "confidence": confidence,
                         "dimensions_m": _catalog_dimensions(measurement),
                         "measurement_method": method,
+                        "camera_counts": _catalog_camera_counts_payload(camera_counts),
                     }
                 )
                 continue
@@ -1744,18 +1707,20 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                     default=0.0,
                 )
                 if score >= crop_threshold:
-                    crop_matches.append((score, candidate["detection"]))
+                    crop_matches.append((score, candidate))
 
             if crop_matches:
                 confidence = max(score for score, _ in crop_matches)
-                quantity = sum(
-                    max(1, int(detection.get("quantity") or 1))
-                    for _, detection in crop_matches
+                quantity, camera_counts = _catalog_count_objects_by_camera(
+                    [
+                        (_catalog_camera_label(candidate.get("camera_name")), candidate["detection"])
+                        for _, candidate in crop_matches
+                    ]
                 )
-                measurement = crop_matches[0][1]
+                measurement = crop_matches[0][1]["detection"]
                 method = str(measurement.get("method") or "catalog-crop-reference-and-3d")
 
-        if not matched_objects and quantity <= 0:
+        if not matched_entries and quantity <= 0:
             best: tuple[float, str] | None = None
             for camera_name, frame_embedding in frame_embeddings.items():
                 score = max(
@@ -1768,6 +1733,7 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                 confidence = best[0]
                 camera_objects = by_camera.get(best[1]) or []
                 quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in camera_objects) or 1
+                camera_counts = {_catalog_camera_label(best[1]): quantity}
                 measurement = camera_objects[0] if camera_objects else None
                 method = "catalog-reference-and-3d"
 
@@ -1779,6 +1745,7 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                 "confidence": confidence,
                 "dimensions_m": _catalog_dimensions(measurement),
                 "measurement_method": method,
+                "camera_counts": _catalog_camera_counts_payload(camera_counts),
             }
         )
     return matches
@@ -1854,7 +1821,7 @@ async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> Non
             _catalog_run_lock = asyncio.Lock()
         async with _catalog_run_lock:
             db = _get_catalog_db()
-            health = _read_json(DETECTION_HEALTH_PATH) or {}
+            health = _catalog_health_snapshot()
             run_id = db.start_run(
                 scope_id, _catalog_interval_hours(), len(health.get("cameras") or [])
             )
@@ -2882,10 +2849,6 @@ def _register_controller_channels(
         raise HTTPException(status_code=400, detail=private_host_message)
 
     controller_error = None
-    if controller.test_controller:
-        controller_error = _check_camera_endpoint(endpoint)
-        if controller_error:
-            controller_error = _redact_sensitive_text(controller_error)
 
     saved_cameras = []
     test_results = []
@@ -2900,23 +2863,31 @@ def _register_controller_channels(
     # free slots right now still saves and tests every channel - it just
     # leaves the channels beyond the free-slot budget registered but
     # inactive instead of rejecting the whole request.
+    controller_stream_urls = [
+        _controller_stream_url(controller, controller.channel_start + index)
+        for index in range(controller.channel_count)
+    ]
+    controller_stream_url_set = set(controller_stream_urls)
+    all_cameras = db.list_cameras(include_secret=True)
     used_slots = {
         int(camera["slot_number"])
-        for camera in db.list_active_cameras(include_secret=False)
+        for camera in all_cameras
         if camera.get("slot_number") is not None
+        and camera.get("stream_url") not in controller_stream_url_set
     }
     next_slot = max(controller.start_slot, 1)
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
 
-    for index in range(controller.channel_count):
+    for index, stream_url in enumerate(controller_stream_urls):
         channel = controller.channel_start + index
-        stream_url = _controller_stream_url(controller, channel)
 
         if controller.test_streams and controller_reachable:
             test_result = _test_camera_stream(stream_url)
         elif controller_reachable:
             test_result = {
                 "status": "connected",
-                "message": f"Controller endpoint {endpoint['host']}:{endpoint['port']} is reachable.",
+                "message": "Controller channels registered; Stream Manager owns connection validation.",
             }
         else:
             test_result = {
@@ -2924,24 +2895,26 @@ def _register_controller_channels(
                 "message": controller_error or "Controller endpoint is not reachable.",
             }
 
-        saved = db.add_camera(
+        saved = db.upsert_camera_by_stream_url(
             name=_controller_camera_name(controller, channel, next_slot),
             stream_url=stream_url,
             status=test_result["status"],
         )
+        _delete_duplicate_stream_url_cameras(db, stream_url, int(saved["id"]))
 
         active = None
         assigned_slot = None
         stream_status = None
         message = test_result["message"]
         if controller.make_active and test_result["status"] == "connected":
-            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
-                next_slot += 1
-            if next_slot <= MAX_CAMERA_SLOTS:
-                active = db.assign_slot(saved["id"], next_slot)
-                used_slots.add(next_slot)
-                assigned_slot = next_slot
-                next_slot += 1
+            active, assigned_slot, next_slot = _activate_stream_managed_camera(
+                db,
+                int(saved["id"]),
+                next_slot,
+                used_slots,
+                reuse_existing_slot=False,
+            )
+            if active is not None:
                 stream_status = _start_stream_for_camera(active)
             else:
                 message = (
@@ -3052,30 +3025,42 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
         )
 
     camera_db = _get_camera_db()
+    stream_url_set = {stream.stream_url for stream in enumeration.channels}
+    all_cameras = camera_db.list_cameras(include_secret=True)
     used_slots = {
         int(camera["slot_number"])
-        for camera in camera_db.list_active_cameras(include_secret=False)
+        for camera in all_cameras
         if camera.get("slot_number") is not None
+        and camera.get("stream_url") not in stream_url_set
     }
     next_slot = 1
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
     channels = []
     stream_statuses = []
     for stream in enumeration.channels:
-        camera = camera_db.add_camera(
+        test_result = (
+            _test_camera_stream(stream.stream_url)
+            if request.test_streams
+            else {"status": "connected", "message": "Stream registered without a pre-flight test."}
+        )
+        camera = camera_db.upsert_camera_by_stream_url(
             name=f"{device['name']} {stream.name}",
             stream_url=stream.stream_url,
-            status="connected" if not request.test_streams else _test_camera_stream(stream.stream_url)["status"],
+            status=test_result["status"],
         )
+        _delete_duplicate_stream_url_cameras(camera_db, stream.stream_url, int(camera["id"]))
+
         assigned_slot = None
         active = None
-        if request.make_active:
-            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
-                next_slot += 1
-            if next_slot <= MAX_CAMERA_SLOTS:
-                active = camera_db.assign_slot(camera["id"], next_slot)
-                assigned_slot = next_slot
-                used_slots.add(next_slot)
-                next_slot += 1
+        if request.make_active and test_result["status"] == "connected":
+            active, assigned_slot, next_slot = _activate_stream_managed_camera(
+                camera_db,
+                int(camera["id"]),
+                next_slot,
+                used_slots,
+                reuse_existing_slot=False,
+            )
 
         channel = db.add_channel(
             device_id=device_id,
@@ -3122,12 +3107,17 @@ def _register_discovered_channels(
     every channel is saved, and channels beyond the free active-slot budget
     are left registered-but-inactive rather than rejecting the whole request.
     """
+    stream_url_set = {stream.stream_url for stream in channels}
+    all_cameras = db.list_cameras(include_secret=True)
     used_slots = {
         int(camera["slot_number"])
-        for camera in db.list_active_cameras(include_secret=False)
+        for camera in all_cameras
         if camera.get("slot_number") is not None
+        and camera.get("stream_url") not in stream_url_set
     }
     next_slot = 1
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
     results: list[dict[str, Any]] = []
 
     for stream in channels:
@@ -3136,24 +3126,26 @@ def _register_discovered_channels(
         else:
             test_result = {"status": "connected", "message": "Stream registered without a pre-flight test."}
 
-        saved = db.add_camera(
+        saved = db.upsert_camera_by_stream_url(
             name=f"{name_prefix} {stream.name}",
             stream_url=stream.stream_url,
             status=test_result["status"],
         )
+        _delete_duplicate_stream_url_cameras(db, stream.stream_url, int(saved["id"]))
 
         active = None
         assigned_slot = None
         stream_status = None
         message = test_result["message"]
         if make_active and test_result["status"] == "connected":
-            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
-                next_slot += 1
-            if next_slot <= MAX_CAMERA_SLOTS:
-                active = db.assign_slot(saved["id"], next_slot)
-                used_slots.add(next_slot)
-                assigned_slot = next_slot
-                next_slot += 1
+            active, assigned_slot, next_slot = _activate_stream_managed_camera(
+                db,
+                int(saved["id"]),
+                next_slot,
+                used_slots,
+                reuse_existing_slot=False,
+            )
+            if active is not None:
                 stream_status = _start_stream_for_camera(active)
             else:
                 message = (
@@ -3173,6 +3165,7 @@ def _register_discovered_channels(
                 "stream": stream_status,
             }
         )
+
     return results
 
 
@@ -3976,7 +3969,7 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
     sheet.title = "Detected Items"
     sheet.sheet_view.showGridLines = False
     sheet.freeze_panes = "A6"
-    sheet.merge_cells("A1:G1")
+    sheet.merge_cells("A1:H1")
     sheet["A1"] = "AI Vision — Detected Item Count"
     sheet["A1"].font = Font(size=18, bold=True, color="FFFFFF")
     sheet["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
@@ -3990,7 +3983,16 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
     sheet["B4"] = scope_id
     sheet["D4"] = "Detected item types"
     sheet["E4"] = len(results)
-    headers = ["Item", "Count", "Confidence", "Width (cm)", "Height (cm)", "Depth (cm)", "3D method"]
+    headers = [
+        "Item",
+        "Count",
+        "Camera / objects",
+        "Confidence",
+        "Width (cm)",
+        "Height (cm)",
+        "Depth (cm)",
+        "3D method",
+    ]
     sheet.append(headers)
     header_fill = PatternFill("solid", fgColor="2563EB")
     for cell in sheet[5]:
@@ -4002,6 +4004,12 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
             [
                 result["item_name"],
                 int(result["quantity"]),
+                ", ".join(
+                    f"{entry.get('camera_name')}: {int(entry.get('quantity') or 0)}"
+                    for entry in result.get("camera_counts") or []
+                    if int(entry.get("quantity") or 0) > 0
+                )
+                or "Unknown camera",
                 float(result["confidence"]),
                 round(float(result["width_m"]) * 100, 1) if result.get("width_m") else None,
                 round(float(result["height_m"]) * 100, 1) if result.get("height_m") else None,
@@ -4010,7 +4018,7 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
             ]
         )
     if results:
-        table = Table(displayName="DetectedItems", ref=f"A5:G{5 + len(results)}")
+        table = Table(displayName="DetectedItems", ref=f"A5:H{5 + len(results)}")
         table.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium2",
             showFirstColumn=False,
@@ -4021,20 +4029,21 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
         sheet.add_table(table)
     sheet.column_dimensions["A"].width = 30
     sheet.column_dimensions["B"].width = 12
-    sheet.column_dimensions["C"].width = 14
+    sheet.column_dimensions["C"].width = 30
     sheet.column_dimensions["D"].width = 14
     sheet.column_dimensions["E"].width = 14
     sheet.column_dimensions["F"].width = 14
-    sheet.column_dimensions["G"].width = 30
-    for row in sheet.iter_rows(min_row=6, max_row=5 + len(results), min_col=2, max_col=6):
+    sheet.column_dimensions["G"].width = 14
+    sheet.column_dimensions["H"].width = 30
+    for row in sheet.iter_rows(min_row=6, max_row=5 + len(results), min_col=2, max_col=7):
         for cell in row:
             cell.alignment = Alignment(horizontal="center")
-    for cell in sheet["C"][5:]:
+    for cell in sheet["D"][5:]:
         cell.number_format = "0.0%"
-    for column in ("D", "E", "F"):
+    for column in ("E", "F", "G"):
         for cell in sheet[column][5:]:
             cell.number_format = "0.0"
-    sheet.auto_filter.ref = f"A5:G{max(5, 5 + len(results))}"
+    sheet.auto_filter.ref = f"A5:H{max(5, 5 + len(results))}"
     sheet.print_title_rows = "1:5"
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.fitToWidth = 1
@@ -4208,10 +4217,16 @@ async def live_mjpeg(slot: int | None = None, camera: str | None = None):
 
     async def frame_generator():
         while True:
-            latest = next((path for path in latest_paths if path.exists()), None)
-            if latest is not None:
+            data = _get_stream_manager().latest_frame_bytes(slot_number=slot, name=camera)
+            if data is None:
+                latest = next((path for path in latest_paths if path.exists()), None)
+                if latest is not None:
+                    try:
+                        data = latest.read_bytes()
+                    except Exception:
+                        data = None
+            if data is not None:
                 try:
-                    data = latest.read_bytes()
                     header = (
                         f"--{boundary}\r\n"
                         "Content-Type: image/jpeg\r\n"
@@ -4235,6 +4250,18 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
     connections per origin, so 10 simultaneous MJPEG streams can leave some
     screens stuck on "Waiting for frames" even when the backend is healthy.
     """
+
+    data = _get_stream_manager().latest_frame_bytes(slot_number=slot, name=camera)
+    if data and data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
+        return Response(
+            content=data,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "X-AI-Frame-Source": "stream-manager",
+            },
+        )
 
     latest = next((path for path in _live_feed_paths(slot=slot, camera=camera) if path.exists()), None)
     if latest is None:
