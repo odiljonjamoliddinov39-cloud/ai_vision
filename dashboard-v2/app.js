@@ -1335,7 +1335,8 @@ function cameraInfoChannelRows(config, devices = []) {
       const slotNumber = channel.slot_number != null ? Number(channel.slot_number) : null;
       const stream = slotNumber != null ? streamsBySlot.get(slotNumber) : null;
       const channelNumber = channel.channel || channel.external_channel_id || index + 1;
-      const status = stream?.status || channel.status || "registered";
+      const channelStatus = channel.status || "registered";
+      const status = slotNumber == null && channelStatus !== "failed" ? "unassigned" : stream?.status || channelStatus;
       return {
         key: `${nvr.id || nvr.host || "nvr"}-${channelNumber}-${slotNumber ?? index}`,
         nvrName: nvr.name || device.name || "NVR",
@@ -1347,7 +1348,11 @@ function cameraInfoChannelRows(config, devices = []) {
         slotNumber,
         status,
         streamProvider: nvr.provider || "stream manager",
-        detail: stream?.last_error || channel.message || channel.profile || "",
+        detail:
+          stream?.last_error ||
+          channel.message ||
+          channel.profile ||
+          (slotNumber == null ? "Registered, but not assigned to an AI Vision live slot." : ""),
       };
     });
   });
@@ -1358,6 +1363,7 @@ function cameraInfoStatusMeta(status) {
   if (status === "starting") return { label: "Starting", className: "pending" };
   if (status === "reconnecting") return { label: "Reconnecting", className: "pending" };
   if (status === "offline" || status === "failed") return { label: "Offline", className: "offline" };
+  if (status === "unassigned") return { label: "Waiting for slot", className: "pending" };
   if (status === "connected") return { label: "Connected", className: "online" };
   return { label: "Registered", className: "pending" };
 }
@@ -1376,7 +1382,7 @@ function renderCameraInfoTable(rows) {
             <th>Vendor</th>
             <th>Model</th>
             <th>Camera</th>
-            <th>Slot</th>
+            <th>AI slot</th>
             <th>Status</th>
             <th>Stream</th>
           </tr>
@@ -1392,7 +1398,7 @@ function renderCameraInfoTable(rows) {
                   <td>${escapeHtml(row.vendor)}</td>
                   <td><strong>${escapeHtml(row.model)}</strong></td>
                   <td>${escapeHtml(row.cameraName)}</td>
-                  <td>${row.slotNumber != null ? row.slotNumber : "No slot"}</td>
+                  <td>${row.slotNumber != null ? `Slot ${row.slotNumber}` : `<span class="camera-info-meta">Not assigned</span>`}</td>
                   <td><span class="camera-info-status ${status.className}">${escapeHtml(status.label)}</span></td>
                   <td>${escapeHtml(row.streamProvider)}</td>
                 </tr>

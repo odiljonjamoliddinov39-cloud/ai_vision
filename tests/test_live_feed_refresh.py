@@ -110,6 +110,9 @@ def test_camera_info_page_lists_connected_camera_models():
     assert "function renderCameraInfo(container)" in source
     assert "<th>Camera</th>" in source
     assert "<th>Model</th>" in source
+    assert "<th>AI slot</th>" in source
+    assert "Waiting for slot" in source
+    assert "Not assigned" in source
     assert "response.device?.model" in source
 
 
@@ -134,7 +137,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=53" in html
+    assert "/dashboard-v2/assets/app.js?v=54" in html
     assert "/dashboard-v2/assets/styles.css?v=40" in html
 
 
