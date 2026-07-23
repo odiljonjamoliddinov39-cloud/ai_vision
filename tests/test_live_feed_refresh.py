@@ -27,8 +27,8 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
     assert source.count("data-live-frame data-live-slot") == 3
-    assert "window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS)" in source
-    assert "const LIVE_FRAME_REFRESH_BATCH = 4;" in source
+    assert "window.setInterval(reconcileLiveStreams, LIVE_FRAME_REFRESH_MS)" in source
+    assert "const MAX_LIVE_STREAMS = 6;" in source
     assert "new IntersectionObserver(" in source
     assert 'image.dataset.liveVisible !== "false"' in source
     assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
@@ -40,21 +40,26 @@ def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
     assert "for (let slot = 1; slot <= MAX_NVR_SLOTS; slot += 1)" in source
     assert "Math.max(...usedSlots) + 1" not in source
     assert "new MutationObserver((mutations) => {" in source
-    assert 'fetch(liveFrameUrl(slot), { cache: "no-store" })' in source
-    assert "URL.revokeObjectURL(previousObjectUrl)" in source
+    # Native MJPEG stream: one long-lived connection per visible tile, no
+    # per-frame fetch/objectURL polling.
+    assert "image.src = url;" in source
+    assert 'image.dataset.liveStreaming = "true";' in source
+    assert "function stopLiveStream(image)" in source
+    assert 'image.removeAttribute("src");' in source
     assert 'data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}"' in source
     assert 'loading="lazy" decoding="async"' in source
-    assert 'if (image.dataset.livePriming === "true") return;' in source
     assert "image.complete && image.naturalWidth > 0" in source
 
 
-def test_dashboard_refreshes_live_frames_in_small_visible_batches():
+def test_dashboard_caps_concurrent_live_streams_to_stay_under_connection_limit():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
     assert "const LIVE_FRAME_REFRESH_MS = 150;" in source
-    assert 'if (image.dataset.liveLoading === "true") return;' in source
-    assert "const count = Math.min(LIVE_FRAME_REFRESH_BATCH, visibleImages.length);" in source
-    assert "liveFrameCursor = (liveFrameCursor + count) % visibleImages.length;" in source
+    # Only the first MAX_LIVE_STREAMS visible tiles hold an MJPEG connection so
+    # the browser's ~6-per-origin connection cap never starves API calls.
+    assert "const streaming = visibleImages.slice(0, MAX_LIVE_STREAMS);" in source
+    assert "streaming.forEach(startLiveStream);" in source
+    assert "if (!streamingSet.has(image)) stopLiveStream(image);" in source
 
 
 def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
@@ -72,15 +77,17 @@ def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
     assert "if (structuralChange) syncLiveFrameRefresh();" in source
 
 
-def test_dashboard_backs_off_after_a_404_instead_of_retrying_every_tick():
+def test_dashboard_backs_off_a_failed_stream_instead_of_holding_the_connection():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "const LIVE_FRAME_404_BACKOFF_MS = 3000;" in source
-    assert 'if (response.status === 404) {' in source
+    assert "const LIVE_STREAM_ERROR_BACKOFF_MS = 4000;" in source
     assert (
-        "image.dataset.live404Until = String(Date.now() + LIVE_FRAME_404_BACKOFF_MS);"
+        "image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);"
         in source
     )
+    # On error we drop the connection (freeing a stream slot) and wait out the
+    # backoff before reconnecting.
+    assert "stopLiveStream(image);" in source
     assert (
         "if (backoffUntil && Date.now() < backoffUntil) return;" in source
     )
@@ -115,7 +122,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=48" in html
+    assert "/dashboard-v2/assets/app.js?v=49" in html
     assert "/dashboard-v2/assets/styles.css?v=37" in html
 
 

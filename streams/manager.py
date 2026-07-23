@@ -30,8 +30,8 @@ class StreamSessionConfig:
     slot_number: int | None = None
     snapshot_dir: str | Path = "snapshots"
     width: int = 960
-    jpeg_quality: int = 45
-    preview_fps: float = 2.0
+    jpeg_quality: int = 70
+    preview_fps: float = 15.0
 
 
 @dataclass
@@ -455,13 +455,16 @@ class _RateLimitedWarnings:
         return True
 
 
-def _ffmpeg_command(source: str, width: int = 960, jpeg_quality: int = 45, fps: float = 2.0) -> list[str]:
+def _ffmpeg_command(source: str, width: int = 960, jpeg_quality: int = 70, fps: float = 15.0) -> list[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     preview_width = max(240, min(int(width), 1280))
-    preview_fps = max(1.0, min(float(fps), 10.0))
+    # Decode every frame (no -skip_frame nokey) so the preview is smooth
+    # full-motion video instead of a keyframe-only slideshow. -fflags
+    # +discardcorrupt still keeps a broken packet from crashing the pipe.
+    preview_fps = max(1.0, min(float(fps), 30.0))
     # OpenCV JPEG quality is 0..100, while ffmpeg's mjpeg qscale is roughly
-    # 2(best)..31(worst). Keep previews small enough for 20+ camera grids.
-    qscale = max(4, min(18, round((100 - max(20, min(int(jpeg_quality), 90))) / 4)))
+    # 2(best)..31(worst). Keep previews small enough for multi-camera grids.
+    qscale = max(3, min(18, round((100 - max(20, min(int(jpeg_quality), 92))) / 4)))
     return [
         ffmpeg,
         "-rtsp_transport",
@@ -470,8 +473,6 @@ def _ffmpeg_command(source: str, width: int = 960, jpeg_quality: int = 45, fps: 
         "32768",
         "-analyzeduration",
         "0",
-        "-skip_frame",
-        "nokey",
         "-fflags",
         "+nobuffer+discardcorrupt",
         "-flags",

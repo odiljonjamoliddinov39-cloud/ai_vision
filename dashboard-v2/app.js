@@ -43,21 +43,27 @@ const state = {
 const LOAD_RETRY_DELAYS_MS = [500, 1000, 2000];
 let loadRetryTimer = null;
 
-// The backend intentionally exposes stable JPEG snapshots instead of one
-// long-lived MJPEG connection per camera. Refresh only the images that are
-// currently mounted so camera pages stay live without rebuilding any module.
-// Refresh in small batches instead of stampeding every mounted camera at once:
-// a 26-camera grid feels much faster when visible tiles are updated smoothly.
+// Each mounted camera renders a real, continuous MJPEG stream from the Stream
+// Manager (`/api/live_mjpeg`) - the browser paints it as full-motion video with
+// no per-frame polling. Browsers cap concurrent connections per origin (~6 in
+// Chrome), so we only ever keep MAX_LIVE_STREAMS of the *visible* tiles
+// connected at once; the rest are disconnected until they scroll into view.
 const LIVE_FRAME_REFRESH_MS = 150;
-const LIVE_FRAME_REFRESH_BATCH = 4;
+const MAX_LIVE_STREAMS = 6;
+// A stream that errors (slot has no active camera yet, or upstream dropped) is
+// backed off before we spend one of the scarce connection slots retrying it.
+const LIVE_STREAM_ERROR_BACKOFF_MS = 4000;
 let liveFrameTimer = null;
-let liveFrameCursor = 0;
 let liveFrameVisibilityObserver = null;
 
-// A 404 means the slot has no live camera (nothing is misbehaving) - back off
-// instead of hammering the endpoint at the full 500ms cadence every tick.
-const LIVE_FRAME_404_BACKOFF_MS = 3000;
+function liveStreamUrl(slot) {
+  const url = new URL(`${API_BASE}/api/live_mjpeg`);
+  url.searchParams.set("slot", slot);
+  return url.toString();
+}
+
 function liveFrameUrl(slot) {
+  // Single still frame - used as the initial poster before the stream connects.
   const url = new URL(`${API_BASE}/api/live_frame`);
   url.searchParams.set("slot", slot);
   url.searchParams.set("v", Date.now());
@@ -76,6 +82,7 @@ function attachLiveFrameHandlers(image) {
   image.dataset.liveHandlersAttached = "true";
   image.addEventListener("load", () => {
     delete image.dataset.livePriming;
+    delete image.dataset.liveErrorUntil;
     image.classList.remove("feed-stale");
     image.removeAttribute("title");
     image.dataset.liveLastUpdate = new Date().toISOString();
@@ -83,6 +90,10 @@ function attachLiveFrameHandlers(image) {
   });
   image.addEventListener("error", () => {
     delete image.dataset.livePriming;
+    // Drop the failed connection and back off so the slot is freed for another
+    // visible tile instead of being held open on a dead stream.
+    image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);
+    stopLiveStream(image);
     image.classList.add("feed-stale");
     image.title = "Waiting for a fresh camera frame";
     setFeedBadgeLive(image, false);
@@ -103,6 +114,7 @@ function ensureLiveFrameVisibilityObserver() {
       entries.forEach((entry) => {
         entry.target.dataset.liveVisible = entry.isIntersecting ? "true" : "false";
       });
+      reconcileLiveStreams();
     },
     { root: null, rootMargin: "300px 0px", threshold: 0.01 }
   );
@@ -117,71 +129,42 @@ function observeLiveFrameImage(image) {
   ensureLiveFrameVisibilityObserver()?.observe(image);
 }
 
-async function refreshLiveFrameImage(image) {
-  observeLiveFrameImage(image);
-  if (image.dataset.livePriming === "true") return;
-  if (image.dataset.liveLoading === "true") return;
+function startLiveStream(image) {
   const slot = image.dataset.liveSlot;
   if (!slot) return;
-  const backoffUntil = Number(image.dataset.live404Until || 0);
+  const backoffUntil = Number(image.dataset.liveErrorUntil || 0);
   if (backoffUntil && Date.now() < backoffUntil) return;
-
-  image.dataset.liveLoading = "true";
-  try {
-    const response = await fetch(liveFrameUrl(slot), { cache: "no-store" });
-    if (response.status === 404) {
-      // Expected for a slot with no active camera yet - back off instead of
-      // retrying every tick, which is what was flooding the console.
-      image.dataset.live404Until = String(Date.now() + LIVE_FRAME_404_BACKOFF_MS);
-      throw new Error("Live frame request failed: 404");
-    }
-    if (!response.ok) throw new Error(`Live frame request failed: ${response.status}`);
-    delete image.dataset.live404Until;
-    const frame = await response.blob();
-    if (!image.isConnected) return;
-
-    const previousObjectUrl = image.dataset.liveObjectUrl;
-    const nextObjectUrl = URL.createObjectURL(frame);
-    image.onload = () => {
-      if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
-      image.classList.remove("feed-stale");
-      image.removeAttribute("title");
-      image.dataset.liveLastUpdate = new Date().toISOString();
-      setFeedBadgeLive(image, true);
-      delete image.dataset.liveLoading;
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(nextObjectUrl);
-      image.classList.add("feed-stale");
-      image.title = "Waiting for a fresh camera frame";
-      setFeedBadgeLive(image, false);
-      delete image.dataset.liveLoading;
-    };
-    image.dataset.liveObjectUrl = nextObjectUrl;
-    image.src = nextObjectUrl;
-  } catch {
-    if (image.isConnected) {
-      image.classList.add("feed-stale");
-      image.title = "Waiting for a fresh camera frame";
-      setFeedBadgeLive(image, false);
-    }
-    delete image.dataset.liveLoading;
-  }
+  const url = liveStreamUrl(slot);
+  if (image.dataset.liveStreaming === "true" && image.dataset.liveStreamUrl === url) return;
+  image.dataset.liveStreaming = "true";
+  image.dataset.liveStreamUrl = url;
+  // Setting src to the multipart endpoint opens one long-lived MJPEG
+  // connection; the browser keeps repainting the <img> as frames arrive.
+  image.src = url;
 }
 
-function refreshLiveFrames() {
-  if (document.hidden) return;
+function stopLiveStream(image) {
+  if (image.dataset.liveStreaming !== "true") return;
+  delete image.dataset.liveStreaming;
+  delete image.dataset.liveStreamUrl;
+  // Dropping src closes the connection so the slot is available again.
+  image.removeAttribute("src");
+}
+
+function reconcileLiveStreams() {
+  if (document.hidden) {
+    stopLiveFrameRefresh();
+    return;
+  }
   const images = Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]"));
   images.forEach(observeLiveFrameImage);
   const visibleImages = images.filter((image) => image.dataset.liveVisible !== "false");
-  if (!visibleImages.length) return;
-
-  const count = Math.min(LIVE_FRAME_REFRESH_BATCH, visibleImages.length);
-  for (let index = 0; index < count; index += 1) {
-    const image = visibleImages[(liveFrameCursor + index) % visibleImages.length];
-    refreshLiveFrameImage(image);
-  }
-  liveFrameCursor = (liveFrameCursor + count) % visibleImages.length;
+  const streaming = visibleImages.slice(0, MAX_LIVE_STREAMS);
+  const streamingSet = new Set(streaming);
+  streaming.forEach(startLiveStream);
+  images.forEach((image) => {
+    if (!streamingSet.has(image)) stopLiveStream(image);
+  });
 }
 
 function stopLiveFrameRefresh() {
@@ -193,7 +176,7 @@ function stopLiveFrameRefresh() {
     liveFrameVisibilityObserver.disconnect();
     liveFrameVisibilityObserver = null;
   }
-  liveFrameCursor = 0;
+  Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]")).forEach(stopLiveStream);
 }
 
 function syncLiveFrameRefresh() {
@@ -202,9 +185,11 @@ function syncLiveFrameRefresh() {
     stopLiveFrameRefresh();
     return;
   }
-  refreshLiveFrames();
+  reconcileLiveStreams();
   if (liveFrameTimer === null) {
-    liveFrameTimer = window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS);
+    // A light periodic reconcile re-arms streams that errored past their
+    // backoff and picks up newly visible tiles even without an observer event.
+    liveFrameTimer = window.setInterval(reconcileLiveStreams, LIVE_FRAME_REFRESH_MS);
   }
 }
 
@@ -2976,10 +2961,10 @@ window.addEventListener("hashchange", () => window.location.reload());
 
 // setFeedBadgeLive() sets badge.textContent, which is itself a childList
 // mutation on the badge - without filtering, that retriggers this observer,
-// which calls refreshLiveFrames() immediately, which (on completion) sets
-// the badge again, forming a tight loop that ignores LIVE_FRAME_REFRESH_MS
-// entirely. Only structural changes (feed elements added/removed) should
-// resync; badge text updates are just a symptom of a refresh already run.
+// which calls reconcileLiveStreams() immediately, which sets the badge again,
+// forming a tight loop. Only structural changes (feed elements added/removed)
+// should resync; badge text updates are just a symptom of a reconcile already
+// run.
 const liveFrameObserver = new MutationObserver((mutations) => {
   const structuralChange = mutations.some((mutation) => {
     const target = mutation.target;
