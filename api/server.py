@@ -1545,9 +1545,9 @@ def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
     key = (
         det_cfg.get("model_path", "yolov8s-world.pt"),
         tuple(prompts),
-        float(os.getenv("CATALOG_YOLO_CONFIDENCE_THRESHOLD", "0.03")),
+        float(os.getenv("CATALOG_YOLO_CONFIDENCE_THRESHOLD", "0.01")),
         det_cfg.get("device", "cpu"),
-        int(os.getenv("CATALOG_YOLO_IMAGE_SIZE", "640")),
+        int(os.getenv("CATALOG_YOLO_IMAGE_SIZE", "1280")),
     )
     if _catalog_yolo_detector is not None and _catalog_yolo_detector_key == key:
         return _catalog_yolo_detector

@@ -394,6 +394,27 @@ def test_catalog_recognition_runs_fresh_yolo_when_cached_detections_are_empty(tm
     assert matches[0]["confidence"] == pytest.approx(0.82)
 
 
+def test_catalog_yolo_defaults_to_high_resolution_for_small_box_counting(monkeypatch):
+    monkeypatch.delenv("CATALOG_YOLO_CONFIDENCE_THRESHOLD", raising=False)
+    monkeypatch.delenv("CATALOG_YOLO_IMAGE_SIZE", raising=False)
+    monkeypatch.setattr(server, "_catalog_yolo_detector", None)
+    monkeypatch.setattr(server, "_catalog_yolo_detector_key", None)
+    monkeypatch.setattr(server, "_read_yaml", lambda _path: {"detection": {}})
+    created = {}
+
+    class FakeDetector:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    monkeypatch.setattr(server, "Detector", FakeDetector)
+
+    detector = server._catalog_yolo_for_prompts(["Baget Box"])
+
+    assert isinstance(detector, FakeDetector)
+    assert created["confidence_threshold"] == 0.01
+    assert created["image_size"] == 1280
+
+
 def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similarity_is_low(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     db, item = _catalog_with_item(tmp_path, name="Baget Box")

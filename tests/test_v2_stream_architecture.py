@@ -182,9 +182,9 @@ def test_stream_manager_ffmpeg_outputs_scaled_preview_jpegs():
     command = _ffmpeg_command("rtsp://example.test/Streaming/Channels/101")
 
     assert "-vf" in command
-    assert command[command.index("-vf") + 1] == "fps=2,scale=360:-2"
+    assert command[command.index("-vf") + 1] == "fps=2,scale=960:-2"
     assert "-q:v" in command
-    assert command[command.index("-q:v") + 1] == "18"
+    assert command[command.index("-q:v") + 1] == "14"
     assert "-probesize" in command
     assert command[command.index("-fflags") + 1] == "+nobuffer+discardcorrupt"
     assert command[command.index("-flags") + 1] == "low_delay"
