@@ -1150,7 +1150,7 @@ function livePreviewHtml(summary, health) {
 }
 
 const MAX_NVRS = 5;
-const MAX_NVR_SLOTS = 50;
+const MAX_NVR_SLOTS = 100;
 let accountState = null;
 let accountModule = null;
 

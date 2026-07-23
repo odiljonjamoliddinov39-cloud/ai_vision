@@ -81,7 +81,7 @@ DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
 DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
-MAX_CAMERA_SLOTS = 50
+MAX_CAMERA_SLOTS = 100
 DEFAULT_ALLOWED_ORIGINS = [
     "https://ai-vision-dashboard-phi.vercel.app",
     "http://localhost:8000",

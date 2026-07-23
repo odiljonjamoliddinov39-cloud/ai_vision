@@ -8,6 +8,10 @@ from api import server
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_backend_supports_one_hundred_active_camera_slots():
+    assert server.MAX_CAMERA_SLOTS == 100
+
+
 def _live_frame_request(slot: int) -> Request:
     return Request(
         {
@@ -37,6 +41,7 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
 def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
+    assert "const MAX_NVR_SLOTS = 100;" in source
     assert "for (let slot = 1; slot <= MAX_NVR_SLOTS; slot += 1)" in source
     assert "Math.max(...usedSlots) + 1" not in source
     assert "new MutationObserver((mutations) => {" in source
@@ -137,7 +142,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=54" in html
+    assert "/dashboard-v2/assets/app.js?v=55" in html
     assert "/dashboard-v2/assets/styles.css?v=40" in html
 
 
