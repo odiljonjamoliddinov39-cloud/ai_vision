@@ -337,6 +337,7 @@ def test_catalog_recognition_matches_checked_in_item_from_yolo_crop(tmp_path, mo
             "confidence": matches[0]["confidence"],
             "dimensions_m": (0.91, 0.79, 0.5),
             "measurement_method": "monocular_ground_plane",
+            "camera_counts": [{"camera_name": "NVR Camera 2", "quantity": 4}],
         }
     ]
     assert matches[0]["confidence"] >= 0.9
@@ -473,6 +474,7 @@ def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similar
         "confidence": pytest.approx(0.75),
         "dimensions_m": (0.8, 0.6, 0.4),
         "measurement_method": "monocular_ground_plane",
+        "camera_counts": [{"camera_name": "NVR Camera 2", "quantity": 3}],
     }
 
 
