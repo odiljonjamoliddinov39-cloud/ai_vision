@@ -307,6 +307,34 @@ button,
   align-items: center;
 }
 
+.language-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 38px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  box-shadow: var(--shadow);
+}
+
+.language-toggle span {
+  min-width: 36px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.language-toggle span.active {
+  color: var(--on-primary);
+  background: var(--primary);
+}
+
 .header-profile {
   display: flex;
   align-items: center;

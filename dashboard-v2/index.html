@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI Vision Dashboard V2</title>
     <link rel="icon" type="image/svg+xml" href="/dashboard-v2/assets/favicon.svg" />
-    <link rel="stylesheet" href="/dashboard-v2/assets/styles.css?v=40" />
+    <link rel="stylesheet" href="/dashboard-v2/assets/styles.css?v=41" />
   </head>
   <body>
     <main class="v2-shell">
@@ -29,7 +29,7 @@
         <nav class="module-nav" id="moduleNav" aria-label="Dashboard modules"></nav>
 
         <div class="side-section" id="companiesSection">
-          <p class="side-title">Companies</p>
+          <p class="side-title" id="sideCompaniesTitle">Companies</p>
           <ul class="side-companies" id="sideCompanies"></ul>
         </div>
 
@@ -39,12 +39,13 @@
       <section class="v2-main">
         <header class="v2-header">
           <div>
-            <p class="eyebrow">Enterprise warehouse intelligence</p>
+            <p class="eyebrow" id="headerEyebrow">Enterprise warehouse intelligence</p>
             <h1 id="pageTitle">Head Dashboard</h1>
             <p id="scopeLine" class="muted">Loading permissions…</p>
           </div>
           <div class="header-actions">
             <button id="themeToggle" class="menu-btn theme-btn" type="button" aria-label="Toggle theme"></button>
+            <button id="languageToggle" class="language-toggle" type="button" aria-label="Switch language">ENG</button>
             <button id="refreshBtn" type="button">Refresh</button>
             <div class="header-profile" id="headerProfile"></div>
           </div>
@@ -69,6 +70,6 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/dashboard-v2/assets/app.js?v=55" type="module"></script>
+    <script src="/dashboard-v2/assets/app.js?v=56" type="module"></script>
   </body>
 </html>

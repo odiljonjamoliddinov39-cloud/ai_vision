@@ -2,13 +2,16 @@ const els = {
   moduleNav: document.querySelector("#moduleNav"),
   pageTitle: document.querySelector("#pageTitle"),
   scopeLine: document.querySelector("#scopeLine"),
+  headerEyebrow: document.querySelector("#headerEyebrow"),
   companiesSection: document.querySelector("#companiesSection"),
+  sideCompaniesTitle: document.querySelector("#sideCompaniesTitle"),
   summaryGrid: document.querySelector("#summaryGrid"),
   activeModuleEyebrow: document.querySelector("#activeModuleEyebrow"),
   activeModuleTitle: document.querySelector("#activeModuleTitle"),
   moduleContent: document.querySelector("#moduleContent"),
   detectorState: document.querySelector("#detectorState"),
   refreshBtn: document.querySelector("#refreshBtn"),
+  languageToggle: document.querySelector("#languageToggle"),
   shell: document.querySelector(".v2-shell"),
   sidebarToggle: document.querySelector("#sidebarToggle"),
   brandAvatar: document.querySelector("#brandAvatar"),
@@ -39,6 +42,442 @@ const state = {
   overview: null,
   streams: [],
 };
+
+const LANGUAGE_KEY = "ai_vision_v2_language";
+const I18N = {
+  en: {
+    "actions.apply": "Apply",
+    "actions.clear": "Clear",
+    "actions.connect": "Connect",
+    "actions.connecting": "Connecting...",
+    "actions.export_excel": "Export to Excel",
+    "actions.refresh": "Refresh",
+    "actions.run_recognition": "Run recognition now",
+    "actions.recognizing": "Recognizing...",
+    "ai.add_help": "Choose at least 2 clear images from different angles.",
+    "ai.add_item": "Add item to AI catalog",
+    "ai.catalog_enabled": "Catalog recognition enabled",
+    "ai.empty_catalog": "No catalog items yet. Add an item name and at least two images above.",
+    "ai.intro": "Add only the items the AI is allowed to recognize. Every item requires multiple reference images; anything outside this catalog is ignored by scheduled recognition.",
+    "ai.item_name": "Item name",
+    "ai.item_placeholder": "e.g. Bread crate",
+    "ai.reference_images": "Reference images",
+    "analytics.catalog_note": "Operational overview with scheduled catalog recognition results below.",
+    "analytics.detected_title": "Detected AI Check-in items",
+    "analytics.latest_run": "Latest 12-hour recognition run: {time}",
+    "analytics.next_run": "Next automatic recognition: {time}",
+    "analytics.no_detected": "No checked-in AI item was recognized in the current camera images yet.",
+    "camera.address": "Address:",
+    "camera.channels": "Channels:",
+    "camera.connected_devices": "Connected devices: {count}/{max}. Enter a device's public IP or hostname and AI Vision discovers its available services automatically - no RTSP URL, stream path, or vendor needed. The device must be reachable over the internet (public IP, port-forward, or DDNS); local-only addresses like 192.168.x.x won't connect from the cloud.",
+    "camera.device_limit": "Device limit reached ({max}). Remove one to add another.",
+    "camera.no_devices": "No devices connected yet - discover the first one below.",
+    "camera.quality_note": "Lower quality serves video faster over slow connections.",
+    "camera.quality_title": "Vision quality",
+    "camera_info.empty": "No cameras connected yet. Add a device in Camera Control first.",
+    "camera_info.header": "{cameras} connected cameras across {devices} NVR devices.",
+    "camera_info.loading": "Loading camera device info...",
+    "camera_info.models": "Models detected",
+    "camera_info.nvr_devices": "NVR devices",
+    "camera_info.title": "Camera Info",
+    "dimension.loading": "Loading 3D recognition results...",
+    "dimension.note": "3D drawings are created only for checked-in catalog items that receive a spatial measurement during recognition.",
+    "dimension.empty": "No recognized item has a 3D measurement yet. The next recognition runs at {time}.",
+    "discovery.available": "Available",
+    "discovery.auth_hint": "This service asked for sign-in - enter the device credentials.",
+    "discovery.channels_label": "Channels to connect",
+    "discovery.connectable_empty": "No connectable services were exposed.",
+    "discovery.discovered": "Discovered:",
+    "discovery.host_placeholder": "Device IP or hostname (e.g. 87.192.242.82)",
+    "discovery.name_placeholder": "Name this device (e.g. Warehouse North)",
+    "discovery.needs_signin": "Needs sign-in",
+    "discovery.password_placeholder": "Password (optional)",
+    "discovery.progress": "Scanning {host} for available services...",
+    "discovery.search": "Search",
+    "discovery.searching": "Searching...",
+    "discovery.select_service": "Select a service to connect to:",
+    "discovery.unreachable": "Unreachable",
+    "discovery.username_placeholder": "Username (optional)",
+    "feed.empty": "No NVRs connected - set one up in Camera Control first.",
+    "feed.live_note": "Live transmission at {quality} quality. This view is not recording continuous video.",
+    "feed.no_signal": "No signal yet",
+    "feed.readd": "Remove and re-add this NVR to reconnect it",
+    "header.eyebrow": "Enterprise warehouse intelligence",
+    "header.head_dashboard": "Head Dashboard",
+    "header.loading_permissions": "Loading permissions...",
+    "head.module": "Head module",
+    "head.no_access": "This role has no access to modules on this surface.",
+    "lang.switch_to_en": "Switch to English",
+    "lang.switch_to_ru": "Переключить на русский",
+    "menu.ai": "AI Check-in",
+    "menu.analytics": "Analytics",
+    "menu.camera": "Camera Control",
+    "menu.camera_info": "Camera Info",
+    "menu.dimension": "3D Dimensioning",
+    "menu.feed": "Camera Feed",
+    "menu.result_analytics": "Result Analytics",
+    "menu.settings": "Settings",
+    "profile.super_admin": "Super Admin",
+    "quality.high.hint": "best picture",
+    "quality.high.label": "High - 1080p",
+    "quality.low.hint": "fastest serving",
+    "quality.low.label": "Low - 480p",
+    "quality.medium.hint": "balanced",
+    "quality.medium.label": "Medium - 720p",
+    "result.all_results": "All results",
+    "result.camera_filter": "NVR or camera",
+    "result.cameras_with_results": "Cameras with results",
+    "result.confidence": "Confidence",
+    "result.empty": "No recognition results are saved yet. Run AI Check-in first.",
+    "result.item_filter": "Item",
+    "result.last_hour": "Last hour",
+    "result.latest_by_camera": "Latest by camera",
+    "result.loading": "Loading recognition results...",
+    "result.next_run": "Next run",
+    "result.objects": "Objects",
+    "result.recognition_runs": "Recognition runs",
+    "result.table_time": "Recognition time",
+    "result.this_month": "This month",
+    "result.this_week": "This week",
+    "result.title": "Result Analytics",
+    "result.today": "Today",
+    "result.total_objects": "Total objects",
+    "result.subtitle": "Recognition results by NVR, camera and item.",
+    "settings.loading_profile": "Loading profile...",
+    "settings.title": "Settings",
+    "status.connected": "Connected",
+    "status.detector_running": "Detector running",
+    "status.detector_stopped": "Detector stopped",
+    "status.live": "Live",
+    "status.not_connected": "Not connected",
+    "status.offline": "Offline",
+    "status.pending": "Pending",
+    "status.reconnecting": "Reconnecting",
+    "status.registered": "Registered",
+    "status.starting": "Starting",
+    "status.waiting_fresh_frame": "Waiting for a fresh camera frame",
+    "status.waiting_slot": "Waiting for slot",
+    "status.waiting_video": "Waiting for video",
+    "status.waiting_free_slot": "Waiting for a free slot",
+    "table.ai_slot": "AI slot",
+    "table.camera": "Camera",
+    "table.camera_objects": "Camera / objects",
+    "table.count": "Count",
+    "table.item": "Item",
+    "table.model": "Model",
+    "table.nvr_device": "NVR / Device",
+    "table.objects_recognized": "Objects recognized",
+    "table.stream": "Stream",
+    "table.slot": "Slot",
+    "table.not_assigned": "Not assigned",
+    "table.channel": "channel",
+    "table.channels": "channels",
+    "table.channel_short": "Ch",
+    "table.unknown_camera": "Unknown camera",
+    "table.unknown_nvr": "Unknown NVR",
+    "table.vendor": "Vendor",
+    "table.host": "Host",
+    "table.status": "Status",
+    "table.measurement": "3D measurement",
+    "summary.active_cameras": "Active cameras",
+    "summary.frames_read": "Frames read",
+    "summary.last_detections": "Last detections",
+    "summary.stock_items": "Stock items",
+    "summary.saved_cameras": "Saved cameras",
+    "summary.audit_verified": "Audit verified",
+    "summary.yes": "Yes",
+    "summary.no": "No",
+    "summary.delta_cameras": "+1 this week",
+    "summary.delta_no_change": "no change",
+    "summary.delta_detections": "-2 vs yesterday",
+    "summary.delta_saved": "+1 this month",
+    "summary.delta_normal": "all systems normal",
+    "head.unavailable": "Unavailable",
+    "side.companies": "Companies",
+    "side.no_companies": "No companies yet",
+    "device_type.nvr": "NVR / DVR",
+    "device_type.camera": "IP camera",
+    "device_type.unknown": "Unknown device",
+    "device_type.device": "Device",
+    "camera.connected_via": "Connected via {provider} - {assigned}/{total} slots assigned. Waiting for live video frames.",
+    "camera.registered_no_slots": "Registered, but no slots are assigned yet.",
+    "camera.slots_assigned": "slots assigned",
+    "discovery.no_services": "No services found on this device.",
+    "analytics.by_camera_title": "Recognized objects by NVR and camera",
+    "analytics.loading_detected": "Loading detected items...",
+    "ai.auto_recognition": "Automatic recognition every {hours} hours",
+    "ai.last_run": "Last: {time}",
+    "ai.loading": "Loading AI catalog...",
+    "ai.next_run": "Next: {time}",
+    "dimension.measured": "Measured:",
+    "dimension.pending_measurement": "Pending 3D measurement",
+    "dimension.recognized": "Recognized x{quantity}",
+    "dimension.volume": "Volume:",
+    "result.pending_first_run": "Pending first recognition run",
+    "result.show_limit": "Show {limit}",
+    "settings.confirm_password": "Confirm new password",
+    "settings.credentials_updated": "Credentials updated.",
+    "settings.current_login": "Current login:",
+    "settings.login_password": "Login & password",
+    "settings.new_login": "New login",
+    "settings.new_password": "New password",
+    "settings.passwords_mismatch": "Passwords do not match.",
+    "settings.picture_too_large": "Picture is too large - keep it under 2 MB.",
+    "settings.picture_updated": "Profile picture updated.",
+    "settings.profile_picture": "Profile picture",
+    "settings.remove": "Remove",
+    "settings.server_note": "Stored on the server - your login and picture follow you to any device.",
+    "settings.update_credentials": "Update credentials",
+    "settings.upload_picture": "Upload picture",
+    "user.good_morning": "Good Morning, {name} 👋",
+    "user.good_afternoon": "Good Afternoon, {name} 👋",
+    "user.good_evening": "Good Evening, {name} 👋",
+    "user.scope_line": "{company} • login: {login}",
+    "user.welcome": "Welcome, {name}",
+    "toast.dashboard_refreshed": "Dashboard V2 refreshed.",
+    "toast.language_updated": "Language switched to English.",
+    "toast.recognition_complete": "Recognition complete.",
+    "user.module": "User module",
+  },
+  ru: {
+    "actions.apply": "Применить",
+    "actions.clear": "Очистить",
+    "actions.connect": "Подключить",
+    "actions.connecting": "Подключение...",
+    "actions.export_excel": "Экспорт в Excel",
+    "actions.refresh": "Обновить",
+    "actions.run_recognition": "Запустить распознавание",
+    "actions.recognizing": "Распознавание...",
+    "ai.add_help": "Выберите минимум 2 четких изображения с разных ракурсов.",
+    "ai.add_item": "Добавить товар в AI каталог",
+    "ai.catalog_enabled": "Распознавание по каталогу включено",
+    "ai.empty_catalog": "В каталоге пока нет товаров. Добавьте название и минимум два изображения.",
+    "ai.intro": "Добавляйте только те товары, которые AI должен распознавать. Для каждого товара нужно несколько эталонных изображений; все вне каталога будет игнорироваться.",
+    "ai.item_name": "Название товара",
+    "ai.item_placeholder": "например, коробка Baget",
+    "ai.reference_images": "Эталонные изображения",
+    "analytics.catalog_note": "Операционный обзор и ниже результаты планового распознавания каталога.",
+    "analytics.detected_title": "Найденные товары AI Check-in",
+    "analytics.latest_run": "Последний запуск за 12 часов: {time}",
+    "analytics.next_run": "Следующее автоматическое распознавание: {time}",
+    "analytics.no_detected": "В текущих кадрах камеры товары из AI Check-in пока не распознаны.",
+    "camera.address": "Адрес:",
+    "camera.channels": "Каналы:",
+    "camera.connected_devices": "Подключенные устройства: {count}/{max}. Введите публичный IP или hostname устройства, и AI Vision сам найдет доступные сервисы - без RTSP URL, пути потока и выбора производителя. Устройство должно быть доступно из интернета; локальные адреса 192.168.x.x из облака не подключатся.",
+    "camera.device_limit": "Достигнут лимит устройств ({max}). Удалите одно, чтобы добавить новое.",
+    "camera.no_devices": "Устройства пока не подключены - найдите первое ниже.",
+    "camera.quality_note": "Низкое качество быстрее передает видео при слабом соединении.",
+    "camera.quality_title": "Качество видео",
+    "camera_info.empty": "Камеры пока не подключены. Сначала добавьте устройство в Camera Control.",
+    "camera_info.header": "{cameras} подключенных камер на {devices} NVR устройствах.",
+    "camera_info.loading": "Загрузка информации о камерах...",
+    "camera_info.models": "Найдено моделей",
+    "camera_info.nvr_devices": "NVR устройства",
+    "camera_info.title": "Инфо камер",
+    "dimension.loading": "Загрузка результатов 3D распознавания...",
+    "dimension.note": "3D чертежи создаются только для товаров AI Check-in, у которых есть пространственное измерение.",
+    "dimension.empty": "Пока нет распознанных товаров с 3D измерением. Следующее распознавание: {time}.",
+    "discovery.available": "Доступно",
+    "discovery.auth_hint": "Сервис запросил вход - введите логин и пароль устройства.",
+    "discovery.channels_label": "Количество каналов",
+    "discovery.connectable_empty": "Доступные сервисы для подключения не найдены.",
+    "discovery.discovered": "Найдено:",
+    "discovery.host_placeholder": "IP или hostname устройства (например 87.192.242.82)",
+    "discovery.name_placeholder": "Название устройства (например Склад Север)",
+    "discovery.needs_signin": "Нужен вход",
+    "discovery.password_placeholder": "Пароль (необязательно)",
+    "discovery.progress": "Сканирование {host} на доступные сервисы...",
+    "discovery.search": "Найти",
+    "discovery.searching": "Поиск...",
+    "discovery.select_service": "Выберите сервис для подключения:",
+    "discovery.unreachable": "Недоступно",
+    "discovery.username_placeholder": "Логин (необязательно)",
+    "feed.empty": "NVR пока не подключены - сначала настройте устройство в Camera Control.",
+    "feed.live_note": "Live видео в качестве {quality}. Эта страница не записывает постоянное видео.",
+    "feed.no_signal": "Сигнала пока нет",
+    "feed.readd": "Удалите и добавьте NVR заново, чтобы переподключить его",
+    "header.eyebrow": "Интеллектуальный складской контроль",
+    "header.head_dashboard": "Главная панель",
+    "header.loading_permissions": "Загрузка прав доступа...",
+    "head.module": "Главный модуль",
+    "head.no_access": "У этой роли нет доступа к модулям на этой странице.",
+    "lang.switch_to_en": "Switch to English",
+    "lang.switch_to_ru": "Переключить на русский",
+    "menu.ai": "AI Check-in",
+    "menu.analytics": "Аналитика",
+    "menu.camera": "Управление камерами",
+    "menu.camera_info": "Инфо камер",
+    "menu.dimension": "3D измерение",
+    "menu.feed": "Видеопоток",
+    "menu.result_analytics": "Аналитика результатов",
+    "menu.settings": "Настройки",
+    "profile.super_admin": "Супер админ",
+    "quality.high.hint": "лучшее изображение",
+    "quality.high.label": "Высокое - 1080p",
+    "quality.low.hint": "самая быстрая передача",
+    "quality.low.label": "Низкое - 480p",
+    "quality.medium.hint": "баланс",
+    "quality.medium.label": "Среднее - 720p",
+    "result.all_results": "Все результаты",
+    "result.camera_filter": "NVR или камера",
+    "result.cameras_with_results": "Камер с результатами",
+    "result.confidence": "Уверенность",
+    "result.empty": "Сохраненных результатов распознавания пока нет. Сначала запустите AI Check-in.",
+    "result.item_filter": "Товар",
+    "result.last_hour": "За последний час",
+    "result.latest_by_camera": "Последний по камере",
+    "result.loading": "Загрузка результатов распознавания...",
+    "result.next_run": "Следующий запуск",
+    "result.objects": "Объекты",
+    "result.recognition_runs": "Запуски распознавания",
+    "result.table_time": "Время распознавания",
+    "result.this_month": "За месяц",
+    "result.this_week": "За неделю",
+    "result.title": "Аналитика результатов",
+    "result.today": "За день",
+    "result.total_objects": "Всего объектов",
+    "result.subtitle": "Результаты распознавания по NVR, камере и товару.",
+    "settings.loading_profile": "Загрузка профиля...",
+    "settings.title": "Настройки",
+    "status.connected": "Подключено",
+    "status.detector_running": "Детектор работает",
+    "status.detector_stopped": "Детектор остановлен",
+    "status.live": "Live",
+    "status.not_connected": "Не подключено",
+    "status.offline": "Офлайн",
+    "status.pending": "Ожидание",
+    "status.reconnecting": "Переподключение",
+    "status.registered": "Зарегистрировано",
+    "status.starting": "Запуск",
+    "status.waiting_fresh_frame": "Ожидание свежего кадра камеры",
+    "status.waiting_slot": "Ожидает слот",
+    "status.waiting_video": "Ожидание видео",
+    "status.waiting_free_slot": "Ожидает свободный слот",
+    "table.ai_slot": "AI слот",
+    "table.camera": "Камера",
+    "table.camera_objects": "Камера / объекты",
+    "table.count": "Количество",
+    "table.item": "Товар",
+    "table.model": "Модель",
+    "table.nvr_device": "NVR / устройство",
+    "table.objects_recognized": "Распознано объектов",
+    "table.stream": "Поток",
+    "table.slot": "Слот",
+    "table.not_assigned": "Не назначен",
+    "table.channel": "канал",
+    "table.channels": "каналов",
+    "table.channel_short": "Канал",
+    "table.unknown_camera": "Неизвестная камера",
+    "table.unknown_nvr": "Неизвестный NVR",
+    "table.vendor": "Производитель",
+    "table.host": "Host",
+    "table.status": "Статус",
+    "table.measurement": "3D измерение",
+    "summary.active_cameras": "Активные камеры",
+    "summary.frames_read": "Кадров прочитано",
+    "summary.last_detections": "Последние детекции",
+    "summary.stock_items": "Товары на складе",
+    "summary.saved_cameras": "Сохраненные камеры",
+    "summary.audit_verified": "Аудит проверен",
+    "summary.yes": "Да",
+    "summary.no": "Нет",
+    "summary.delta_cameras": "+1 за неделю",
+    "summary.delta_no_change": "без изменений",
+    "summary.delta_detections": "-2 к вчера",
+    "summary.delta_saved": "+1 за месяц",
+    "summary.delta_normal": "системы в норме",
+    "head.unavailable": "Недоступно",
+    "side.companies": "Компании",
+    "side.no_companies": "Компаний пока нет",
+    "device_type.nvr": "NVR / DVR",
+    "device_type.camera": "IP камера",
+    "device_type.unknown": "Неизвестное устройство",
+    "device_type.device": "Устройство",
+    "camera.connected_via": "Подключено через {provider} - назначено {assigned}/{total} слотов. Ожидаем live video кадры.",
+    "camera.registered_no_slots": "Зарегистрировано, но слоты пока не назначены.",
+    "camera.slots_assigned": "слотов назначено",
+    "discovery.no_services": "На этом устройстве сервисы не найдены.",
+    "analytics.by_camera_title": "Распознанные объекты по NVR и камере",
+    "analytics.loading_detected": "Загрузка найденных товаров...",
+    "ai.auto_recognition": "Автоматическое распознавание каждые {hours} часов",
+    "ai.last_run": "Последний: {time}",
+    "ai.loading": "Загрузка AI каталога...",
+    "ai.next_run": "Следующий: {time}",
+    "dimension.measured": "Измерено:",
+    "dimension.pending_measurement": "Ожидает 3D измерение",
+    "dimension.recognized": "Распознано x{quantity}",
+    "dimension.volume": "Объем:",
+    "result.pending_first_run": "Первый запуск распознавания еще не выполнен",
+    "result.show_limit": "Показать {limit}",
+    "settings.confirm_password": "Подтвердите новый пароль",
+    "settings.credentials_updated": "Логин и пароль обновлены.",
+    "settings.current_login": "Текущий логин:",
+    "settings.login_password": "Логин и пароль",
+    "settings.new_login": "Новый логин",
+    "settings.new_password": "Новый пароль",
+    "settings.passwords_mismatch": "Пароли не совпадают.",
+    "settings.picture_too_large": "Изображение слишком большое - максимум 2 MB.",
+    "settings.picture_updated": "Фото профиля обновлено.",
+    "settings.profile_picture": "Фото профиля",
+    "settings.remove": "Удалить",
+    "settings.server_note": "Сохранено на сервере - логин и фото доступны с любого устройства.",
+    "settings.update_credentials": "Обновить данные",
+    "settings.upload_picture": "Загрузить фото",
+    "user.good_morning": "Доброе утро, {name} 👋",
+    "user.good_afternoon": "Добрый день, {name} 👋",
+    "user.good_evening": "Добрый вечер, {name} 👋",
+    "user.scope_line": "{company} • логин: {login}",
+    "user.welcome": "Добро пожаловать, {name}",
+    "toast.dashboard_refreshed": "Dashboard V2 обновлен.",
+    "toast.language_updated": "Язык переключен на русский.",
+    "toast.recognition_complete": "Распознавание завершено.",
+    "user.module": "Модуль пользователя",
+  },
+};
+
+function currentLanguage() {
+  const saved = localStorage.getItem(LANGUAGE_KEY);
+  return saved === "ru" ? "ru" : "en";
+}
+
+function t(key, vars = {}) {
+  const lang = currentLanguage();
+  const template = I18N[lang]?.[key] || I18N.en[key] || key;
+  return template.replace(/\{(\w+)\}/g, (_match, name) => String(vars[name] ?? ""));
+}
+
+function tOrNull(key) {
+  return I18N[currentLanguage()]?.[key] || I18N.en[key] || null;
+}
+
+function setLanguageToggleChrome() {
+  const lang = currentLanguage();
+  document.documentElement.lang = lang;
+  if (els.headerEyebrow) els.headerEyebrow.textContent = t("header.eyebrow");
+  if (els.sideCompaniesTitle) els.sideCompaniesTitle.textContent = t("side.companies");
+  if (els.refreshBtn) els.refreshBtn.textContent = t("actions.refresh");
+  if (els.languageToggle) {
+    els.languageToggle.innerHTML = `<span class="${lang === "ru" ? "active" : ""}">RU</span><span class="${lang === "en" ? "active" : ""}">ENG</span>`;
+    els.languageToggle.title = lang === "ru" ? t("lang.switch_to_en") : t("lang.switch_to_ru");
+    els.languageToggle.setAttribute("aria-label", els.languageToggle.title);
+  }
+}
+
+function rerenderCurrentViewForLanguage() {
+  setLanguageToggleChrome();
+  renderSideCompaniesFromCache();
+  if (accountState) {
+    renderAccountView(accountState);
+    return;
+  }
+  if (state.session) {
+    els.pageTitle.textContent = t("header.head_dashboard");
+    renderNavigation();
+    renderSummary();
+    renderScope();
+    renderModuleContent();
+  }
+}
 
 const LOAD_RETRY_DELAYS_MS = [500, 1000, 2000];
 let loadRetryTimer = null;
@@ -73,7 +512,7 @@ function liveFrameUrl(slot) {
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
   if (!badge) return;
-  badge.textContent = isLive ? "Live" : "Waiting for video";
+  badge.textContent = isLive ? t("status.live") : t("status.waiting_video");
   badge.classList.toggle("feed-stale-badge", !isLive);
 }
 
@@ -95,7 +534,7 @@ function attachLiveFrameHandlers(image) {
     image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);
     stopLiveStream(image);
     image.classList.add("feed-stale");
-    image.title = "Waiting for a fresh camera frame";
+    image.title = t("status.waiting_fresh_frame");
     setFeedBadgeLive(image, false);
   });
   if (image.complete && image.naturalWidth > 0) {
@@ -200,7 +639,7 @@ const MODULE_OVERRIDES = {
 };
 
 function moduleLabel(module) {
-  return MODULE_OVERRIDES[module.id]?.label || module.label;
+  return tOrNull(`menu.${module.id}`) || MODULE_OVERRIDES[module.id]?.label || module.label;
 }
 
 const permissionLabels = {
@@ -295,7 +734,7 @@ function renderNavigation() {
   buttons.push(`
     <button class="${state.activeModule === "settings" ? "active" : ""}" data-module="settings" type="button">
       ${NAV_ICONS.settings}
-      <span>Settings</span>
+      <span>${escapeHtml(t("settings.title"))}</span>
     </button>
   `);
   els.moduleNav.innerHTML = buttons.join("");
@@ -316,7 +755,7 @@ function renderSideCompaniesFromCache() {
           `
         )
         .join("")
-    : `<li class="side-empty">No companies yet</li>`;
+    : `<li class="side-empty">${escapeHtml(t("side.no_companies"))}</li>`;
 }
 
 async function renderSideCompanies() {
@@ -340,38 +779,38 @@ const STAT_ICONS = {
 function renderSummary() {
   const summary = state.overview?.summary || {};
   const cards = [
-    ["Active cameras", summary.active_cameras ?? 0],
-    ["Frames read", summary.frames_read ?? 0],
-    ["Last detections", summary.last_detection_count ?? 0],
-    ["Stock items", summary.stock_items ?? 0],
-    ["Saved cameras", summary.saved_cameras ?? 0],
-    ["Audit verified", summary.audit_verified ? "Yes" : "No"],
+    ["Active cameras", "summary.active_cameras", summary.active_cameras ?? 0],
+    ["Frames read", "summary.frames_read", summary.frames_read ?? 0],
+    ["Last detections", "summary.last_detections", summary.last_detection_count ?? 0],
+    ["Stock items", "summary.stock_items", summary.stock_items ?? 0],
+    ["Saved cameras", "summary.saved_cameras", summary.saved_cameras ?? 0],
+    ["Audit verified", "summary.audit_verified", summary.audit_verified ? t("summary.yes") : t("summary.no")],
   ];
   const deltas = {
-    "Active cameras": { text: "+1 this week", dir: "up" },
-    "Frames read": { text: "no change", dir: "flat" },
-    "Last detections": { text: "-2 vs yesterday", dir: "down" },
-    "Stock items": { text: "no change", dir: "flat" },
-    "Saved cameras": { text: "+1 this month", dir: "up" },
-    "Audit verified": { text: "all systems normal", dir: "up" },
+    "Active cameras": { key: "summary.delta_cameras", dir: "up" },
+    "Frames read": { key: "summary.delta_no_change", dir: "flat" },
+    "Last detections": { key: "summary.delta_detections", dir: "down" },
+    "Stock items": { key: "summary.delta_no_change", dir: "flat" },
+    "Saved cameras": { key: "summary.delta_saved", dir: "up" },
+    "Audit verified": { key: "summary.delta_normal", dir: "up" },
   };
   els.summaryGrid.innerHTML = cards
-    .map(([label, value]) => {
-      const delta = deltas[label];
+    .map(([iconKey, labelKey, value]) => {
+      const delta = deltas[iconKey];
       return `
         <article class="stat-card">
-          <div class="stat-icon">${STAT_ICONS[label] || ""}</div>
+          <div class="stat-icon">${STAT_ICONS[iconKey] || ""}</div>
           <div class="stat-body">
-            <span>${escapeHtml(label)}</span>
+            <span>${escapeHtml(t(labelKey))}</span>
             <strong>${escapeHtml(value)}</strong>
-            ${delta ? `<em class="stat-delta ${delta.dir}">${escapeHtml(delta.text)}</em>` : ""}
+            ${delta ? `<em class="stat-delta ${delta.dir}">${escapeHtml(t(delta.key))}</em>` : ""}
           </div>
         </article>
       `;
     })
     .join("");
   const running = Boolean(summary.detector_running);
-  els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
+  els.detectorState.textContent = running ? t("status.detector_running") : t("status.detector_stopped");
   els.detectorState.dataset.state = running ? "good" : "bad";
 }
 
@@ -384,16 +823,16 @@ function renderScope() {
 
 function renderModuleContent() {
   if (state.activeModule === "settings") {
-    els.activeModuleTitle.textContent = "Settings";
-    els.activeModuleEyebrow.textContent = "Head module";
+    els.activeModuleTitle.textContent = t("settings.title");
+    els.activeModuleEyebrow.textContent = t("head.module");
     els.summaryGrid.hidden = true;
     renderSettings(els.moduleContent);
     return;
   }
   const modules = state.session?.surfaces?.head || [];
   const module = modules.find((item) => item.id === state.activeModule);
-  els.activeModuleTitle.textContent = module ? moduleLabel(module) : "Unavailable";
-  els.activeModuleEyebrow.textContent = "Head module";
+  els.activeModuleTitle.textContent = module ? moduleLabel(module) : t("head.unavailable");
+  els.activeModuleEyebrow.textContent = t("head.module");
   els.summaryGrid.hidden = module?.id === "users";
 
   const summary = state.overview?.summary || {};
@@ -401,7 +840,7 @@ function renderModuleContent() {
   const health = state.overview?.health || {};
 
   if (!module) {
-    els.moduleContent.innerHTML = `<p class="empty">This role has no access to modules on this surface.</p>`;
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("head.no_access"))}</p>`;
     return;
   }
 
@@ -989,7 +1428,7 @@ function renderHeaderProfile(name) {
 function renderSideProfile(login, subtitle) {
   const profile = ccProfileCache || { login: "admin", avatar: null };
   const label = login || profile.login || "admin";
-  const sub = subtitle || "Super Admin";
+  const sub = subtitle || t("profile.super_admin");
   const avatar =
     !login && profile.avatar
       ? `<img src="${profile.avatar}" alt="" />`
@@ -999,7 +1438,7 @@ function renderSideProfile(login, subtitle) {
 
 function renderSettings(container) {
   if (!ccProfileCache) {
-    container.innerHTML = `<p class="chart-note">Loading profile…</p>`;
+    container.innerHTML = `<p class="chart-note">${escapeHtml(t("settings.loading_profile"))}</p>`;
     ensureProfileLoaded()
       .then(() => {
         if (state.activeModule === "settings") renderSettings(els.moduleContent);
@@ -1014,10 +1453,10 @@ function renderSettings(container) {
 
   const profile = ccProfileCache;
   container.innerHTML = `
-    <p class="chart-note">Stored on the server — your login and picture follow you to any device.</p>
+    <p class="chart-note">${escapeHtml(t("settings.server_note"))}</p>
     <div class="settings-grid">
       <section class="cc-company">
-        <header class="cc-company-head"><h3>Profile picture</h3></header>
+        <header class="cc-company-head"><h3>${escapeHtml(t("settings.profile_picture"))}</h3></header>
         <div class="settings-avatar-row">
           ${
             profile.avatar
@@ -1026,21 +1465,21 @@ function renderSettings(container) {
           }
           <div class="settings-avatar-actions">
             <label class="cc-chip settings-upload">
-              Upload picture
+              ${escapeHtml(t("settings.upload_picture"))}
               <input id="avatarInput" type="file" accept="image/*" hidden />
             </label>
-            ${profile.avatar ? `<button type="button" class="cc-chip cc-chip-small" data-settings-action="remove-avatar">Remove</button>` : ""}
+            ${profile.avatar ? `<button type="button" class="cc-chip cc-chip-small" data-settings-action="remove-avatar">${escapeHtml(t("settings.remove"))}</button>` : ""}
           </div>
         </div>
       </section>
       <section class="cc-company">
-        <header class="cc-company-head"><h3>Login &amp; password</h3></header>
-        <p class="cc-cred"><em>Current login:</em> ${escapeHtml(profile.login)}</p>
+        <header class="cc-company-head"><h3>${escapeHtml(t("settings.login_password"))}</h3></header>
+        <p class="cc-cred"><em>${escapeHtml(t("settings.current_login"))}</em> ${escapeHtml(profile.login)}</p>
         <form class="cc-add cc-add-role" data-settings-form="security">
-          <input name="login" placeholder="New login" value="${escapeHtml(profile.login)}" required maxlength="60" autocomplete="username" />
-          <input name="password" type="password" placeholder="New password" required maxlength="120" autocomplete="new-password" />
-          <input name="confirm" type="password" placeholder="Confirm new password" required maxlength="120" autocomplete="new-password" />
-          <button type="submit">Update credentials</button>
+          <input name="login" placeholder="${escapeAttr(t("settings.new_login"))}" value="${escapeHtml(profile.login)}" required maxlength="60" autocomplete="username" />
+          <input name="password" type="password" placeholder="${escapeAttr(t("settings.new_password"))}" required maxlength="120" autocomplete="new-password" />
+          <input name="confirm" type="password" placeholder="${escapeAttr(t("settings.confirm_password"))}" required maxlength="120" autocomplete="new-password" />
+          <button type="submit">${escapeHtml(t("settings.update_credentials"))}</button>
         </form>
       </section>
     </div>
@@ -1056,7 +1495,7 @@ async function handleSettingsSubmit(event) {
   const confirm = form.elements.confirm.value;
   if (!login || !password) return;
   if (password !== confirm) {
-    toast("Passwords do not match.");
+    toast(t("settings.passwords_mismatch"));
     return;
   }
   const submit = form.querySelector('button[type="submit"]');
@@ -1066,7 +1505,7 @@ async function handleSettingsSubmit(event) {
       method: "PUT",
       body: JSON.stringify({ login, password }),
     });
-    toast("Credentials updated.");
+    toast(t("settings.credentials_updated"));
     updateBrandAvatarFromCache();
     renderSettings(els.moduleContent);
   } catch (error) {
@@ -1080,7 +1519,7 @@ async function handleSettingsChange(event) {
   const file = event.target.files?.[0];
   if (!file) return;
   if (file.size > 2 * 1024 * 1024) {
-    toast("Picture is too large — keep it under 2 MB.");
+    toast(t("settings.picture_too_large"));
     return;
   }
   const reader = new FileReader();
@@ -1090,7 +1529,7 @@ async function handleSettingsChange(event) {
         method: "PUT",
         body: JSON.stringify({ avatar: String(reader.result) }),
       });
-      toast("Profile picture updated.");
+      toast(t("settings.picture_updated"));
       updateBrandAvatarFromCache();
       renderSettings(els.moduleContent);
     } catch (error) {
@@ -1281,12 +1720,16 @@ function accountMenus(role) {
   return menus;
 }
 
+function accountMenuLabel(item) {
+  return tOrNull(`menu.${item.id}`) || item.label;
+}
+
 function nvrControllerMessage(nvr, assigned, total) {
   const message = String(nvr.controllerMessage || "");
-  if (!message || message.includes("transmitting")) {
+  if (!message || message.includes("transmitting") || message.startsWith("Connected via")) {
     return assigned > 0
-      ? `Connected via ${nvr.provider || "stream manager"} — ${assigned}/${total} slot${assigned === 1 ? "" : "s"} assigned. Waiting for live video frames.`
-      : "Registered, but no slots are assigned yet.";
+      ? t("camera.connected_via", { provider: nvr.provider || "stream manager", assigned, total })
+      : t("camera.registered_no_slots");
   }
   return message;
 }
@@ -1343,7 +1786,7 @@ function cameraInfoChannelRows(config, devices = []) {
         host: nvr.host || device.host || "Unknown host",
         vendor,
         model,
-        deviceType: DEVICE_TYPE_LABELS[deviceTypeKey] || deviceTypeKey || "NVR / DVR",
+        deviceType: DEVICE_TYPE_LABELS[deviceTypeKey] ? t(DEVICE_TYPE_LABELS[deviceTypeKey]) : deviceTypeKey || t("device_type.nvr"),
         cameraName: channel.name || channel.camera_name || `Camera ${channelNumber}`,
         slotNumber,
         status,
@@ -1359,32 +1802,32 @@ function cameraInfoChannelRows(config, devices = []) {
 }
 
 function cameraInfoStatusMeta(status) {
-  if (status === "online") return { label: "Live", className: "online" };
-  if (status === "starting") return { label: "Starting", className: "pending" };
-  if (status === "reconnecting") return { label: "Reconnecting", className: "pending" };
-  if (status === "offline" || status === "failed") return { label: "Offline", className: "offline" };
-  if (status === "unassigned") return { label: "Waiting for slot", className: "pending" };
-  if (status === "connected") return { label: "Connected", className: "online" };
-  return { label: "Registered", className: "pending" };
+  if (status === "online") return { label: t("status.live"), className: "online" };
+  if (status === "starting") return { label: t("status.starting"), className: "pending" };
+  if (status === "reconnecting") return { label: t("status.reconnecting"), className: "pending" };
+  if (status === "offline" || status === "failed") return { label: t("status.offline"), className: "offline" };
+  if (status === "unassigned") return { label: t("status.waiting_slot"), className: "pending" };
+  if (status === "connected") return { label: t("status.connected"), className: "online" };
+  return { label: t("status.registered"), className: "pending" };
 }
 
 function renderCameraInfoTable(rows) {
   if (!rows.length) {
-    return `<p class="empty">No cameras connected yet. Add a device in Camera Control first.</p>`;
+    return `<p class="empty">${escapeHtml(t("camera_info.empty"))}</p>`;
   }
   return `
     <div class="detected-table-wrap">
       <table class="detected-table camera-info-table">
         <thead>
           <tr>
-            <th>NVR / Device</th>
-            <th>Host</th>
-            <th>Vendor</th>
-            <th>Model</th>
-            <th>Camera</th>
-            <th>AI slot</th>
-            <th>Status</th>
-            <th>Stream</th>
+            <th>${escapeHtml(t("table.nvr_device"))}</th>
+            <th>${escapeHtml(t("table.host"))}</th>
+            <th>${escapeHtml(t("table.vendor"))}</th>
+            <th>${escapeHtml(t("table.model"))}</th>
+            <th>${escapeHtml(t("table.camera"))}</th>
+            <th>${escapeHtml(t("table.ai_slot"))}</th>
+            <th>${escapeHtml(t("table.status"))}</th>
+            <th>${escapeHtml(t("table.stream"))}</th>
           </tr>
         </thead>
         <tbody>
@@ -1398,7 +1841,7 @@ function renderCameraInfoTable(rows) {
                   <td>${escapeHtml(row.vendor)}</td>
                   <td><strong>${escapeHtml(row.model)}</strong></td>
                   <td>${escapeHtml(row.cameraName)}</td>
-                  <td>${row.slotNumber != null ? `Slot ${row.slotNumber}` : `<span class="camera-info-meta">Not assigned</span>`}</td>
+                  <td>${row.slotNumber != null ? `${escapeHtml(t("table.slot"))} ${row.slotNumber}` : `<span class="camera-info-meta">${escapeHtml(t("table.not_assigned"))}</span>`}</td>
                   <td><span class="camera-info-status ${status.className}">${escapeHtml(status.label)}</span></td>
                   <td>${escapeHtml(row.streamProvider)}</td>
                 </tr>
@@ -1427,23 +1870,23 @@ async function renderCameraInfo(container) {
       <section class="detected-list camera-info">
         <header class="detected-list-head">
           <div>
-            <h3>Camera Info</h3>
-            <p>${rows.length.toLocaleString()} connected camera${rows.length === 1 ? "" : "s"} across ${company.cameraConfig.nvrs.length.toLocaleString()} NVR device${company.cameraConfig.nvrs.length === 1 ? "" : "s"}.</p>
+            <h3>${escapeHtml(t("camera_info.title"))}</h3>
+            <p>${escapeHtml(t("camera_info.header", { cameras: rows.length.toLocaleString(), devices: company.cameraConfig.nvrs.length.toLocaleString() }))}</p>
           </div>
           <div class="detected-list-actions">
-            <button type="button" class="export-button" data-refresh-camera-info>Refresh</button>
+            <button type="button" class="export-button" data-refresh-camera-info>${escapeHtml(t("actions.refresh"))}</button>
           </div>
         </header>
         <div class="camera-info-summary">
-          <article><span>NVR devices</span><strong>${company.cameraConfig.nvrs.length.toLocaleString()}</strong></article>
-          <article><span>Cameras</span><strong>${rows.length.toLocaleString()}</strong></article>
-          <article><span>Models detected</span><strong>${modelCount.toLocaleString()}</strong></article>
+          <article><span>${escapeHtml(t("camera_info.nvr_devices"))}</span><strong>${company.cameraConfig.nvrs.length.toLocaleString()}</strong></article>
+          <article><span>${escapeHtml(t("table.camera"))}</span><strong>${rows.length.toLocaleString()}</strong></article>
+          <article><span>${escapeHtml(t("camera_info.models"))}</span><strong>${modelCount.toLocaleString()}</strong></article>
         </div>
         ${renderCameraInfoTable(rows)}
       </section>
     `;
     container.querySelector("[data-refresh-camera-info]")?.addEventListener("click", () => {
-      container.innerHTML = `<p class="empty">Loading camera device info...</p>`;
+      container.innerHTML = `<p class="empty">${escapeHtml(t("camera_info.loading"))}</p>`;
       void renderCameraInfo(container);
     });
   } catch (error) {
@@ -1499,7 +1942,7 @@ async function catalogRequest(path, options = {}) {
 }
 
 function formatCatalogTime(value) {
-  if (!value) return "Pending first recognition run";
+  if (!value) return t("result.pending_first_run");
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
 }
@@ -1519,10 +1962,10 @@ function catalogCameraCountsHtml(result) {
     .filter((entry) => Number(entry.quantity) > 0)
     .map(
       (entry) =>
-        `<span class="camera-count-pill"><strong>${escapeHtml(entry.camera_name || "Camera")}</strong>${Number(entry.quantity).toLocaleString()}</span>`
+        `<span class="camera-count-pill"><strong>${escapeHtml(entry.camera_name || t("table.camera"))}</strong>${Number(entry.quantity).toLocaleString()}</span>`
     )
     .join("");
-  return rows || `<span class="muted">Unknown camera</span>`;
+  return rows || `<span class="muted">${escapeHtml(t("table.unknown_camera"))}</span>`;
 }
 
 function catalogCameraTotals(results) {
@@ -1532,7 +1975,7 @@ function catalogCameraTotals(results) {
     for (const entry of cameraCounts) {
       const quantity = Number(entry.quantity || 0);
       if (quantity <= 0) continue;
-      const cameraName = String(entry.camera_name || "Unknown camera");
+      const cameraName = String(entry.camera_name || t("table.unknown_camera"));
       totals.set(cameraName, (totals.get(cameraName) || 0) + quantity);
     }
   }
@@ -1542,10 +1985,10 @@ function catalogCameraTotals(results) {
 }
 
 function splitCatalogCameraName(cameraName) {
-  const value = String(cameraName || "Unknown camera").trim() || "Unknown camera";
+  const value = String(cameraName || t("table.unknown_camera")).trim() || t("table.unknown_camera");
   const match = value.match(/^(.*?)(?:\s+[-·]\s+|\s+)(Camera\s+\d+)$/i);
-  if (!match) return { nvr: "Unknown NVR", camera: value };
-  const nvr = match[1].trim() || "Unknown NVR";
+  if (!match) return { nvr: t("table.unknown_nvr"), camera: value };
+  const nvr = match[1].trim() || t("table.unknown_nvr");
   const camera = match[2].trim();
   return { nvr, camera };
 }
@@ -1567,10 +2010,10 @@ function catalogCameraTotalsTableHtml(results) {
     .join("");
   return `
     <section class="catalog-camera-breakdown">
-      <h4>Recognized objects by NVR and camera</h4>
+      <h4>${escapeHtml(t("analytics.by_camera_title"))}</h4>
       <div class="detected-table-wrap">
         <table class="detected-table camera-breakdown-table">
-          <thead><tr><th>NVR</th><th>Camera</th><th>Objects recognized</th></tr></thead>
+          <thead><tr><th>NVR</th><th>${escapeHtml(t("table.camera"))}</th><th>${escapeHtml(t("table.objects_recognized"))}</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -1595,7 +2038,7 @@ function resultAnalyticsRows(results) {
       const cameraCounts = Array.isArray(result?.camera_counts) ? result.camera_counts : [];
       const entries = cameraCounts.some((entry) => Number(entry.quantity) > 0)
         ? cameraCounts.filter((entry) => Number(entry.quantity) > 0)
-        : [{ camera_name: "Unknown camera", quantity: Number(result.quantity || 0) }];
+        : [{ camera_name: t("table.unknown_camera"), quantity: Number(result.quantity || 0) }];
       return entries.map((entry) => {
         const parts = splitCatalogCameraName(entry.camera_name);
         const completedAt = result.completed_at || result.created_at;
@@ -1663,38 +2106,38 @@ function resultAnalyticsFilterControlsHtml(filters, totalRows, visibleRows) {
       <select name="period" aria-label="Result period">
         ${RESULT_ANALYTICS_PERIODS.map(
           (period) =>
-            `<option value="${period.id}" ${period.id === filters.period ? "selected" : ""}>${escapeHtml(period.label)}</option>`
+            `<option value="${period.id}" ${period.id === filters.period ? "selected" : ""}>${escapeHtml(t(`result.${period.id === "latest" ? "latest_by_camera" : period.id === "hour" ? "last_hour" : period.id === "day" ? "today" : period.id === "week" ? "this_week" : period.id === "month" ? "this_month" : "all_results"}`))}</option>`
         ).join("")}
       </select>
       <select name="limit" aria-label="Rows limit">
         ${RESULT_ANALYTICS_LIMITS.map(
           (limit) =>
-            `<option value="${limit}" ${Number(filters.limit) === limit ? "selected" : ""}>Show ${limit}</option>`
+            `<option value="${limit}" ${Number(filters.limit) === limit ? "selected" : ""}>${escapeHtml(t("result.show_limit", { limit }))}</option>`
         ).join("")}
       </select>
-      <input name="item" value="${escapeAttr(filters.item || "")}" placeholder="Item" autocomplete="off" />
-      <input name="camera" value="${escapeAttr(filters.camera || "")}" placeholder="NVR or camera" autocomplete="off" />
-      <button type="submit" class="export-button">Apply</button>
-      <button type="button" class="export-button muted-button" data-clear-result-filters>Clear</button>
-      <strong class="result-analytics-count">Shown ${visibleRows.length.toLocaleString()} of ${totalRows.toLocaleString()}</strong>
+      <input name="item" value="${escapeAttr(filters.item || "")}" placeholder="${escapeAttr(t("result.item_filter"))}" autocomplete="off" />
+      <input name="camera" value="${escapeAttr(filters.camera || "")}" placeholder="${escapeAttr(t("result.camera_filter"))}" autocomplete="off" />
+      <button type="submit" class="export-button">${escapeHtml(t("actions.apply"))}</button>
+      <button type="button" class="export-button muted-button" data-clear-result-filters>${escapeHtml(t("actions.clear"))}</button>
+      <strong class="result-analytics-count">${currentLanguage() === "ru" ? `Показано ${visibleRows.length.toLocaleString()} из ${totalRows.toLocaleString()}` : `Shown ${visibleRows.length.toLocaleString()} of ${totalRows.toLocaleString()}`}</strong>
     </form>
   `;
 }
 
 function resultAnalyticsTableHtml(rows) {
-  if (!rows.length) return `<p class="empty">No recognition results are saved yet. Run AI Check-in first.</p>`;
+  if (!rows.length) return `<p class="empty">${escapeHtml(t("result.empty"))}</p>`;
   return `
     <div class="detected-table-wrap">
       <table class="detected-table result-analytics-table">
         <thead>
           <tr>
-            <th>Recognition time</th>
+            <th>${escapeHtml(t("result.table_time"))}</th>
             <th>NVR</th>
-            <th>Camera</th>
-            <th>Item</th>
-            <th>Objects</th>
-            <th>Confidence</th>
-            <th>3D measurement</th>
+            <th>${escapeHtml(t("table.camera"))}</th>
+            <th>${escapeHtml(t("table.item"))}</th>
+            <th>${escapeHtml(t("result.objects"))}</th>
+            <th>${escapeHtml(t("result.confidence"))}</th>
+            <th>${escapeHtml(t("table.measurement"))}</th>
           </tr>
         </thead>
         <tbody>
@@ -1708,7 +2151,7 @@ function resultAnalyticsTableHtml(rows) {
                   <td>${escapeHtml(row.itemName)}</td>
                   <td class="count-cell">${row.quantity.toLocaleString()}</td>
                   <td>${Math.round(row.confidence * 100)}%</td>
-                  <td>${row.dimensions ? `${row.dimensions.w} x ${row.dimensions.h} x ${row.dimensions.d} cm` : "Pending"}</td>
+                  <td>${row.dimensions ? `${row.dimensions.w} x ${row.dimensions.h} x ${row.dimensions.d} cm` : escapeHtml(t("status.pending"))}</td>
                 </tr>
               `
             )
@@ -1725,10 +2168,10 @@ function resultAnalyticsSummaryHtml(rows, schedule) {
   const runs = new Set((rows || []).map((row) => row.runId).filter(Boolean));
   return `
     <div class="result-analytics-summary">
-      <article><span>Total objects</span><strong>${totalObjects.toLocaleString()}</strong></article>
-      <article><span>Cameras with results</span><strong>${cameras.size.toLocaleString()}</strong></article>
-      <article><span>Recognition runs</span><strong>${runs.size.toLocaleString()}</strong></article>
-      <article><span>Next run</span><strong>${escapeHtml(formatCatalogTime(schedule?.next_run_at))}</strong></article>
+      <article><span>${escapeHtml(t("result.total_objects"))}</span><strong>${totalObjects.toLocaleString()}</strong></article>
+      <article><span>${escapeHtml(t("result.cameras_with_results"))}</span><strong>${cameras.size.toLocaleString()}</strong></article>
+      <article><span>${escapeHtml(t("result.recognition_runs"))}</span><strong>${runs.size.toLocaleString()}</strong></article>
+      <article><span>${escapeHtml(t("result.next_run"))}</span><strong>${escapeHtml(formatCatalogTime(schedule?.next_run_at))}</strong></article>
     </div>
   `;
 }
@@ -1740,13 +2183,13 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
     <section class="detected-list result-analytics">
       <header class="detected-list-head">
         <div>
-          <h3>Result Analytics</h3>
-          <p>Recognition results by NVR, camera and item.</p>
+          <h3>${escapeHtml(t("result.title"))}</h3>
+          <p>${escapeHtml(t("result.subtitle"))}</p>
         </div>
         <div class="detected-list-actions">
-          <button type="button" class="export-button" data-refresh-result-analytics>Refresh</button>
-          <button type="button" class="export-button" data-run-result-recognition>Run recognition now</button>
-          <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
+          <button type="button" class="export-button" data-refresh-result-analytics>${escapeHtml(t("actions.refresh"))}</button>
+          <button type="button" class="export-button" data-run-result-recognition>${escapeHtml(t("actions.run_recognition"))}</button>
+          <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">${escapeHtml(t("actions.export_excel"))}</a>
         </div>
       </header>
       ${resultAnalyticsFilterControlsHtml(filters, rows.length, visibleRows)}
@@ -1769,7 +2212,7 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
     renderResultAnalyticsBody(container, payload, { period: "latest", limit: 100, item: "", camera: "" });
   });
   container.querySelector("[data-refresh-result-analytics]")?.addEventListener("click", () => {
-    container.innerHTML = `<p class="empty">Loading recognition results...</p>`;
+    container.innerHTML = `<p class="empty">${escapeHtml(t("result.loading"))}</p>`;
     void renderResultAnalytics(container);
   });
   container.querySelector("[data-run-result-recognition]")?.addEventListener("click", (event) => {
@@ -1779,17 +2222,17 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
 
 async function runResultAnalyticsRecognition(container, button, filters) {
   button.disabled = true;
-  button.textContent = "Recognizing...";
+  button.textContent = t("actions.recognizing");
   try {
     await catalogRequest(catalogApiPath("/api/catalog/recognition/run"), { method: "POST" });
     const payload = await catalogRequest(catalogApiPath("/api/catalog/results/history?limit=500"));
     if (container.isConnected && accountModule === "result_analytics") {
       renderResultAnalyticsBody(container, payload, filters);
     }
-    toast("Recognition complete.");
+    toast(t("toast.recognition_complete"));
   } catch (error) {
     button.disabled = false;
-    button.textContent = "Run recognition now";
+    button.textContent = t("actions.run_recognition");
     toast(error.message);
   }
 }
@@ -1813,37 +2256,37 @@ async function renderCatalogEnrollment(container) {
         (item) => `
           <article class="cc-role ai-product catalog-product">
             <div class="cc-role-head">
-              <div><strong>${escapeHtml(item.name)}</strong><small>${item.image_count} reference images</small></div>
+              <div><strong>${escapeHtml(item.name)}</strong><small>${item.image_count} ${escapeHtml(t("ai.reference_images").toLowerCase())}</small></div>
               <button type="button" class="cc-remove" data-acc-action="remove-catalog-item" data-product="${item.id}" aria-label="Remove ${escapeHtml(item.name)}">✕</button>
             </div>
             <div class="catalog-thumbs">
               ${item.images.map((image) => `<img src="${API_BASE}${image.url}" alt="${escapeHtml(item.name)} reference" />`).join("")}
             </div>
-            <span class="cc-chip cc-chip-small on">Catalog recognition enabled ✓</span>
+            <span class="cc-chip cc-chip-small on">${escapeHtml(t("ai.catalog_enabled"))}</span>
           </article>
         `
       )
       .join("");
     container.innerHTML = `
-      <p class="chart-note">Add only the items the AI is allowed to recognize. Every item requires multiple reference images; anything outside this catalog is ignored by scheduled recognition.</p>
+      <p class="chart-note">${escapeHtml(t("ai.intro"))}</p>
       <form class="catalog-form" data-acc-form="catalog-product">
         <label class="catalog-name-field">
-          <span>Item name</span>
-          <input name="name" placeholder="e.g. Bread crate" required maxlength="60" autocomplete="off" />
+          <span>${escapeHtml(t("ai.item_name"))}</span>
+          <input name="name" placeholder="${escapeAttr(t("ai.item_placeholder"))}" required maxlength="60" autocomplete="off" />
         </label>
         <label class="catalog-upload">
-          <span>Reference images</span>
+          <span>${escapeHtml(t("ai.reference_images"))}</span>
           <input name="images" type="file" accept="image/*" multiple required />
         </label>
-        <small class="catalog-upload-help" data-image-count>Choose at least 2 clear images from different angles.</small>
-        <button type="submit">Add item to AI catalog</button>
+        <small class="catalog-upload-help" data-image-count>${escapeHtml(t("ai.add_help"))}</small>
+        <button type="submit">${escapeHtml(t("ai.add_item"))}</button>
       </form>
       <div class="recognition-schedule">
-        <strong>Automatic recognition every ${payload.schedule.interval_hours} hours</strong>
-        <span>Last: ${escapeHtml(formatCatalogTime(payload.schedule.last_run_at))}</span>
-        <span>Next: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</span>
+        <strong>${escapeHtml(t("ai.auto_recognition", { hours: payload.schedule.interval_hours }))}</strong>
+        <span>${escapeHtml(t("ai.last_run", { time: formatCatalogTime(payload.schedule.last_run_at) }))}</span>
+        <span>${escapeHtml(t("ai.next_run", { time: formatCatalogTime(payload.schedule.next_run_at) }))}</span>
       </div>
-      <div class="cc-list ai-list">${rows || `<p class="empty">No catalog items yet. Add an item name and at least two images above.</p>`}</div>
+      <div class="cc-list ai-list">${rows || `<p class="empty">${escapeHtml(t("ai.empty_catalog"))}</p>`}</div>
     `;
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
@@ -1860,14 +2303,14 @@ function catalogResultsTableHtml(results) {
           <td class="count-cell">${Number(result.quantity).toLocaleString()}</td>
           <td><div class="camera-count-list">${catalogCameraCountsHtml(result)}</div></td>
           <td>${Math.round(Number(result.confidence) * 100)}%</td>
-          <td>${dims ? `${dims.w} × ${dims.h} × ${dims.d} cm` : "Pending 3D measurement"}</td>
+          <td>${dims ? `${dims.w} × ${dims.h} × ${dims.d} cm` : escapeHtml(t("dimension.pending_measurement"))}</td>
         </tr>
       `;
     })
     .join("");
   return rows
-    ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Item</th><th>Count</th><th>Camera / objects</th><th>Confidence</th><th>3D measurement</th></tr></thead><tbody>${rows}</tbody></table></div>`
-    : `<p class="empty">No checked-in AI item was recognized in the current camera images yet.</p>`;
+    ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>${escapeHtml(t("table.item"))}</th><th>${escapeHtml(t("table.count"))}</th><th>${escapeHtml(t("table.camera_objects"))}</th><th>${escapeHtml(t("result.confidence"))}</th><th>${escapeHtml(t("table.measurement"))}</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<p class="empty">${escapeHtml(t("analytics.no_detected"))}</p>`;
 }
 
 async function refreshCatalogResultsTable(container, results = []) {
@@ -1887,17 +2330,17 @@ async function renderCatalogResults(container) {
       <section class="detected-list">
         <header class="detected-list-head">
           <div>
-            <h3>Detected AI Check-in items</h3>
-            <p>Latest 12-hour recognition run: ${escapeHtml(formatCatalogTime(payload.run?.completed_at))}</p>
+            <h3>${escapeHtml(t("analytics.detected_title"))}</h3>
+            <p>${escapeHtml(t("analytics.latest_run", { time: formatCatalogTime(payload.run?.completed_at) }))}</p>
           </div>
           <div class="detected-list-actions">
-            <button type="button" class="export-button" data-run-live-recognition>Run recognition now</button>
-            <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
+            <button type="button" class="export-button" data-run-live-recognition>${escapeHtml(t("actions.run_recognition"))}</button>
+            <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">${escapeHtml(t("actions.export_excel"))}</a>
           </div>
         </header>
         <div data-catalog-table>${catalogResultsTableHtml(payload.results)}</div>
         <div data-catalog-camera-breakdown>${catalogCameraTotalsTableHtml(payload.results)}</div>
-        <p class="catalog-next-run">Next automatic recognition: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</p>
+        <p class="catalog-next-run">${escapeHtml(t("analytics.next_run", { time: formatCatalogTime(payload.schedule.next_run_at) }))}</p>
       </section>
     `;
     const button = container.querySelector("[data-run-live-recognition]");
@@ -1912,16 +2355,16 @@ async function renderCatalogResults(container) {
 // images, so generic objects are ignored unless they match a checked-in item.
 async function startLiveCatalogRecognition(container, button) {
   button.disabled = true;
-  button.textContent = "Recognizing…";
+  button.textContent = t("actions.recognizing");
   try {
     const payload = await catalogRequest(catalogApiPath("/api/catalog/recognition/run"), { method: "POST" });
     await refreshCatalogResultsTable(container, payload.results || []);
     button.disabled = false;
-    button.textContent = "Run recognition now";
-    toast("Recognition complete.");
+    button.textContent = t("actions.run_recognition");
+    toast(t("toast.recognition_complete"));
   } catch (error) {
     button.disabled = false;
-    button.textContent = "Run recognition now";
+    button.textContent = t("actions.run_recognition");
     toast(error.message);
   }
 }
@@ -1941,20 +2384,20 @@ async function renderCatalogDimensions(container) {
         const item = items.get(result.item_id);
         return `
           <article class="cc-company dim-card">
-            <header class="cc-company-head"><h3>${escapeHtml(result.item_name)}</h3><span class="cc-chip cc-chip-small on">Recognized ×${result.quantity}</span></header>
+            <header class="cc-company-head"><h3>${escapeHtml(result.item_name)}</h3><span class="cc-chip cc-chip-small on">${escapeHtml(t("dimension.recognized", { quantity: result.quantity }))}</span></header>
             <div class="dimension-visual">
               ${item?.images?.[0] ? `<img src="${API_BASE}${item.images[0].url}" alt="${escapeHtml(result.item_name)} reference" />` : ""}
               ${dimBoxSvg(dims)}
             </div>
-            <p class="cc-cred"><em>Measured:</em> ${dims.w} × ${dims.h} × ${dims.d} cm</p>
-            <p class="cc-cred"><em>Volume:</em> ${((dims.w * dims.h * dims.d) / 1000).toFixed(1)} L · ${escapeHtml(result.measurement_method || "3D vision")}</p>
+            <p class="cc-cred"><em>${escapeHtml(t("dimension.measured"))}</em> ${dims.w} × ${dims.h} × ${dims.d} cm</p>
+            <p class="cc-cred"><em>${escapeHtml(t("dimension.volume"))}</em> ${((dims.w * dims.h * dims.d) / 1000).toFixed(1)} L · ${escapeHtml(result.measurement_method || "3D vision")}</p>
           </article>
         `;
       })
       .join("");
     container.innerHTML = `
-      <p class="chart-note">3D drawings are created only for checked-in catalog items that receive a spatial measurement during recognition.</p>
-      ${cards ? `<div class="cc-list dim-list">${cards}</div>` : `<p class="empty">No recognized item has a 3D measurement yet. The next recognition runs at ${escapeHtml(formatCatalogTime(recognition.schedule.next_run_at))}.</p>`}
+      <p class="chart-note">${escapeHtml(t("dimension.note"))}</p>
+      ${cards ? `<div class="cc-list dim-list">${cards}</div>` : `<p class="empty">${escapeHtml(t("dimension.empty", { time: formatCatalogTime(recognition.schedule.next_run_at) }))}</p>`}
     `;
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
@@ -1973,14 +2416,14 @@ function renderAccountModule() {
       (item) => `
         <button class="${item.id === accountModule ? "active" : ""}" data-acc-module="${item.id}" type="button">
           ${NAV_ICONS[item.id] || ""}
-          <span>${escapeHtml(item.label)}</span>
+          <span>${escapeHtml(accountMenuLabel(item))}</span>
         </button>
       `
     )
     .join("");
 
-  els.activeModuleEyebrow.textContent = "User module";
-  els.activeModuleTitle.textContent = menu ? menu.label : `Welcome, ${role.name}`;
+  els.activeModuleEyebrow.textContent = t("user.module");
+  els.activeModuleTitle.textContent = menu ? accountMenuLabel(menu) : t("user.welcome", { name: role.name });
 
   if (!menu) {
     els.moduleContent.innerHTML = `<p class="empty">No modules have been granted to this account yet. Ask your administrator for access.</p>`;
@@ -2014,21 +2457,21 @@ function renderAccountModule() {
                       ? "pending"
                       : "bad";
                 const label = isLive
-                  ? "Live"
+                  ? t("status.live")
                   : isReconnecting
-                    ? "Reconnecting"
+                    ? t("status.reconnecting")
                     : isStarting
-                      ? "Starting"
+                      ? t("status.starting")
                   : hasSlot
-                    ? "Waiting for video"
+                    ? t("status.waiting_video")
                     : channel.status === "connected"
-                    ? "Waiting for a free slot"
-                    : "Not connected";
+                    ? t("status.waiting_free_slot")
+                    : t("status.not_connected");
                 const detail = stream?.last_error || channel.message || "";
-                const slotLabel = channel.slot_number != null ? `slot ${channel.slot_number}` : "no slot yet";
+                const slotLabel = channel.slot_number != null ? `${t("table.slot")} ${channel.slot_number}` : t("table.not_assigned");
                 return `
                   <li class="nvr-channel ${stateClass}" title="${escapeHtml(detail)}">
-                    <span>Ch ${channel.channel} · ${slotLabel}</span>
+                    <span>${escapeHtml(t("table.channel_short"))} ${channel.channel} · ${escapeHtml(slotLabel)}</span>
                     <span class="nvr-channel-status">${label}</span>
                   </li>
                 `;
@@ -2041,8 +2484,8 @@ function renderAccountModule() {
               <h3>${escapeHtml(nvr.name)}</h3>
               <button type="button" class="cc-remove" data-acc-action="remove-nvr" data-nvr="${nvr.id}" aria-label="Remove NVR">✕</button>
             </header>
-            <p class="cc-cred"><em>Address:</em> <span class="nvr-rtsp" title="${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}">${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}</span></p>
-            <p class="cc-cred"><em>Channels:</em> ${assigned}/${totalChannels} slot${assigned === 1 ? "" : "s"} assigned</p>
+            <p class="cc-cred"><em>${escapeHtml(t("camera.address"))}</em> <span class="nvr-rtsp" title="${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}">${escapeHtml(nvr.protocol)}://${escapeHtml(nvr.host)}:${nvr.port}</span></p>
+            <p class="cc-cred"><em>${escapeHtml(t("camera.channels"))}</em> ${assigned}/${totalChannels} ${escapeHtml(t("camera.slots_assigned"))}</p>
             <p class="nvr-status ${overallOk ? "ok" : "bad"}">${escapeHtml(nvrControllerMessage(nvr, assigned, totalChannels))}</p>
             ${channelRows}
           </article>
@@ -2050,18 +2493,18 @@ function renderAccountModule() {
       })
       .join("");
     els.moduleContent.innerHTML = `
-      <p class="chart-note">Connected devices: ${config.nvrs.length}/${MAX_NVRS}. Enter a device's public IP or hostname and AI Vision discovers its available services automatically — no RTSP URL, stream path, or vendor needed. The device must be reachable over the internet (public IP, port-forward, or DDNS); local-only addresses like 192.168.x.x won't connect from the cloud.</p>
-      <div class="cc-list">${nvrCards || `<p class="empty">No devices connected yet — discover the first one below.</p>`}</div>
-      ${atLimit ? `<p class="empty">Device limit reached (${MAX_NVRS}). Remove one to add another.</p>` : `<div class="discovery-panel" data-discovery-panel></div>`}
+      <p class="chart-note">${escapeHtml(t("camera.connected_devices", { count: config.nvrs.length, max: MAX_NVRS }))}</p>
+      <div class="cc-list">${nvrCards || `<p class="empty">${escapeHtml(t("camera.no_devices"))}</p>`}</div>
+      ${atLimit ? `<p class="empty">${escapeHtml(t("camera.device_limit", { max: MAX_NVRS }))}</p>` : `<div class="discovery-panel" data-discovery-panel></div>`}
       <section class="acc-block quality-block">
-        <h3>Vision quality</h3>
-        <p class="chart-note">Lower quality serves video faster over slow connections.</p>
+        <h3>${escapeHtml(t("camera.quality_title"))}</h3>
+        <p class="chart-note">${escapeHtml(t("camera.quality_note"))}</p>
         <div class="cc-access">
           ${QUALITY_OPTIONS.map(
             (option) => `
               <button type="button" class="cc-chip ${config.quality === option.id ? "on" : ""}"
                       data-acc-action="quality" data-quality="${option.id}">
-                ${option.label} <small>· ${option.hint}</small>
+                ${escapeHtml(t(`quality.${option.id}.label`))} <small>· ${escapeHtml(t(`quality.${option.id}.hint`))}</small>
               </button>
             `
           ).join("")}
@@ -2074,27 +2517,27 @@ function renderAccountModule() {
   }
 
   if (menu.id === "camera_info") {
-    els.moduleContent.innerHTML = `<p class="empty">Loading camera device info...</p>`;
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("camera_info.loading"))}</p>`;
     void renderCameraInfo(els.moduleContent);
     return;
   }
 
   if (menu.id === "analytics") {
-    els.moduleContent.innerHTML = `<div id="accCharts"></div><div id="catalogResults" class="catalog-results-loading"><p class="empty">Loading detected items…</p></div>`;
+    els.moduleContent.innerHTML = `<div id="accCharts"></div><div id="catalogResults" class="catalog-results-loading"><p class="empty">${escapeHtml(t("analytics.loading_detected"))}</p></div>`;
     renderAnalytics(els.moduleContent.querySelector("#accCharts"), true);
     void renderCatalogResults(els.moduleContent.querySelector("#catalogResults"));
     return;
   }
 
   if (menu.id === "result_analytics") {
-    els.moduleContent.innerHTML = `<p class="empty">Loading recognition results...</p>`;
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("result.loading"))}</p>`;
     void renderResultAnalytics(els.moduleContent);
     return;
   }
 
   if (menu.id === "feed") {
     if (!config.nvrs.length) {
-      els.moduleContent.innerHTML = `<p class="empty">No NVRs connected — set one up in Camera Control first.</p>`;
+      els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("feed.empty"))}</p>`;
       return;
     }
     const sections = config.nvrs
@@ -2104,30 +2547,30 @@ function renderAccountModule() {
           ? channels
               .map((channel) => {
                 if (channel.active && channel.slot_number != null) {
-                  return `<figure><span class="feed-transmitting feed-stale-badge">Waiting for video</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="lazy" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="Waiting for the first camera frame" /><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
+                  return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="lazy" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
                 }
-                return `<figure class="feed-empty"><div>${escapeHtml(channel.message || "No signal yet")}</div><figcaption>${escapeHtml(nvr.name)} · channel ${channel.channel}</figcaption></figure>`;
+                return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
               })
               .join("")
-          : `<figure class="feed-empty"><div>Remove and re-add this NVR to reconnect it</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
-        return `<section class="acc-block"><h3>${escapeHtml(nvr.name)} <small class="muted">(${channels.length || nvr.channels || 0} channels)</small></h3><div class="live-preview">${tiles}</div></section>`;
+          : `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
+        return `<section class="acc-block"><h3>${escapeHtml(nvr.name)} <small class="muted">(${channels.length || nvr.channels || 0} ${escapeHtml(t("table.channels"))})</small></h3><div class="live-preview">${tiles}</div></section>`;
       })
       .join("");
     els.moduleContent.innerHTML = `
-      <p class="chart-note">Live transmission at ${escapeHtml((QUALITY_OPTIONS.find((option) => option.id === config.quality) || QUALITY_OPTIONS[2]).label)} quality. This view is not recording continuous video.</p>
+      <p class="chart-note">${escapeHtml(t("feed.live_note", { quality: t(`quality.${(QUALITY_OPTIONS.find((option) => option.id === config.quality) || QUALITY_OPTIONS[2]).id}.label`) }))}</p>
       ${sections}
     `;
     return;
   }
 
   if (menu.id === "ai") {
-    els.moduleContent.innerHTML = `<p class="empty">Loading AI catalog…</p>`;
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("ai.loading"))}</p>`;
     void renderCatalogEnrollment(els.moduleContent);
     return;
   }
 
   if (menu.id === "dimension") {
-    els.moduleContent.innerHTML = `<p class="empty">Loading 3D recognition results…</p>`;
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("dimension.loading"))}</p>`;
     void renderCatalogDimensions(els.moduleContent);
     return;
   }
@@ -2168,9 +2611,9 @@ function escapeAttr(value) {
 }
 
 const DEVICE_TYPE_LABELS = {
-  nvr_or_dvr: "NVR / DVR",
-  ip_camera: "IP camera",
-  unknown: "Unknown device",
+  nvr_or_dvr: "device_type.nvr",
+  ip_camera: "device_type.camera",
+  unknown: "device_type.unknown",
 };
 
 function discoveryConnectFormHtml(isNvr) {
@@ -2179,19 +2622,19 @@ function discoveryConnectFormHtml(isNvr) {
   // actually needs a password - so we never hide the fields behind it. The
   // sign-in hint just clarifies why they matter for this service.
   const authHint = discoveryState.selectedRequiresAuth
-    ? '<p class="discovery-auth-hint">This service asked for sign-in - enter the device credentials.</p>'
+    ? `<p class="discovery-auth-hint">${escapeHtml(t("discovery.auth_hint"))}</p>`
     : "";
   return `
     ${authHint}
     <div class="discovery-connect">
-      <input placeholder="Name this device (e.g. Warehouse North)" maxlength="60" autocomplete="off" data-discovery-name />
-      <input placeholder="Username (optional)" autocomplete="off" data-discovery-username />
-      <input type="password" placeholder="Password (optional)" autocomplete="new-password" data-discovery-password />
+      <input placeholder="${escapeAttr(t("discovery.name_placeholder"))}" maxlength="60" autocomplete="off" data-discovery-name />
+      <input placeholder="${escapeAttr(t("discovery.username_placeholder"))}" autocomplete="off" data-discovery-username />
+      <input type="password" placeholder="${escapeAttr(t("discovery.password_placeholder"))}" autocomplete="new-password" data-discovery-password />
       ${isNvr
-        ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" data-discovery-channels aria-label="Channels to connect" title="How many channels to connect" />`
+        ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" data-discovery-channels aria-label="${escapeAttr(t("discovery.channels_label"))}" title="${escapeAttr(t("discovery.channels_label"))}" />`
         : ""}
       <button type="button" data-discovery-connect ${discoveryState.connecting ? "disabled" : ""}>
-        ${discoveryState.connecting ? "Connecting…" : "Connect"}
+        ${escapeHtml(discoveryState.connecting ? t("actions.connecting") : t("actions.connect"))}
       </button>
     </div>
   `;
@@ -2201,7 +2644,7 @@ function discoveryResultsHtml(result) {
   const services = result.services || [];
   const vendor = result.fingerprint?.vendor;
   const isNvr = result.fingerprint?.device_type === "nvr_or_dvr";
-  const typeLabel = DEVICE_TYPE_LABELS[result.fingerprint?.device_type] || "Device";
+  const typeLabel = t(DEVICE_TYPE_LABELS[result.fingerprint?.device_type] || "device_type.device");
   const serviceButtons = services
     .map((svc) => {
       const protocol = String(svc.protocol || "").toLowerCase();
@@ -2209,10 +2652,10 @@ function discoveryResultsHtml(result) {
         discoveryState.selectedPort === svc.port && discoveryState.selectedProtocol === protocol;
       const badge =
         svc.status === "available"
-          ? "Available"
+          ? t("discovery.available")
           : svc.status === "requires_auth"
-            ? "Needs sign-in"
-            : "Unreachable";
+            ? t("discovery.needs_signin")
+            : t("discovery.unreachable");
       return `
         <button type="button" class="discovery-service ${selected ? "selected" : ""} ${svc.status}"
                 data-discovery-service data-port="${svc.port}" data-protocol="${escapeAttr(protocol)}"
@@ -2227,9 +2670,9 @@ function discoveryResultsHtml(result) {
     .join("");
   return `
     <div class="discovery-device">
-      <p class="cc-cred"><em>Discovered:</em> ${escapeHtml(typeLabel)}${vendor ? ` · ${escapeHtml(vendor)}` : ""}</p>
-      <p class="chart-note">Select a service to connect to:</p>
-      <div class="discovery-services">${serviceButtons || '<p class="empty">No connectable services were exposed.</p>'}</div>
+      <p class="cc-cred"><em>${escapeHtml(t("discovery.discovered"))}</em> ${escapeHtml(typeLabel)}${vendor ? ` · ${escapeHtml(vendor)}` : ""}</p>
+      <p class="chart-note">${escapeHtml(t("discovery.select_service"))}</p>
+      <div class="discovery-services">${serviceButtons || `<p class="empty">${escapeHtml(t("discovery.connectable_empty"))}</p>`}</div>
       ${discoveryState.selectedPort ? discoveryConnectFormHtml(isNvr) : ""}
     </div>
   `;
@@ -2240,13 +2683,13 @@ function renderDiscoveryPanel(container) {
   const result = st.result;
   container.innerHTML = `
     <form class="discovery-search" data-discovery-search>
-      <input name="host" value="${escapeAttr(st.host)}" placeholder="Device IP or hostname (e.g. 87.192.242.82)"
+      <input name="host" value="${escapeAttr(st.host)}" placeholder="${escapeAttr(t("discovery.host_placeholder"))}"
              required maxlength="255" autocomplete="off" ${st.scanning ? "disabled" : ""} />
-      <button type="submit" ${st.scanning ? "disabled" : ""}>${st.scanning ? "Searching…" : "Search"}</button>
+      <button type="submit" ${st.scanning ? "disabled" : ""}>${escapeHtml(st.scanning ? t("discovery.searching") : t("discovery.search"))}</button>
     </form>
-    ${st.scanning ? `<p class="discovery-progress">Scanning ${escapeHtml(st.host)} for available services…</p>` : ""}
+    ${st.scanning ? `<p class="discovery-progress">${escapeHtml(t("discovery.progress", { host: st.host }))}</p>` : ""}
     ${st.error ? `<p class="nvr-status bad">${escapeHtml(st.error)}</p>` : ""}
-    ${result && !result.reachable && !st.scanning ? `<p class="nvr-status bad">${escapeHtml(result.error || "No services found on this device.")}</p>` : ""}
+    ${result && !result.reachable && !st.scanning ? `<p class="nvr-status bad">${escapeHtml(result.error || t("discovery.no_services"))}</p>` : ""}
     ${result && result.reachable ? discoveryResultsHtml(result) : ""}
   `;
 
@@ -2561,11 +3004,11 @@ function renderAccountView({ company, role, missing, error }) {
   els.pageTitle.textContent = "User Dashboard";
   els.companiesSection.hidden = true;
   els.summaryGrid.hidden = true;
-  els.activeModuleEyebrow.textContent = "User module";
+  els.activeModuleEyebrow.textContent = t("user.module");
 
   const summary = state.overview?.summary || {};
   const running = Boolean(summary.detector_running);
-  els.detectorState.textContent = running ? "Detector running" : "Detector stopped";
+  els.detectorState.textContent = running ? t("status.detector_running") : t("status.detector_stopped");
   els.detectorState.dataset.state = running ? "good" : "bad";
 
   if (missing) {
@@ -2592,9 +3035,9 @@ function renderAccountView({ company, role, missing, error }) {
   accountState = { company, role };
   if (!accountModule && role.access?.camera) accountModule = "feed";
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good Morning" : hour < 18 ? "Good Afternoon" : "Good Evening";
-  els.pageTitle.textContent = `${greeting}, ${role.name} 👋`;
-  els.scopeLine.textContent = `${company.name} • login: ${role.login}`;
+  const greetingKey = hour < 12 ? "user.good_morning" : hour < 18 ? "user.good_afternoon" : "user.good_evening";
+  els.pageTitle.textContent = t(greetingKey, { name: role.name });
+  els.scopeLine.textContent = t("user.scope_line", { company: company.name, login: role.login });
   renderHeaderProfile(role.login);
   renderSideProfile(role.login, `${role.name} @ ${company.name}`);
   renderAccountModule();
@@ -3214,6 +3657,7 @@ async function loadLiveWarehouseActivity(container) {
 }
 
 async function load() {
+  setLanguageToggleChrome();
   const [session, overview, streamsHealth] = await Promise.all([
     api("/api/v2/rbac/me"),
     api("/api/v2/head/overview"),
@@ -3227,7 +3671,7 @@ async function load() {
     renderAccountView(account);
     return;
   }
-  els.pageTitle.textContent = "Head Dashboard";
+  els.pageTitle.textContent = t("header.head_dashboard");
   els.companiesSection.hidden = false;
   renderNavigation();
   renderSummary();
@@ -3329,6 +3773,7 @@ function applyTheme(theme) {
 }
 
 applyTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
+setLanguageToggleChrome();
 
 els.themeToggle.addEventListener("click", () => {
   const next = currentTheme() === "dark" ? "light" : "dark";
@@ -3351,9 +3796,16 @@ els.sidebarToggle.addEventListener("click", () => {
   localStorage.setItem("ai_vision_v2_sidebar", collapsed ? "collapsed" : "open");
 });
 
+els.languageToggle.addEventListener("click", () => {
+  const next = currentLanguage() === "ru" ? "en" : "ru";
+  localStorage.setItem(LANGUAGE_KEY, next);
+  rerenderCurrentViewForLanguage();
+  toast(t("toast.language_updated"));
+});
+
 els.refreshBtn.addEventListener("click", () => {
   loadDashboard().then((loaded) => {
-    if (loaded) toast("Dashboard V2 refreshed.");
+    if (loaded) toast(t("toast.dashboard_refreshed"));
   });
 });
 

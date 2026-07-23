@@ -395,8 +395,8 @@ def test_discovery_connect_form_always_offers_optional_credentials():
     source = _app_js()
     # RTSP auth probing is best-effort; an "Available" port can still require
     # credentials for the real channel profile.
-    assert 'placeholder="Username (optional)"' in source
-    assert 'placeholder="Password (optional)"' in source
+    assert 'placeholder="${escapeAttr(t("discovery.username_placeholder"))}"' in source
+    assert 'placeholder="${escapeAttr(t("discovery.password_placeholder"))}"' in source
     assert "discoveryState.selectedRequiresAuth" in source
 
 

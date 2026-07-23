@@ -113,12 +113,25 @@ def test_camera_info_page_lists_connected_camera_models():
     assert 'if (menu.id === "camera_info")' in source
     assert 'accountsApi("/api/v2/devices")' in source
     assert "function renderCameraInfo(container)" in source
-    assert "<th>Camera</th>" in source
-    assert "<th>Model</th>" in source
-    assert "<th>AI slot</th>" in source
+    assert 't("table.camera")' in source
+    assert 't("table.model")' in source
+    assert 't("table.ai_slot")' in source
     assert "Waiting for slot" in source
     assert "Not assigned" in source
     assert "response.device?.model" in source
+
+
+def test_dashboard_has_ru_eng_language_toggle():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="languageToggle"' in html
+    assert "LANGUAGE_KEY" in source
+    assert "function setLanguageToggleChrome()" in source
+    assert "function rerenderCurrentViewForLanguage()" in source
+    assert '"menu.camera_info": "Инфо камер"' in source
+    assert ".language-toggle" in styles
 
 
 def test_camera_control_rows_use_stream_health_for_live_slots():
@@ -128,7 +141,7 @@ def test_camera_control_rows_use_stream_health_for_live_slots():
     assert "function streamStatusBySlot()" in source
     assert 'const isLive = stream?.status === "online";' in source
     assert 'const label = isLive' in source
-    assert '? "Live"' in source
+    assert '? t("status.live")' in source
 
 
 def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
@@ -142,8 +155,8 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=55" in html
-    assert "/dashboard-v2/assets/styles.css?v=40" in html
+    assert "/dashboard-v2/assets/app.js?v=56" in html
+    assert "/dashboard-v2/assets/styles.css?v=41" in html
 
 
 def test_dashboard_startup_retries_and_exposes_a_visible_failure_state():
