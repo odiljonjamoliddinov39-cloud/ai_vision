@@ -4216,6 +4216,7 @@ async def live_mjpeg(slot: int | None = None, camera: str | None = None):
     latest_paths = _live_feed_paths(slot=slot, camera=camera)
 
     async def frame_generator():
+        last_sent: bytes | None = None
         while True:
             data = _get_stream_manager().latest_frame_bytes(slot_number=slot, name=camera)
             if data is None:
@@ -4225,7 +4226,10 @@ async def live_mjpeg(slot: int | None = None, camera: str | None = None):
                         data = latest.read_bytes()
                     except Exception:
                         data = None
-            if data is not None:
+            # Only push a part when the frame actually changed, so the MJPEG
+            # stream tracks the Stream Manager's real frame rate instead of
+            # re-transmitting the same JPEG on every poll.
+            if data is not None and data is not last_sent and data != last_sent:
                 try:
                     header = (
                         f"--{boundary}\r\n"
@@ -4233,10 +4237,13 @@ async def live_mjpeg(slot: int | None = None, camera: str | None = None):
                         f"Content-Length: {len(data)}\r\n\r\n"
                     ).encode("utf-8")
                     yield header + data + b"\r\n"
+                    last_sent = data
                 except Exception:
                     # ignore read errors
                     pass
-            await asyncio.sleep(0.05)
+            # Poll faster than the source frame rate so new frames are forwarded
+            # with minimal latency (Stream Manager publishes up to ~15 fps).
+            await asyncio.sleep(0.03)
 
     return StreamingResponse(frame_generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
 
