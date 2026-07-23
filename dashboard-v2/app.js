@@ -1425,31 +1425,110 @@ function catalogCameraTotalsTableHtml(results) {
   `;
 }
 
+const RESULT_ANALYTICS_PERIODS = [
+  { id: "latest", label: "Latest by camera" },
+  { id: "hour", label: "Last hour" },
+  { id: "day", label: "Today" },
+  { id: "week", label: "This week" },
+  { id: "month", label: "This month" },
+  { id: "all", label: "All results" },
+];
+
+const RESULT_ANALYTICS_LIMITS = [50, 100, 250, 500];
+
 function resultAnalyticsRows(results) {
-  return (results || []).flatMap((result) => {
-    const cameraCounts = Array.isArray(result?.camera_counts) ? result.camera_counts : [];
-    const entries = cameraCounts.some((entry) => Number(entry.quantity) > 0)
-      ? cameraCounts.filter((entry) => Number(entry.quantity) > 0)
-      : [{ camera_name: "Unknown camera", quantity: Number(result.quantity || 0) }];
-    return entries.map((entry) => {
-      const parts = splitCatalogCameraName(entry.camera_name);
-      return {
-        runId: result.run_id,
-        completedAt: result.completed_at || result.created_at,
-        nvr: parts.nvr,
-        camera: parts.camera,
-        itemName: result.item_name,
-        quantity: Number(entry.quantity || 0),
-        confidence: Number(result.confidence || 0),
-        dimensions: catalogDimensions(result),
-        status: result.status || "completed",
-      };
-    });
-  });
+  return (results || [])
+    .flatMap((result) => {
+      const cameraCounts = Array.isArray(result?.camera_counts) ? result.camera_counts : [];
+      const entries = cameraCounts.some((entry) => Number(entry.quantity) > 0)
+        ? cameraCounts.filter((entry) => Number(entry.quantity) > 0)
+        : [{ camera_name: "Unknown camera", quantity: Number(result.quantity || 0) }];
+      return entries.map((entry) => {
+        const parts = splitCatalogCameraName(entry.camera_name);
+        const completedAt = result.completed_at || result.created_at;
+        const parsedTime = new Date(completedAt);
+        return {
+          runId: result.run_id,
+          completedAt,
+          timeMs: Number.isNaN(parsedTime.getTime()) ? 0 : parsedTime.getTime(),
+          nvr: parts.nvr,
+          camera: parts.camera,
+          itemName: result.item_name,
+          quantity: Number(entry.quantity || 0),
+          confidence: Number(result.confidence || 0),
+          dimensions: catalogDimensions(result),
+          status: result.status || "completed",
+        };
+      });
+    })
+    .sort((a, b) => b.timeMs - a.timeMs || b.quantity - a.quantity || a.camera.localeCompare(b.camera));
 }
 
-function resultAnalyticsTableHtml(results) {
-  const rows = resultAnalyticsRows(results);
+function latestResultRowsByCamera(rows) {
+  const latestTimeByCamera = new Map();
+  for (const row of rows || []) {
+    const key = `${row.nvr}/${row.camera}`.toLowerCase();
+    const current = latestTimeByCamera.get(key) || 0;
+    if (row.timeMs > current) latestTimeByCamera.set(key, row.timeMs);
+  }
+  return (rows || [])
+    .filter((row) => row.timeMs === latestTimeByCamera.get(`${row.nvr}/${row.camera}`.toLowerCase()))
+    .sort((a, b) => b.timeMs - a.timeMs || b.quantity - a.quantity || a.camera.localeCompare(b.camera));
+}
+
+function resultAnalyticsFilterRows(rows, filters = {}) {
+  const period = filters.period || "latest";
+  const limit = Number(filters.limit || 100);
+  const itemNeedle = String(filters.item || "").trim().toLowerCase();
+  const cameraNeedle = String(filters.camera || "").trim().toLowerCase();
+  let visibleRows = period === "latest" ? latestResultRowsByCamera(rows) : [...(rows || [])];
+  if (period !== "latest" && period !== "all") {
+    const now = Date.now();
+    const ranges = {
+      hour: 60 * 60 * 1000,
+      day: 24 * 60 * 60 * 1000,
+      week: 7 * 24 * 60 * 60 * 1000,
+      month: 30 * 24 * 60 * 60 * 1000,
+    };
+    const cutoff = now - (ranges[period] || ranges.day);
+    visibleRows = visibleRows.filter((row) => row.timeMs >= cutoff);
+  }
+  if (itemNeedle) {
+    visibleRows = visibleRows.filter((row) => String(row.itemName || "").toLowerCase().includes(itemNeedle));
+  }
+  if (cameraNeedle) {
+    visibleRows = visibleRows.filter((row) =>
+      `${row.nvr} ${row.camera}`.toLowerCase().includes(cameraNeedle)
+    );
+  }
+  return visibleRows.slice(0, Math.max(1, Math.min(limit, 500)));
+}
+
+function resultAnalyticsFilterControlsHtml(filters, totalRows, visibleRows) {
+  return `
+    <form class="result-analytics-filters" data-result-analytics-filters>
+      <select name="period" aria-label="Result period">
+        ${RESULT_ANALYTICS_PERIODS.map(
+          (period) =>
+            `<option value="${period.id}" ${period.id === filters.period ? "selected" : ""}>${escapeHtml(period.label)}</option>`
+        ).join("")}
+      </select>
+      <select name="limit" aria-label="Rows limit">
+        ${RESULT_ANALYTICS_LIMITS.map(
+          (limit) =>
+            `<option value="${limit}" ${Number(filters.limit) === limit ? "selected" : ""}>Show ${limit}</option>`
+        ).join("")}
+      </select>
+      <input name="item" value="${escapeAttr(filters.item || "")}" placeholder="Item" autocomplete="off" />
+      <input name="camera" value="${escapeAttr(filters.camera || "")}" placeholder="NVR or camera" autocomplete="off" />
+      <button type="submit" class="export-button">Apply</button>
+      <button type="button" class="export-button muted-button" data-clear-result-filters>Clear</button>
+      <strong class="result-analytics-count">Shown ${visibleRows.length.toLocaleString()} of ${totalRows.toLocaleString()}</strong>
+    </form>
+  `;
+}
+
+function resultAnalyticsTableHtml(rows) {
   if (!rows.length) return `<p class="empty">No recognition results are saved yet. Run AI Check-in first.</p>`;
   return `
     <div class="detected-table-wrap">
@@ -1487,11 +1566,10 @@ function resultAnalyticsTableHtml(results) {
   `;
 }
 
-function resultAnalyticsSummaryHtml(results, schedule) {
-  const rows = resultAnalyticsRows(results);
+function resultAnalyticsSummaryHtml(rows, schedule) {
   const totalObjects = rows.reduce((sum, row) => sum + row.quantity, 0);
   const cameras = new Set(rows.map((row) => `${row.nvr}/${row.camera}`));
-  const runs = new Set((results || []).map((result) => result.run_id).filter(Boolean));
+  const runs = new Set((rows || []).map((row) => row.runId).filter(Boolean));
   return `
     <div class="result-analytics-summary">
       <article><span>Total objects</span><strong>${totalObjects.toLocaleString()}</strong></article>
@@ -1502,30 +1580,51 @@ function resultAnalyticsSummaryHtml(results, schedule) {
   `;
 }
 
+function renderResultAnalyticsBody(container, payload, filters = { period: "latest", limit: 100, item: "", camera: "" }) {
+  const rows = resultAnalyticsRows(payload.results);
+  const visibleRows = resultAnalyticsFilterRows(rows, filters);
+  container.innerHTML = `
+    <section class="detected-list result-analytics">
+      <header class="detected-list-head">
+        <div>
+          <h3>Result Analytics</h3>
+          <p>Recognition results by NVR, camera and item.</p>
+        </div>
+        <div class="detected-list-actions">
+          <button type="button" class="export-button" data-refresh-result-analytics>Refresh</button>
+          <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
+        </div>
+      </header>
+      ${resultAnalyticsFilterControlsHtml(filters, rows.length, visibleRows)}
+      ${resultAnalyticsSummaryHtml(visibleRows, payload.schedule)}
+      ${resultAnalyticsTableHtml(visibleRows)}
+    </section>
+  `;
+  container.querySelector("[data-result-analytics-filters]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const nextFilters = {
+      period: form.period.value,
+      limit: Number(form.limit.value),
+      item: form.item.value,
+      camera: form.camera.value,
+    };
+    renderResultAnalyticsBody(container, payload, nextFilters);
+  });
+  container.querySelector("[data-clear-result-filters]")?.addEventListener("click", () => {
+    renderResultAnalyticsBody(container, payload, { period: "latest", limit: 100, item: "", camera: "" });
+  });
+  container.querySelector("[data-refresh-result-analytics]")?.addEventListener("click", () => {
+    container.innerHTML = `<p class="empty">Loading recognition results...</p>`;
+    void renderResultAnalytics(container);
+  });
+}
+
 async function renderResultAnalytics(container) {
   try {
-    const payload = await catalogRequest(catalogApiPath("/api/catalog/results/history?limit=250"));
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/results/history?limit=500"));
     if (!container.isConnected || accountModule !== "result_analytics") return;
-    container.innerHTML = `
-      <section class="detected-list result-analytics">
-        <header class="detected-list-head">
-          <div>
-            <h3>Result Analytics</h3>
-            <p>Saved recognition results by NVR, camera and item.</p>
-          </div>
-          <div class="detected-list-actions">
-            <button type="button" class="export-button" data-refresh-result-analytics>Refresh</button>
-            <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
-          </div>
-        </header>
-        ${resultAnalyticsSummaryHtml(payload.results, payload.schedule)}
-        ${resultAnalyticsTableHtml(payload.results)}
-      </section>
-    `;
-    container.querySelector("[data-refresh-result-analytics]")?.addEventListener("click", () => {
-      container.innerHTML = `<p class="empty">Loading recognition results...</p>`;
-      void renderResultAnalytics(container);
-    });
+    renderResultAnalyticsBody(container, payload);
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }

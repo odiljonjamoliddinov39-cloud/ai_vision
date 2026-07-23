@@ -763,14 +763,23 @@ def test_dashboard_has_result_analytics_page_for_recognition_history():
 
     assert 'label: "Result Analytics"' in source
     assert 'id: "result_analytics"' in source
-    assert 'catalogApiPath("/api/catalog/results/history?limit=250")' in source
+    assert 'catalogApiPath("/api/catalog/results/history?limit=500")' in source
     assert "function renderResultAnalytics(container)" in source
+    assert 'period: "latest"' in source
+    assert "function latestResultRowsByCamera(rows)" in source
+    assert "function resultAnalyticsFilterControlsHtml(filters, totalRows, visibleRows)" in source
+    assert "Latest by camera" in source
+    assert "Last hour" in source
+    assert "This week" in source
+    assert "All results" in source
     assert "Recognition time" in source
     assert "NVR" in source
     assert "Camera" in source
     assert "Objects" in source
+    assert "Shown ${visibleRows.length.toLocaleString()} of ${totalRows.toLocaleString()}" in source
     assert ".result-analytics-summary" in styles
     assert ".result-analytics-table" in styles
+    assert ".result-analytics-filters" in styles
 
 
 def test_dashboard_ai_check_in_groups_objects_by_camera():
