@@ -689,12 +689,16 @@ def test_dashboard_catalog_results_show_camera_object_breakdown():
     styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
 
     assert "function catalogCameraCountsHtml(result)" in source
-    assert "function catalogCameraTotalsHtml(results)" in source
-    assert "data-catalog-camera-summary" in source
+    assert "function catalogCameraTotalsTableHtml(results)" in source
+    assert "function splitCatalogCameraName(cameraName)" in source
+    assert "data-catalog-camera-breakdown" in source
+    assert "Recognized objects by NVR and camera" in source
+    assert "Objects recognized" in source
     assert "Camera / objects" in source
     assert "camera-count-pill" in source
     assert ".camera-count-list" in styles
-    assert ".catalog-camera-summary" in styles
+    assert ".catalog-camera-breakdown" in styles
+    assert ".camera-breakdown-table" in styles
 
 
 def test_dashboard_ai_check_in_groups_objects_by_camera():

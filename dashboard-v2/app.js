@@ -1401,22 +1401,40 @@ function catalogCameraTotals(results) {
     .sort((a, b) => b.quantity - a.quantity || a.cameraName.localeCompare(b.cameraName));
 }
 
-function catalogCameraTotalsHtml(results) {
+function splitCatalogCameraName(cameraName) {
+  const value = String(cameraName || "Unknown camera").trim() || "Unknown camera";
+  const match = value.match(/^(.*?)(?:\s+[-·]\s+|\s+)(Camera\s+\d+)$/i);
+  if (!match) return { nvr: "Unknown NVR", camera: value };
+  const nvr = match[1].trim() || "Unknown NVR";
+  const camera = match[2].trim();
+  return { nvr, camera };
+}
+
+function catalogCameraTotalsTableHtml(results) {
   const totals = catalogCameraTotals(results);
   if (!totals.length) return "";
+  const rows = totals
+    .map((entry) => {
+      const parts = splitCatalogCameraName(entry.cameraName);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(parts.nvr)}</strong></td>
+          <td>${escapeHtml(parts.camera)}</td>
+          <td class="count-cell">${entry.quantity.toLocaleString()}</td>
+        </tr>
+      `;
+    })
+    .join("");
   return `
-    <div class="catalog-camera-summary" aria-label="Recognized catalog objects by camera">
-      ${totals
-        .map(
-          (entry) => `
-            <div class="camera-total-row">
-              <span>${escapeHtml(entry.cameraName)}</span>
-              <strong>${entry.quantity.toLocaleString()} objects</strong>
-            </div>
-          `
-        )
-        .join("")}
-    </div>
+    <section class="catalog-camera-breakdown">
+      <h4>Recognized objects by NVR and camera</h4>
+      <div class="detected-table-wrap">
+        <table class="detected-table camera-breakdown-table">
+          <thead><tr><th>NVR</th><th>Camera</th><th>Objects recognized</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
@@ -1490,8 +1508,8 @@ async function refreshCatalogResultsTable(container, results = []) {
   const table = container.querySelector("[data-catalog-table]");
   if (!table) return;
   if (!container.isConnected) return;
-  const summary = container.querySelector("[data-catalog-camera-summary]");
-  if (summary) summary.innerHTML = catalogCameraTotalsHtml(results);
+  const breakdown = container.querySelector("[data-catalog-camera-breakdown]");
+  if (breakdown) breakdown.innerHTML = catalogCameraTotalsTableHtml(results);
   table.innerHTML = catalogResultsTableHtml(results);
 }
 
@@ -1511,8 +1529,8 @@ async function renderCatalogResults(container) {
             <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
           </div>
         </header>
-        <div data-catalog-camera-summary>${catalogCameraTotalsHtml(payload.results)}</div>
         <div data-catalog-table>${catalogResultsTableHtml(payload.results)}</div>
+        <div data-catalog-camera-breakdown>${catalogCameraTotalsTableHtml(payload.results)}</div>
         <p class="catalog-next-run">Next automatic recognition: ${escapeHtml(formatCatalogTime(payload.schedule.next_run_at))}</p>
       </section>
     `;

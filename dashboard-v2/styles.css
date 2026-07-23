@@ -1525,17 +1525,10 @@ input {
   font-weight: 700;
 }
 
-.catalog-camera-summary,
 .camera-total-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
-}
-
-.catalog-camera-summary {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
 }
 
 .camera-total-list {
@@ -1568,6 +1561,26 @@ input {
   flex: 0 0 auto;
   color: var(--primary);
   font-size: 13px;
+}
+
+.catalog-camera-breakdown {
+  padding: 18px 20px 6px;
+}
+
+.catalog-camera-breakdown h4 {
+  margin: 0 0 10px;
+  color: var(--heading);
+  font-size: 14px;
+}
+
+.catalog-camera-breakdown .detected-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.camera-breakdown-table td:last-child,
+.camera-breakdown-table th:last-child {
+  text-align: right;
 }
 
 .catalog-next-run {
