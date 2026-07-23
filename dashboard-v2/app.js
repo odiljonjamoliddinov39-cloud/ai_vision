@@ -1592,6 +1592,7 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
         </div>
         <div class="detected-list-actions">
           <button type="button" class="export-button" data-refresh-result-analytics>Refresh</button>
+          <button type="button" class="export-button" data-run-result-recognition>Run recognition now</button>
           <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
         </div>
       </header>
@@ -1618,6 +1619,26 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
     container.innerHTML = `<p class="empty">Loading recognition results...</p>`;
     void renderResultAnalytics(container);
   });
+  container.querySelector("[data-run-result-recognition]")?.addEventListener("click", (event) => {
+    void runResultAnalyticsRecognition(container, event.currentTarget, filters);
+  });
+}
+
+async function runResultAnalyticsRecognition(container, button, filters) {
+  button.disabled = true;
+  button.textContent = "Recognizing...";
+  try {
+    await catalogRequest(catalogApiPath("/api/catalog/recognition/run"), { method: "POST" });
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/results/history?limit=500"));
+    if (container.isConnected && accountModule === "result_analytics") {
+      renderResultAnalyticsBody(container, payload, filters);
+    }
+    toast("Recognition complete.");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Run recognition now";
+    toast(error.message);
+  }
 }
 
 async function renderResultAnalytics(container) {

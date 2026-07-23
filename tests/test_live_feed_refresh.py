@@ -122,7 +122,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=51" in html
+    assert "/dashboard-v2/assets/app.js?v=52" in html
     assert "/dashboard-v2/assets/styles.css?v=39" in html
 
 

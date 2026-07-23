@@ -765,6 +765,10 @@ def test_dashboard_has_result_analytics_page_for_recognition_history():
     assert 'id: "result_analytics"' in source
     assert 'catalogApiPath("/api/catalog/results/history?limit=500")' in source
     assert "function renderResultAnalytics(container)" in source
+    assert "function runResultAnalyticsRecognition(container, button, filters)" in source
+    assert "data-run-result-recognition" in source
+    assert 'catalogApiPath("/api/catalog/recognition/run")' in source
+    assert "Run recognition now" in source
     assert 'period: "latest"' in source
     assert "function latestResultRowsByCamera(rows)" in source
     assert "function resultAnalyticsFilterControlsHtml(filters, totalRows, visibleRows)" in source
