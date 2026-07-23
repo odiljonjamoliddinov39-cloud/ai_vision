@@ -43,3 +43,12 @@ Recommended minimum for the first useful model:
 
 Dataset images and label files are ignored by git on purpose. Keep them in
 Codespace, external storage, or a dataset tool; commit only this template.
+
+To collect draft samples from the running detector:
+
+```bash
+python scripts/collect_yolo_samples.py --split train
+python scripts/collect_yolo_samples.py --split val
+```
+
+Always review generated labels before training.

@@ -24,6 +24,18 @@ Recommended first dataset:
 - single boxes, stacks, far views, close views
 - different lighting and occlusion
 
+You can bootstrap images and draft YOLO labels from the running detector:
+
+```bash
+python scripts/collect_yolo_samples.py --split train
+python scripts/collect_yolo_samples.py --split val
+```
+
+The collector reads `logs/detection_health.json`, copies the latest camera
+frames from `snapshots/`, and writes labels for detections that look like boxes.
+Review these labels before final training; they are useful drafts, not a
+replacement for human annotation.
+
 ## 2. Label Boxes
 
 Create matching label files:
