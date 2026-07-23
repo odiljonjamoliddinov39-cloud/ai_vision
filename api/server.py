@@ -3912,6 +3912,17 @@ def catalog_results(scope_id: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/catalog/results/history")
+def catalog_results_history(scope_id: str, limit: int = 200) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    db = _get_catalog_db()
+    return {
+        "scope_id": scope,
+        "results": db.result_history(scope, limit=limit),
+        "schedule": _catalog_schedule(scope),
+    }
+
+
 @app.post("/api/catalog/recognition/run")
 async def run_catalog_recognition(scope_id: str) -> dict[str, Any]:
     global _catalog_run_lock

@@ -707,6 +707,39 @@ def test_catalog_results_include_camera_object_breakdown(tmp_path, monkeypatch):
     ]
 
 
+def test_catalog_result_history_returns_saved_recognition_rows(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    run_id = db.start_run("warehouse-a", interval_hours=12, camera_count=2)
+    db.add_result(
+        run_id,
+        item["id"],
+        "Baget Box",
+        4,
+        0.76,
+        dimensions_m=(0.5, 0.7, 0.3),
+        measurement_method="monocular_ground_plane",
+        camera_counts=[
+            {"camera_name": "NVR Main Camera 2", "quantity": 3},
+            {"camera_name": "NVR Main Camera 9", "quantity": 1},
+        ],
+    )
+    db.complete_run(run_id)
+    monkeypatch.setattr(server, "_catalog_db", db)
+
+    payload = server.catalog_results_history("warehouse-a", limit=20)
+
+    assert payload["scope_id"] == "warehouse-a"
+    assert payload["results"][0]["run_id"] == run_id
+    assert payload["results"][0]["item_name"] == "Baget Box"
+    assert payload["results"][0]["quantity"] == 4
+    assert payload["results"][0]["camera_counts"] == [
+        {"camera_name": "NVR Main Camera 2", "quantity": 3},
+        {"camera_name": "NVR Main Camera 9", "quantity": 1},
+    ]
+    assert payload["results"][0]["completed_at"]
+
+
 def test_dashboard_catalog_results_show_camera_object_breakdown():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
@@ -722,6 +755,22 @@ def test_dashboard_catalog_results_show_camera_object_breakdown():
     assert ".camera-count-list" in styles
     assert ".catalog-camera-breakdown" in styles
     assert ".camera-breakdown-table" in styles
+
+
+def test_dashboard_has_result_analytics_page_for_recognition_history():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'label: "Result Analytics"' in source
+    assert 'id: "result_analytics"' in source
+    assert 'catalogApiPath("/api/catalog/results/history?limit=250")' in source
+    assert "function renderResultAnalytics(container)" in source
+    assert "Recognition time" in source
+    assert "NVR" in source
+    assert "Camera" in source
+    assert "Objects" in source
+    assert ".result-analytics-summary" in styles
+    assert ".result-analytics-table" in styles
 
 
 def test_dashboard_ai_check_in_groups_objects_by_camera():

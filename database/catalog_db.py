@@ -316,6 +316,28 @@ class CatalogDB:
             rows = conn.execute(self._sql(query), (latest["id"],)).fetchall()
         return [self._result_payload(row) for row in rows]
 
+    def result_history(self, scope_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        query = """
+            SELECT r.id, r.run_id, r.item_id, r.item_name, r.quantity, r.confidence,
+                   r.width_m, r.height_m, r.depth_m, r.measurement_method, r.camera_counts,
+                   r.created_at, run.scope_id, run.started_at, run.completed_at,
+                   run.interval_hours, run.camera_count, run.status
+            FROM catalog_recognition_results r
+            JOIN catalog_recognition_runs run ON run.id = r.run_id
+            WHERE run.scope_id = ?
+            ORDER BY COALESCE(run.completed_at, run.started_at) DESC, r.quantity DESC, r.item_name
+            LIMIT ?
+        """
+        with self.db.connect() as conn:
+            rows = conn.execute(self._sql(query), (scope_id, max(1, min(int(limit), 1000)))).fetchall()
+        history = []
+        for row in rows:
+            payload = self._result_payload(row)
+            for key in ("created_at", "started_at", "completed_at"):
+                payload[key] = self._iso_timestamp(payload.get(key))
+            history.append(payload)
+        return history
+
     def _item_payload(self, row) -> dict[str, Any]:
         item = dict(row)
         item["active"] = bool(item.get("active"))

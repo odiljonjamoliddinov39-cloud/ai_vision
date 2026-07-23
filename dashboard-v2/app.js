@@ -268,6 +268,7 @@ const NAV_ICONS = {
   settings: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
   camera: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`,
   analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>`,
+  result_analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
   feed: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`,
   ai: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V4M8 4h8M9 12h.01M15 12h.01M9 16h6"/></svg>`,
   dimension: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></svg>`,
@@ -1271,6 +1272,7 @@ function accountMenus(role) {
   const menus = [];
   if (role.access?.camera) menus.push({ id: "camera", label: "Camera Control", sub: "NVR & vision quality" });
   if (role.access?.analytics) menus.push({ id: "analytics", label: "Analytics", sub: "Charts & trends" });
+  if (role.access?.analytics) menus.push({ id: "result_analytics", label: "Result Analytics", sub: "Recognition results" });
   if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
   menus.push({ id: "ai", label: "AI Check-in", sub: "Products to count" });
   menus.push({ id: "dimension", label: "3D Dimensioning", sub: "Item measurements" });
@@ -1421,6 +1423,112 @@ function catalogCameraTotalsTableHtml(results) {
       </div>
     </section>
   `;
+}
+
+function resultAnalyticsRows(results) {
+  return (results || []).flatMap((result) => {
+    const cameraCounts = Array.isArray(result?.camera_counts) ? result.camera_counts : [];
+    const entries = cameraCounts.some((entry) => Number(entry.quantity) > 0)
+      ? cameraCounts.filter((entry) => Number(entry.quantity) > 0)
+      : [{ camera_name: "Unknown camera", quantity: Number(result.quantity || 0) }];
+    return entries.map((entry) => {
+      const parts = splitCatalogCameraName(entry.camera_name);
+      return {
+        runId: result.run_id,
+        completedAt: result.completed_at || result.created_at,
+        nvr: parts.nvr,
+        camera: parts.camera,
+        itemName: result.item_name,
+        quantity: Number(entry.quantity || 0),
+        confidence: Number(result.confidence || 0),
+        dimensions: catalogDimensions(result),
+        status: result.status || "completed",
+      };
+    });
+  });
+}
+
+function resultAnalyticsTableHtml(results) {
+  const rows = resultAnalyticsRows(results);
+  if (!rows.length) return `<p class="empty">No recognition results are saved yet. Run AI Check-in first.</p>`;
+  return `
+    <div class="detected-table-wrap">
+      <table class="detected-table result-analytics-table">
+        <thead>
+          <tr>
+            <th>Recognition time</th>
+            <th>NVR</th>
+            <th>Camera</th>
+            <th>Item</th>
+            <th>Objects</th>
+            <th>Confidence</th>
+            <th>3D measurement</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+                <tr>
+                  <td>${escapeHtml(formatCatalogTime(row.completedAt))}</td>
+                  <td><strong>${escapeHtml(row.nvr)}</strong></td>
+                  <td>${escapeHtml(row.camera)}</td>
+                  <td>${escapeHtml(row.itemName)}</td>
+                  <td class="count-cell">${row.quantity.toLocaleString()}</td>
+                  <td>${Math.round(row.confidence * 100)}%</td>
+                  <td>${row.dimensions ? `${row.dimensions.w} x ${row.dimensions.h} x ${row.dimensions.d} cm` : "Pending"}</td>
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function resultAnalyticsSummaryHtml(results, schedule) {
+  const rows = resultAnalyticsRows(results);
+  const totalObjects = rows.reduce((sum, row) => sum + row.quantity, 0);
+  const cameras = new Set(rows.map((row) => `${row.nvr}/${row.camera}`));
+  const runs = new Set((results || []).map((result) => result.run_id).filter(Boolean));
+  return `
+    <div class="result-analytics-summary">
+      <article><span>Total objects</span><strong>${totalObjects.toLocaleString()}</strong></article>
+      <article><span>Cameras with results</span><strong>${cameras.size.toLocaleString()}</strong></article>
+      <article><span>Recognition runs</span><strong>${runs.size.toLocaleString()}</strong></article>
+      <article><span>Next run</span><strong>${escapeHtml(formatCatalogTime(schedule?.next_run_at))}</strong></article>
+    </div>
+  `;
+}
+
+async function renderResultAnalytics(container) {
+  try {
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/results/history?limit=250"));
+    if (!container.isConnected || accountModule !== "result_analytics") return;
+    container.innerHTML = `
+      <section class="detected-list result-analytics">
+        <header class="detected-list-head">
+          <div>
+            <h3>Result Analytics</h3>
+            <p>Saved recognition results by NVR, camera and item.</p>
+          </div>
+          <div class="detected-list-actions">
+            <button type="button" class="export-button" data-refresh-result-analytics>Refresh</button>
+            <a class="export-button" href="${API_BASE}${catalogApiPath("/api/catalog/results/export.xlsx")}">Export to Excel</a>
+          </div>
+        </header>
+        ${resultAnalyticsSummaryHtml(payload.results, payload.schedule)}
+        ${resultAnalyticsTableHtml(payload.results)}
+      </section>
+    `;
+    container.querySelector("[data-refresh-result-analytics]")?.addEventListener("click", () => {
+      container.innerHTML = `<p class="empty">Loading recognition results...</p>`;
+      void renderResultAnalytics(container);
+    });
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
 }
 
 async function renderCatalogEnrollment(container) {
@@ -1696,6 +1804,12 @@ function renderAccountModule() {
     els.moduleContent.innerHTML = `<div id="accCharts"></div><div id="catalogResults" class="catalog-results-loading"><p class="empty">Loading detected items…</p></div>`;
     renderAnalytics(els.moduleContent.querySelector("#accCharts"), true);
     void renderCatalogResults(els.moduleContent.querySelector("#catalogResults"));
+    return;
+  }
+
+  if (menu.id === "result_analytics") {
+    els.moduleContent.innerHTML = `<p class="empty">Loading recognition results...</p>`;
+    void renderResultAnalytics(els.moduleContent);
     return;
   }
 
