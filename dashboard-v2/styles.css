@@ -1660,6 +1660,78 @@ input {
   text-align: right;
 }
 
+.camera-info-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.camera-info-summary article {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+}
+
+.camera-info-summary span {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.camera-info-summary strong {
+  color: var(--heading);
+  font-size: 17px;
+}
+
+.camera-info-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.camera-info-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.camera-info-status.online {
+  color: var(--good);
+  background: var(--good-soft);
+  border-color: var(--good-border);
+}
+
+.camera-info-status.pending {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+
+.camera-info-status.offline {
+  color: var(--bad);
+  background: var(--bad-soft);
+  border-color: var(--bad-border);
+}
+
+.camera-info-table td:nth-child(6),
+.camera-info-table th:nth-child(6) {
+  text-align: right;
+}
+
 .catalog-next-run {
   padding: 0 20px 14px;
 }

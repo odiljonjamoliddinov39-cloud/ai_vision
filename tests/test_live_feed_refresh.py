@@ -98,7 +98,19 @@ def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
 
     assert 'if (!accountModule && role.access?.camera) accountModule = "feed"' in source
     assert 'menus.push({ id: "camera", label: "Camera Control"' in source
+    assert 'menus.push({ id: "camera_info", label: "Camera Info"' in source
     assert 'menus.push({ id: "feed", label: "Camera Feed"' in source
+
+
+def test_camera_info_page_lists_connected_camera_models():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'if (menu.id === "camera_info")' in source
+    assert 'accountsApi("/api/v2/devices")' in source
+    assert "function renderCameraInfo(container)" in source
+    assert "<th>Camera</th>" in source
+    assert "<th>Model</th>" in source
+    assert "response.device?.model" in source
 
 
 def test_camera_control_rows_use_stream_health_for_live_slots():
@@ -122,8 +134,8 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=52" in html
-    assert "/dashboard-v2/assets/styles.css?v=39" in html
+    assert "/dashboard-v2/assets/app.js?v=53" in html
+    assert "/dashboard-v2/assets/styles.css?v=40" in html
 
 
 def test_dashboard_startup_retries_and_exposes_a_visible_failure_state():

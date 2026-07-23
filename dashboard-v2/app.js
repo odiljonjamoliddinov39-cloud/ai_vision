@@ -267,6 +267,7 @@ const NAV_ICONS = {
   users: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h1M9 13h1M14 9h1M14 13h1M10 21v-4h4v4"/></svg>`,
   settings: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
   camera: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`,
+  camera_info: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M12 18v2M8 8h8M8 12h5"/></svg>`,
   analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>`,
   result_analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
   feed: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`,
@@ -1271,6 +1272,7 @@ async function deleteNvrCameras(nvr) {
 function accountMenus(role) {
   const menus = [];
   if (role.access?.camera) menus.push({ id: "camera", label: "Camera Control", sub: "NVR & vision quality" });
+  if (role.access?.camera) menus.push({ id: "camera_info", label: "Camera Info", sub: "Device models" });
   if (role.access?.analytics) menus.push({ id: "analytics", label: "Analytics", sub: "Charts & trends" });
   if (role.access?.analytics) menus.push({ id: "result_analytics", label: "Result Analytics", sub: "Recognition results" });
   if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
@@ -1296,6 +1298,151 @@ function streamStatusBySlot() {
       .filter((stream) => stream.slot_number != null)
       .map((stream) => [Number(stream.slot_number), stream])
   );
+}
+
+function cameraInfoDeviceMaps(devices = []) {
+  const byId = new Map();
+  const byHost = new Map();
+  for (const device of devices || []) {
+    if (!device) continue;
+    if (device.id != null) byId.set(String(device.id), device);
+    const host = String(device.host || "").trim().toLowerCase();
+    if (host) byHost.set(host, device);
+  }
+  return { byId, byHost };
+}
+
+function cameraInfoChannelRows(config, devices = []) {
+  const { byId, byHost } = cameraInfoDeviceMaps(devices);
+  const streamsBySlot = streamStatusBySlot();
+  return (config.nvrs || []).flatMap((nvr) => {
+    const device =
+      byId.get(String(nvr.deviceId || "")) ||
+      byHost.get(String(nvr.host || "").trim().toLowerCase()) ||
+      {};
+    const rawChannels = Array.isArray(nvr.channelsDetail) ? nvr.channelsDetail : [];
+    const channels = rawChannels.length
+      ? rawChannels
+      : Array.from({ length: Number(nvr.channels || 0) }, (_, index) => ({
+          channel: index + 1,
+          slot_number: null,
+          status: "registered",
+        }));
+    const deviceTypeKey = nvr.deviceType || device.device_type || "nvr_or_dvr";
+    const vendor = nvr.vendor || device.vendor || nvr.provider || "Unknown vendor";
+    const model = nvr.model || device.model || "Unknown model";
+    return channels.map((channel, index) => {
+      const slotNumber = channel.slot_number != null ? Number(channel.slot_number) : null;
+      const stream = slotNumber != null ? streamsBySlot.get(slotNumber) : null;
+      const channelNumber = channel.channel || channel.external_channel_id || index + 1;
+      const status = stream?.status || channel.status || "registered";
+      return {
+        key: `${nvr.id || nvr.host || "nvr"}-${channelNumber}-${slotNumber ?? index}`,
+        nvrName: nvr.name || device.name || "NVR",
+        host: nvr.host || device.host || "Unknown host",
+        vendor,
+        model,
+        deviceType: DEVICE_TYPE_LABELS[deviceTypeKey] || deviceTypeKey || "NVR / DVR",
+        cameraName: channel.name || channel.camera_name || `Camera ${channelNumber}`,
+        slotNumber,
+        status,
+        streamProvider: nvr.provider || "stream manager",
+        detail: stream?.last_error || channel.message || channel.profile || "",
+      };
+    });
+  });
+}
+
+function cameraInfoStatusMeta(status) {
+  if (status === "online") return { label: "Live", className: "online" };
+  if (status === "starting") return { label: "Starting", className: "pending" };
+  if (status === "reconnecting") return { label: "Reconnecting", className: "pending" };
+  if (status === "offline" || status === "failed") return { label: "Offline", className: "offline" };
+  if (status === "connected") return { label: "Connected", className: "online" };
+  return { label: "Registered", className: "pending" };
+}
+
+function renderCameraInfoTable(rows) {
+  if (!rows.length) {
+    return `<p class="empty">No cameras connected yet. Add a device in Camera Control first.</p>`;
+  }
+  return `
+    <div class="detected-table-wrap">
+      <table class="detected-table camera-info-table">
+        <thead>
+          <tr>
+            <th>NVR / Device</th>
+            <th>Host</th>
+            <th>Vendor</th>
+            <th>Model</th>
+            <th>Camera</th>
+            <th>Slot</th>
+            <th>Status</th>
+            <th>Stream</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map((row) => {
+              const status = cameraInfoStatusMeta(row.status);
+              return `
+                <tr title="${escapeAttr(row.detail)}">
+                  <td><strong>${escapeHtml(row.nvrName)}</strong><span class="camera-info-meta">${escapeHtml(row.deviceType)}</span></td>
+                  <td>${escapeHtml(row.host)}</td>
+                  <td>${escapeHtml(row.vendor)}</td>
+                  <td><strong>${escapeHtml(row.model)}</strong></td>
+                  <td>${escapeHtml(row.cameraName)}</td>
+                  <td>${row.slotNumber != null ? row.slotNumber : "No slot"}</td>
+                  <td><span class="camera-info-status ${status.className}">${escapeHtml(status.label)}</span></td>
+                  <td>${escapeHtml(row.streamProvider)}</td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function renderCameraInfo(container) {
+  const { company } = accountState;
+  companyConfig(company);
+  try {
+    const [devicesPayload, streamsPayload] = await Promise.all([
+      accountsApi("/api/v2/devices").catch(() => ({ devices: [] })),
+      api("/api/v2/streams/health").catch(() => ({ streams: state.streams || [] })),
+    ]);
+    if (!container.isConnected || accountModule !== "camera_info") return;
+    state.streams = streamsPayload.streams || state.streams || [];
+    const rows = cameraInfoChannelRows(company.cameraConfig, devicesPayload.devices || []);
+    const modelCount = new Set(rows.map((row) => `${row.vendor}/${row.model}`)).size;
+    container.innerHTML = `
+      <section class="detected-list camera-info">
+        <header class="detected-list-head">
+          <div>
+            <h3>Camera Info</h3>
+            <p>${rows.length.toLocaleString()} connected camera${rows.length === 1 ? "" : "s"} across ${company.cameraConfig.nvrs.length.toLocaleString()} NVR device${company.cameraConfig.nvrs.length === 1 ? "" : "s"}.</p>
+          </div>
+          <div class="detected-list-actions">
+            <button type="button" class="export-button" data-refresh-camera-info>Refresh</button>
+          </div>
+        </header>
+        <div class="camera-info-summary">
+          <article><span>NVR devices</span><strong>${company.cameraConfig.nvrs.length.toLocaleString()}</strong></article>
+          <article><span>Cameras</span><strong>${rows.length.toLocaleString()}</strong></article>
+          <article><span>Models detected</span><strong>${modelCount.toLocaleString()}</strong></article>
+        </div>
+        ${renderCameraInfoTable(rows)}
+      </section>
+    `;
+    container.querySelector("[data-refresh-camera-info]")?.addEventListener("click", () => {
+      container.innerHTML = `<p class="empty">Loading camera device info...</p>`;
+      void renderCameraInfo(container);
+    });
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
 }
 
 function dimBoxSvg({ w, h, d }) {
@@ -1920,6 +2067,12 @@ function renderAccountModule() {
     return;
   }
 
+  if (menu.id === "camera_info") {
+    els.moduleContent.innerHTML = `<p class="empty">Loading camera device info...</p>`;
+    void renderCameraInfo(els.moduleContent);
+    return;
+  }
+
   if (menu.id === "analytics") {
     els.moduleContent.innerHTML = `<div id="accCharts"></div><div id="catalogResults" class="catalog-results-loading"><p class="empty">Loading detected items…</p></div>`;
     renderAnalytics(els.moduleContent.querySelector("#accCharts"), true);
@@ -2198,6 +2351,8 @@ async function persistDiscoveredDevice({ name, host, protocol, port, channels, r
     camera_id: result.camera_id,
     channel_id: result.id,
     channel: result.external_channel_id || result.channel,
+    name: result.name,
+    profile: result.profile,
     slot_number: result.slot_number,
     status: result.slot_number != null ? "connected" : result.status || "registered",
     message: result.masked_stream_reference || result.message || "Stream managed by AI Vision.",
@@ -2212,6 +2367,11 @@ async function persistDiscoveredDevice({ name, host, protocol, port, channels, r
     protocol,
     port,
     channels,
+    deviceId: response.device?.id,
+    vendor: response.device?.vendor || response.discovery?.fingerprint?.vendor || response.provider,
+    model: response.device?.model || response.discovery?.fingerprint?.model,
+    deviceType: response.device?.device_type || response.discovery?.fingerprint?.device_type,
+    provider: response.provider,
     controllerMessage: `Connected via ${response.provider} — ${assigned}/${channelsDetail.length} slot${assigned === 1 ? "" : "s"} assigned. Waiting for live video frames.`,
     channelsDetail,
   };
