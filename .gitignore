@@ -4,6 +4,13 @@ __pycache__/
 *.pyc
 models/*.pt
 *.pt
+runs/
+datasets/**/*.jpg
+datasets/**/*.jpeg
+datasets/**/*.png
+datasets/**/*.bmp
+datasets/**/*.webp
+datasets/**/*.txt
 logs/*.log
 logs/inventory.json
 logs/detection_health.json

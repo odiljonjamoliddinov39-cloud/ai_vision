@@ -147,7 +147,7 @@ class SpatialAnalyzer:
 def _class_profile(class_name: str) -> tuple[str, str, float]:
     normalized = class_name.lower()
     if "box" in normalized or "carton" in normalized:
-        return "cuboid", "cardboard box", 0.55
+        return "cuboid", _box_inventory_name(class_name), 0.55
     if "sack" in normalized:
         return "deformable bag", "sack", 0.4
     if "bag" in normalized:
@@ -157,3 +157,28 @@ def _class_profile(class_name: str) -> tuple[str, str, float]:
     if "package" in normalized:
         return "package", "package", 0.5
     return "unknown solid", class_name, 0.5
+
+
+def _box_inventory_name(class_name: str) -> str:
+    normalized = " ".join(class_name.lower().split())
+    generic_names = {
+        "box",
+        "boxes",
+        "cardboard box",
+        "cardboard boxes",
+        "carton box",
+        "carton boxes",
+        "stack of boxes",
+        "stack of cardboard boxes",
+        "stack of carton boxes",
+    }
+    if normalized in generic_names:
+        return "cardboard box"
+
+    for prefix in ("stack of ", "pile of ", "pallet of "):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+            break
+    if normalized.endswith("boxes"):
+        normalized = f"{normalized[:-5]}box"
+    return normalized or class_name

@@ -1,0 +1,5 @@
+path: datasets/baget_box
+train: images/train
+val: images/val
+names:
+  0: baget box

@@ -109,6 +109,9 @@ zipped/committed even before those phases are built.
    different size (`yolov8s.pt`, `yolov8m.pt`, ...), see
    https://docs.ultralytics.com/models/yolov8/.
 
+   To train a detector for your own warehouse object class, such as
+   `baget box`, see `docs/yolo_training.md`.
+
 4. **Configure your camera(s)** in `config/config.yaml`:
 
    ```yaml

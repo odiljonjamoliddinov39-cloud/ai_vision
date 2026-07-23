@@ -56,6 +56,42 @@ def test_spatial_analyzer_keeps_single_box_quantity_at_one():
     assert measurement.quantity_grid == (1, 1, 1)
 
 
+def test_spatial_analyzer_preserves_custom_box_inventory_name():
+    measurement = _analyzer().measure(
+        frame_shape=(1080, 1920, 3),
+        class_name="baget box",
+        box=(1306, 371, 1395, 504),
+    )
+
+    assert measurement.object_type == "cuboid"
+    assert measurement.inventory_name == "baget box"
+    assert measurement.quantity == 1
+
+
+def test_spatial_analyzer_singularizes_custom_stack_box_name_for_quantity():
+    analyzer = SpatialAnalyzer(
+        horizontal_fov_degrees=90.0,
+        camera_height_m=1.2,
+        horizon_y_ratio=0.28,
+        unit_dimensions={
+            "baget box": {
+                "width_m": 0.45,
+                "height_m": 0.35,
+                "depth_m": 0.35,
+            }
+        },
+    )
+
+    measurement = analyzer.measure(
+        frame_shape=(1080, 1920, 3),
+        class_name="stack of baget boxes",
+        box=(830, 380, 1100, 490),
+    )
+
+    assert measurement.inventory_name == "baget box"
+    assert measurement.quantity > 1
+
+
 def test_spatial_analyzer_enriches_detection_contract():
     detection = _Detection(
         class_name="stack of cardboard boxes",
