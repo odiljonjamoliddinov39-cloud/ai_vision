@@ -1400,6 +1400,8 @@ def _catalog_crop_candidates(health: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "camera_name": str(camera_name),
                     "detection": detection,
+                    "frame": frame,
+                    "crop": crop,
                     "embedding": image_embedding(crop),
                 }
             )
@@ -1514,6 +1516,117 @@ def _catalog_camera_label(value: Any) -> str:
     return str(value or "Camera").strip() or "Camera"
 
 
+def _catalog_visual_slug(value: Any) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("._-")
+    return slug[:80] or "visual"
+
+
+def _catalog_read_camera_frame(health: dict[str, Any], camera_name: str):
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    camera_label = _catalog_camera_label(camera_name)
+    slots_by_camera = {
+        _catalog_camera_label(camera.get("name") or f"slot-{camera.get('slot_number')}"): camera.get("slot_number")
+        for camera in health.get("cameras") or []
+    }
+    slot = slots_by_camera.get(camera_label)
+    for path in _live_feed_paths(slot=int(slot) if slot else None, camera=camera_label):
+        if not path.exists():
+            continue
+        frame = cv2.imread(str(path))
+        if frame is not None:
+            return frame
+    return None
+
+
+def _catalog_spatial_visuals(
+    health: dict[str, Any],
+    entries: list[tuple[str, dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    visuals: dict[str, dict[str, Any]] = {}
+    frames: dict[str, Any] = {}
+    for camera_name, detection in entries:
+        label = _catalog_camera_label(camera_name)
+        if label not in frames:
+            frames[label] = _catalog_read_camera_frame(health, label)
+        frame = frames[label]
+        crop = _catalog_detection_crop(frame, detection.get("bbox") or {}) if frame is not None else None
+        visuals.setdefault(label, {"frame": frame, "crop": crop, "detection": detection})
+    return visuals
+
+
+def _catalog_candidate_visuals(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    visuals: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        label = _catalog_camera_label(candidate.get("camera_name"))
+        visuals.setdefault(
+            label,
+            {
+                "frame": candidate.get("frame"),
+                "crop": candidate.get("crop"),
+                "detection": candidate.get("detection") or {},
+            },
+        )
+    return visuals
+
+
+def _catalog_save_visual_image(
+    scope_id: str,
+    run_id: str,
+    filename: str,
+    image: Any,
+) -> str | None:
+    if image is None or getattr(image, "size", 0) == 0:
+        return None
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    scope_slug = _catalog_visual_slug(scope_id)
+    run_slug = _catalog_visual_slug(run_id)
+    directory = SNAPSHOT_DIR / "catalog-recognition" / scope_slug / run_slug
+    directory.mkdir(parents=True, exist_ok=True)
+    file_slug = _catalog_visual_slug(filename)
+    path = directory / f"{file_slug}.jpg"
+    if not cv2.imwrite(str(path), image):
+        return None
+    return f"/snapshots/catalog-recognition/{quote(scope_slug)}/{quote(run_slug)}/{quote(path.name)}"
+
+
+def _catalog_persist_match_visuals(scope_id: str, run_id: str, match: dict[str, Any]) -> dict[str, Any]:
+    evidence = match.get("_visual_evidence") or {}
+    persisted = {key: value for key, value in match.items() if not key.startswith("_")}
+    if not evidence:
+        return persisted
+
+    camera_counts = []
+    item_slug = _catalog_visual_slug(persisted.get("item_name"))
+    for entry in persisted.get("camera_counts") or []:
+        enriched = dict(entry)
+        camera_name = _catalog_camera_label(enriched.get("camera_name"))
+        visual = evidence.get(camera_name)
+        if visual:
+            prefix = f"{item_slug}_{_catalog_visual_slug(camera_name)}"
+            frame_url = _catalog_save_visual_image(scope_id, run_id, f"{prefix}_frame", visual.get("frame"))
+            crop_url = _catalog_save_visual_image(scope_id, run_id, f"{prefix}_object", visual.get("crop"))
+            detection = visual.get("detection") or {}
+            if frame_url:
+                enriched["frame_url"] = frame_url
+            if crop_url:
+                enriched["crop_url"] = crop_url
+            if detection.get("bbox"):
+                enriched["bbox"] = detection.get("bbox")
+            if detection.get("class_name") or detection.get("object_type"):
+                enriched["class_name"] = detection.get("class_name") or detection.get("object_type")
+        camera_counts.append(enriched)
+    persisted["camera_counts"] = camera_counts
+    return persisted
+
+
 def _catalog_camera_counts_payload(counts: dict[str, int]) -> list[dict[str, Any]]:
     return [
         {"camera_name": camera_name, "quantity": int(quantity)}
@@ -1611,13 +1724,15 @@ def _catalog_fresh_yolo_crop_candidates(
                 {
                     "camera_name": entry["camera_name"],
                     "detection": payload,
+                    "frame": frame,
+                    "crop": crop,
                     "embedding": image_embedding(crop),
                 }
             )
     return candidates
 
 
-def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
+def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -> list[dict[str, Any]]:
     """One instantaneous pass: match catalog items (only items enrolled via
     AI Check-in) against whatever the detector's current spatial-object
     snapshot shows. Pure - reads live state but writes nothing, so both a
@@ -1655,6 +1770,7 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
         confidence = 1.0 if quantity > 0 else 0.0
         measurement = matched_entries[0][1] if matched_entries else None
         method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
+        visual_evidence = _catalog_spatial_visuals(health, matched_entries) if include_visuals and matched_entries else {}
 
         if not matched_entries:
             if len(items) == 1:
@@ -1682,19 +1798,22 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                     )
                     measurement = prompt_matches[0]["detection"]
                     method = str(measurement.get("method") or "catalog-single-item-yolo-and-3d")
+                    if include_visuals:
+                        visual_evidence = _catalog_candidate_visuals(prompt_matches)
 
             if quantity > 0:
-                matches.append(
-                    {
-                        "item_id": str(item["id"]),
-                        "item_name": str(item["name"]),
-                        "quantity": quantity,
-                        "confidence": confidence,
-                        "dimensions_m": _catalog_dimensions(measurement),
-                        "measurement_method": method,
-                        "camera_counts": _catalog_camera_counts_payload(camera_counts),
-                    }
-                )
+                match = {
+                    "item_id": str(item["id"]),
+                    "item_name": str(item["name"]),
+                    "quantity": quantity,
+                    "confidence": confidence,
+                    "dimensions_m": _catalog_dimensions(measurement),
+                    "measurement_method": method,
+                    "camera_counts": _catalog_camera_counts_payload(camera_counts),
+                }
+                if visual_evidence:
+                    match["_visual_evidence"] = visual_evidence
+                matches.append(match)
                 continue
 
             crop_matches: list[tuple[float, dict[str, Any]]] = []
@@ -1719,6 +1838,8 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                 )
                 measurement = crop_matches[0][1]["detection"]
                 method = str(measurement.get("method") or "catalog-crop-reference-and-3d")
+                if include_visuals:
+                    visual_evidence = _catalog_candidate_visuals([candidate for _, candidate in crop_matches])
 
         if not matched_entries and quantity <= 0:
             best: tuple[float, str] | None = None
@@ -1736,18 +1857,21 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                 camera_counts = {_catalog_camera_label(best[1]): quantity}
                 measurement = camera_objects[0] if camera_objects else None
                 method = "catalog-reference-and-3d"
+                if include_visuals:
+                    visual_evidence = _catalog_spatial_visuals(health, [(best[1], measurement or {})])
 
-        matches.append(
-            {
-                "item_id": str(item["id"]),
-                "item_name": str(item["name"]),
-                "quantity": quantity,
-                "confidence": confidence,
-                "dimensions_m": _catalog_dimensions(measurement),
-                "measurement_method": method,
-                "camera_counts": _catalog_camera_counts_payload(camera_counts),
-            }
-        )
+        match = {
+            "item_id": str(item["id"]),
+            "item_name": str(item["name"]),
+            "quantity": quantity,
+            "confidence": confidence,
+            "dimensions_m": _catalog_dimensions(measurement),
+            "measurement_method": method,
+            "camera_counts": _catalog_camera_counts_payload(camera_counts),
+        }
+        if visual_evidence:
+            match["_visual_evidence"] = visual_evidence
+        matches.append(match)
     return matches
 
 
@@ -1759,8 +1883,8 @@ def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
     interval = _catalog_interval_hours()
     run_id = db.start_run(scope_id, interval, len(cameras))
     try:
-        for match in _catalog_match_current_frame(scope_id):
-            db.add_result(run_id=run_id, **match)
+        for match in _catalog_match_current_frame(scope_id, include_visuals=True):
+            db.add_result(run_id=run_id, **_catalog_persist_match_visuals(scope_id, run_id, match))
         db.complete_run(run_id)
     except Exception:
         db.complete_run(run_id, status="failed")
@@ -1826,7 +1950,7 @@ async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> Non
                 scope_id, _catalog_interval_hours(), len(health.get("cameras") or [])
             )
             for match in state["items"].values():
-                db.add_result(run_id=run_id, **match)
+                db.add_result(run_id=run_id, **_catalog_persist_match_visuals(scope_id, run_id, match))
             db.complete_run(run_id)
         state["status"] = "completed"
         state["run_id"] = run_id

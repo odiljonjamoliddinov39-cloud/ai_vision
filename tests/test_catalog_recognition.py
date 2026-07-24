@@ -395,6 +395,49 @@ def test_catalog_recognition_runs_fresh_yolo_when_cached_detections_are_empty(tm
     assert matches[0]["confidence"] == pytest.approx(0.82)
 
 
+def test_catalog_results_save_visual_evidence_for_result_analytics(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    frame[40:120, 50:170] = _reference_image((220, 60, 20))
+    cv2.imwrite(str(snapshot_dir / "latest_stream_slot_1.jpg"), frame)
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [{"name": "NVR Camera 2", "slot_number": 1}],
+                "last_spatial_objects_by_camera": {"NVR Camera 2": []},
+                "last_detections_by_camera": {
+                    "NVR Camera 2": [
+                        {
+                            "class_name": "cardboard box",
+                            "quantity": 3,
+                            "confidence": 0.83,
+                            "bbox": {"x1": 50, "y1": 40, "x2": 170, "y2": 120},
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+
+    payload = server._run_catalog_recognition("warehouse-a")
+    camera_count = payload["results"][0]["camera_counts"][0]
+
+    assert payload["results"][0]["item_id"] == item["id"]
+    assert camera_count["frame_url"].startswith("/snapshots/catalog-recognition/warehouse-a/")
+    assert camera_count["crop_url"].startswith("/snapshots/catalog-recognition/warehouse-a/")
+    for key in ("frame_url", "crop_url"):
+        saved = snapshot_dir / Path(*camera_count[key].removeprefix("/snapshots/").split("/"))
+        assert saved.exists()
+
+
 def test_catalog_yolo_defaults_to_high_resolution_for_small_box_counting(monkeypatch):
     monkeypatch.delenv("CATALOG_YOLO_CONFIDENCE_THRESHOLD", raising=False)
     monkeypatch.delenv("CATALOG_YOLO_IMAGE_SIZE", raising=False)
@@ -772,6 +815,12 @@ def test_dashboard_has_result_analytics_page_for_recognition_history():
     assert 'period: "latest"' in source
     assert "function latestResultRowsByCamera(rows)" in source
     assert "function resultAnalyticsFilterControlsHtml(filters, totalRows, visibleRows)" in source
+    assert "function resultAnalyticsVisualsHtml(rows)" in source
+    assert "result.frameUrl" not in source
+    assert "frameUrl: entry.frame_url" in source
+    assert "cropUrl: entry.crop_url" in source
+    assert "result.visual_title" in source
+    assert "result-visual-grid" in source
     assert "Latest by camera" in source
     assert "Last hour" in source
     assert "This week" in source
@@ -784,6 +833,8 @@ def test_dashboard_has_result_analytics_page_for_recognition_history():
     assert ".result-analytics-summary" in styles
     assert ".result-analytics-table" in styles
     assert ".result-analytics-filters" in styles
+    assert ".result-visuals" in styles
+    assert ".result-visual-card" in styles
 
 
 def test_dashboard_ai_check_in_groups_objects_by_camera():

@@ -135,7 +135,9 @@ const I18N = {
     "result.loading": "Loading recognition results...",
     "result.next_run": "Next run",
     "result.objects": "Objects",
+    "result.object_crop": "Object crop",
     "result.recognition_runs": "Recognition runs",
+    "result.scene_image": "Camera view",
     "result.table_time": "Recognition time",
     "result.this_month": "This month",
     "result.this_week": "This week",
@@ -143,6 +145,9 @@ const I18N = {
     "result.today": "Today",
     "result.total_objects": "Total objects",
     "result.subtitle": "Recognition results by NVR, camera and item.",
+    "result.visual_empty": "No saved images for these results yet. Run recognition now to capture camera and object pictures.",
+    "result.visual_subtitle": "Camera frame and object crop saved during recognition.",
+    "result.visual_title": "Recognition images",
     "settings.loading_profile": "Loading profile...",
     "settings.title": "Settings",
     "status.connected": "Connected",
@@ -329,7 +334,9 @@ const I18N = {
     "result.loading": "Загрузка результатов распознавания...",
     "result.next_run": "Следующий запуск",
     "result.objects": "Объекты",
+    "result.object_crop": "Crop объекта",
     "result.recognition_runs": "Запуски распознавания",
+    "result.scene_image": "Кадр камеры",
     "result.table_time": "Время распознавания",
     "result.this_month": "За месяц",
     "result.this_week": "За неделю",
@@ -337,6 +344,9 @@ const I18N = {
     "result.today": "За день",
     "result.total_objects": "Всего объектов",
     "result.subtitle": "Результаты распознавания по NVR, камере и товару.",
+    "result.visual_empty": "Для этих результатов пока нет сохраненных картинок. Запустите распознавание, чтобы сохранить кадр камеры и объект.",
+    "result.visual_subtitle": "Кадр камеры и crop объекта, сохраненные во время распознавания.",
+    "result.visual_title": "Картинки распознавания",
     "settings.loading_profile": "Загрузка профиля...",
     "settings.title": "Настройки",
     "status.connected": "Подключено",
@@ -2043,16 +2053,21 @@ function resultAnalyticsRows(results) {
         const parts = splitCatalogCameraName(entry.camera_name);
         const completedAt = result.completed_at || result.created_at;
         const parsedTime = new Date(completedAt);
+        const cameraName = String(entry.camera_name || t("table.unknown_camera"));
         return {
           runId: result.run_id,
           completedAt,
           timeMs: Number.isNaN(parsedTime.getTime()) ? 0 : parsedTime.getTime(),
           nvr: parts.nvr,
           camera: parts.camera,
+          cameraName,
           itemName: result.item_name,
           quantity: Number(entry.quantity || 0),
           confidence: Number(result.confidence || 0),
           dimensions: catalogDimensions(result),
+          frameUrl: entry.frame_url || "",
+          cropUrl: entry.crop_url || "",
+          className: entry.class_name || "",
           status: result.status || "completed",
         };
       });
@@ -2162,6 +2177,55 @@ function resultAnalyticsTableHtml(rows) {
   `;
 }
 
+function resultAnalyticsVisualsHtml(rows) {
+  const visuals = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    if (!row.frameUrl && !row.cropUrl) continue;
+    const key = `${row.runId}/${row.cameraName}/${row.itemName}/${row.frameUrl}/${row.cropUrl}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    visuals.push(row);
+    if (visuals.length >= 24) break;
+  }
+  const body = visuals.length
+    ? `<div class="result-visual-grid">
+        ${visuals
+          .map((row) => {
+            const title = `${row.cameraName} - ${row.itemName}`;
+            return `
+              <article class="result-visual-card">
+                <div class="result-visual-meta">
+                  <strong>${escapeHtml(row.itemName)}</strong>
+                  <span>${escapeHtml(row.cameraName)} · ${row.quantity.toLocaleString()} ${escapeHtml(t("result.objects").toLowerCase())} · ${Math.round(row.confidence * 100)}%</span>
+                </div>
+                <div class="result-visual-pair">
+                  <figure>
+                    <span>${escapeHtml(t("result.scene_image"))}</span>
+                    ${row.frameUrl ? `<img src="${escapeAttr(`${API_BASE}${row.frameUrl}`)}" alt="${escapeAttr(`${title} ${t("result.scene_image")}`)}" loading="lazy" decoding="async" />` : `<div class="result-visual-missing">${escapeHtml(t("result.visual_empty"))}</div>`}
+                  </figure>
+                  <figure>
+                    <span>${escapeHtml(t("result.object_crop"))}</span>
+                    ${row.cropUrl ? `<img src="${escapeAttr(`${API_BASE}${row.cropUrl}`)}" alt="${escapeAttr(`${title} ${t("result.object_crop")}`)}" loading="lazy" decoding="async" />` : `<div class="result-visual-missing">${escapeHtml(t("result.visual_empty"))}</div>`}
+                  </figure>
+                </div>
+              </article>
+            `;
+          })
+          .join("")}
+      </div>`
+    : `<p class="empty">${escapeHtml(t("result.visual_empty"))}</p>`;
+  return `
+    <section class="result-visuals">
+      <div class="result-visuals-head">
+        <h4>${escapeHtml(t("result.visual_title"))}</h4>
+        <p>${escapeHtml(t("result.visual_subtitle"))}</p>
+      </div>
+      ${body}
+    </section>
+  `;
+}
+
 function resultAnalyticsSummaryHtml(rows, schedule) {
   const totalObjects = rows.reduce((sum, row) => sum + row.quantity, 0);
   const cameras = new Set(rows.map((row) => `${row.nvr}/${row.camera}`));
@@ -2195,6 +2259,7 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
       ${resultAnalyticsFilterControlsHtml(filters, rows.length, visibleRows)}
       ${resultAnalyticsSummaryHtml(visibleRows, payload.schedule)}
       ${resultAnalyticsTableHtml(visibleRows)}
+      ${resultAnalyticsVisualsHtml(visibleRows)}
     </section>
   `;
   container.querySelector("[data-result-analytics-filters]")?.addEventListener("submit", (event) => {
