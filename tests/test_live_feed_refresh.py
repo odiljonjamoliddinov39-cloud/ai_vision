@@ -107,6 +107,21 @@ def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
     assert 'menus.push({ id: "feed", label: "Camera Feed"' in source
 
 
+def test_camera_feed_groups_rooms_and_allows_renaming():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert "company.cameraConfig.feedGroups" in source
+    assert "const FEED_GROUP_SIZE = 8;" in source
+    assert "function inferFeedGroup(nvr, nvrIndex, channel, channelIndex, nvrCount)" in source
+    assert "function feedGroupsHtml(config)" in source
+    assert 'data-acc-form="feed-group"' in source
+    assert 'data-feed-group-id="${escapeAttr(group.id)}"' in source
+    assert 't("feed.group_saved")' in source
+    assert ".feed-group-head" in styles
+    assert ".feed-group-form" in styles
+
+
 def test_camera_info_page_lists_connected_camera_models():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
@@ -155,8 +170,8 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=57" in html
-    assert "/dashboard-v2/assets/styles.css?v=42" in html
+    assert "/dashboard-v2/assets/app.js?v=58" in html
+    assert "/dashboard-v2/assets/styles.css?v=43" in html
 
 
 def test_dashboard_startup_retries_and_exposes_a_visible_failure_state():

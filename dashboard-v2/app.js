@@ -99,6 +99,12 @@ const I18N = {
     "discovery.unreachable": "Unreachable",
     "discovery.username_placeholder": "Username (optional)",
     "feed.empty": "No NVRs connected - set one up in Camera Control first.",
+    "feed.default_group": "BLOCK {letter}",
+    "feed.group_cameras": "{count} cameras",
+    "feed.group_note": "Camera feeds are grouped automatically by room/block. Edit a group name to match your warehouse rooms.",
+    "feed.group_save": "Save",
+    "feed.group_saved": "Camera group name saved.",
+    "feed.group_name": "Group name",
     "feed.live_note": "Live transmission at {quality} quality. This view is not recording continuous video.",
     "feed.no_signal": "No signal yet",
     "feed.readd": "Remove and re-add this NVR to reconnect it",
@@ -298,6 +304,12 @@ const I18N = {
     "discovery.unreachable": "Недоступно",
     "discovery.username_placeholder": "Логин (необязательно)",
     "feed.empty": "NVR пока не подключены - сначала настройте устройство в Camera Control.",
+    "feed.default_group": "БЛОК {letter}",
+    "feed.group_cameras": "{count} камер",
+    "feed.group_note": "Видеопотоки автоматически группируются по комнатам/блокам. Измените название группы под свои помещения склада.",
+    "feed.group_save": "Сохранить",
+    "feed.group_saved": "Название группы камер сохранено.",
+    "feed.group_name": "Название группы",
     "feed.live_note": "Live видео в качестве {quality}. Эта страница не записывает постоянное видео.",
     "feed.no_signal": "Сигнала пока нет",
     "feed.readd": "Удалите и добавьте NVR заново, чтобы переподключить его",
@@ -1612,10 +1624,16 @@ const QUALITY_OPTIONS = [
   { id: "medium", label: "Medium · 720p", hint: "balanced" },
   { id: "high", label: "High · 1080p", hint: "best picture" },
 ];
+const FEED_GROUP_SIZE = 8;
+const FEED_GROUP_LETTERS_EN = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const FEED_GROUP_LETTERS_RU = "АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЭЮЯ".split("");
 
 function companyConfig(company) {
   if (!company.cameraConfig) company.cameraConfig = { nvrs: [], quality: "high" };
   if (!company.cameraConfig.nvrs) company.cameraConfig.nvrs = [];
+  if (!company.cameraConfig.feedGroups || Array.isArray(company.cameraConfig.feedGroups)) {
+    company.cameraConfig.feedGroups = {};
+  }
   return company;
 }
 
@@ -1626,6 +1644,98 @@ async function persistAccountCompany() {
     body: JSON.stringify({ cameraConfig: company.cameraConfig }),
   });
   company.cameraConfig = updated.cameraConfig;
+}
+
+function feedGroupLetter(index) {
+  const letters = currentLanguage() === "ru" ? FEED_GROUP_LETTERS_RU : FEED_GROUP_LETTERS_EN;
+  return letters[index] || String(index + 1);
+}
+
+function feedDefaultGroupName(index) {
+  return t("feed.default_group", { letter: feedGroupLetter(index) });
+}
+
+function feedGroupId(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "group";
+}
+
+function feedGroupFromText(value) {
+  const text = String(value || "");
+  const block = text.match(/(?:\bblock\b|\bblok\b|блок)\s*([a-zа-яё0-9]+)/i);
+  if (block) {
+    const letter = String(block[1] || "").toUpperCase();
+    return { id: `named-block-${feedGroupId(letter)}`, name: t("feed.default_group", { letter }) };
+  }
+  const room = text.match(/(?:\broom\b|\bzone\b|комната|зона)\s*([a-zа-яё0-9]+)/i);
+  if (room) {
+    const name = room[0].trim();
+    return { id: `named-room-${feedGroupId(name)}`, name };
+  }
+  return null;
+}
+
+function inferFeedGroup(nvr, nvrIndex, channel, channelIndex, nvrCount) {
+  const nameText = `${nvr.name || ""} ${channel?.name || channel?.camera_name || channel?.message || ""}`;
+  const named = feedGroupFromText(nameText);
+  if (named) return named;
+  const groupIndex = nvrCount > 1 ? nvrIndex : Math.floor(channelIndex / FEED_GROUP_SIZE);
+  const idPrefix = nvrCount > 1 ? `nvr-${nvr.id || nvrIndex}` : "block";
+  return { id: `auto-${idPrefix}-${groupIndex}`, name: feedDefaultGroupName(groupIndex) };
+}
+
+function renderFeedTile(nvr, channel) {
+  if (!channel) {
+    return `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
+  }
+  if (channel.active && channel.slot_number != null) {
+    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="lazy" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+  }
+  return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+}
+
+function feedGroups(config) {
+  const groups = new Map();
+  const nvrs = config.nvrs || [];
+  nvrs.forEach((nvr, nvrIndex) => {
+    const channels = nvr.channelsDetail || [];
+    const sourceChannels = channels.length ? channels : [null];
+    sourceChannels.forEach((channel, channelIndex) => {
+      const channelNumber = Number(channel?.channel);
+      const normalizedIndex = Number.isFinite(channelNumber) && channelNumber > 0 ? channelNumber - 1 : channelIndex;
+      const meta = inferFeedGroup(nvr, nvrIndex, channel, normalizedIndex, nvrs.length);
+      const name = config.feedGroups[meta.id] || meta.name;
+      if (!groups.has(meta.id)) {
+        groups.set(meta.id, { id: meta.id, name, tiles: [], cameraCount: 0 });
+      }
+      const group = groups.get(meta.id);
+      group.tiles.push(renderFeedTile(nvr, channel));
+      group.cameraCount += channel ? 1 : 0;
+    });
+  });
+  return Array.from(groups.values());
+}
+
+function feedGroupsHtml(config) {
+  return feedGroups(config)
+    .map(
+      (group) => `
+        <section class="acc-block feed-group" data-feed-group="${escapeAttr(group.id)}">
+          <header class="feed-group-head">
+            <form class="feed-group-form" data-acc-form="feed-group" data-feed-group-id="${escapeAttr(group.id)}">
+              <input name="name" value="${escapeAttr(group.name)}" maxlength="80" aria-label="${escapeAttr(t("feed.group_name"))}" />
+              <button type="submit" class="cc-chip cc-chip-small">${escapeHtml(t("feed.group_save"))}</button>
+            </form>
+            <span>${escapeHtml(t("feed.group_cameras", { count: group.cameraCount.toLocaleString() }))}</span>
+          </header>
+          <div class="live-preview">${group.tiles.join("")}</div>
+        </section>
+      `
+    )
+    .join("");
 }
 
 function parseNvrConnectionInput(raw) {
@@ -2605,25 +2715,10 @@ function renderAccountModule() {
       els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("feed.empty"))}</p>`;
       return;
     }
-    const sections = config.nvrs
-      .map((nvr) => {
-        const channels = nvr.channelsDetail || [];
-        const tiles = channels.length
-          ? channels
-              .map((channel) => {
-                if (channel.active && channel.slot_number != null) {
-                  return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="lazy" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
-                }
-                return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
-              })
-              .join("")
-          : `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
-        return `<section class="acc-block"><h3>${escapeHtml(nvr.name)} <small class="muted">(${channels.length || nvr.channels || 0} ${escapeHtml(t("table.channels"))})</small></h3><div class="live-preview">${tiles}</div></section>`;
-      })
-      .join("");
     els.moduleContent.innerHTML = `
       <p class="chart-note">${escapeHtml(t("feed.live_note", { quality: t(`quality.${(QUALITY_OPTIONS.find((option) => option.id === config.quality) || QUALITY_OPTIONS[2]).id}.label`) }))}</p>
-      ${sections}
+      <p class="chart-note">${escapeHtml(t("feed.group_note"))}</p>
+      ${feedGroupsHtml(config)}
     `;
     return;
   }
@@ -2910,6 +3005,26 @@ async function handleAccountSubmit(event) {
   event.preventDefault();
   const { company } = accountState;
   companyConfig(company);
+
+  if (form.dataset.accForm === "feed-group") {
+    const groupId = form.dataset.feedGroupId;
+    const name = form.elements.name.value.trim();
+    if (!groupId || !name) return;
+    const previousGroups = { ...company.cameraConfig.feedGroups };
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    company.cameraConfig.feedGroups = { ...previousGroups, [groupId]: name };
+    try {
+      await persistAccountCompany();
+      toast(t("feed.group_saved"));
+      renderAccountModule();
+    } catch (error) {
+      company.cameraConfig.feedGroups = previousGroups;
+      toast(error.message);
+      submit.disabled = false;
+    }
+    return;
+  }
 
   if (form.dataset.accForm === "catalog-product") {
     const name = form.elements.name.value.trim();

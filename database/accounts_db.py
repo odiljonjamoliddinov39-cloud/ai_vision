@@ -37,7 +37,7 @@ def verify_password(password: str, password_hash: str | None) -> bool:
         return False
 
 
-DEFAULT_CAMERA_CONFIG = {"nvrs": [], "quality": "high"}
+DEFAULT_CAMERA_CONFIG = {"nvrs": [], "quality": "high", "feedGroups": {}}
 
 
 class AccountsDB:
@@ -117,6 +117,7 @@ class AccountsDB:
             camera_config = dict(DEFAULT_CAMERA_CONFIG)
         camera_config.setdefault("nvrs", [])
         camera_config.setdefault("quality", "high")
+        camera_config.setdefault("feedGroups", {})
         return {
             "id": data["id"],
             "name": data["name"],
