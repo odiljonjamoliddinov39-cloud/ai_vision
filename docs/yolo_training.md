@@ -36,6 +36,18 @@ frames from `snapshots/`, and writes labels for detections that look like boxes.
 Review these labels before final training; they are useful drafts, not a
 replacement for human annotation.
 
+You can also export samples from the saved **Result Analytics** evidence. This
+uses the camera frame and bbox saved during new recognition runs:
+
+```bash
+python scripts/export_yolo_dataset_from_results.py --item "Baget Box"
+```
+
+Use `--split train` or `--split val` when you want to force where the exported
+frames go. Without it, the exporter keeps an automatic 80/20 train/val split.
+Run **Run recognition now** in Result Analytics several times before exporting
+so the database contains enough camera angles and object examples.
+
 ## 2. Label Boxes
 
 Create matching label files:
