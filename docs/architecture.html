@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI VISION — Enterprise Factory OS · Architecture</title>
+<style>
+  :root{
+    color-scheme: light dark;
+    --bg:#eaeef4; --grid:rgba(37,99,235,.05);
+    --panel:#ffffff; --panel-2:#f5f8fc; --chip:#ffffff;
+    --line:#e2e8f0; --line-2:#cbd5e1;
+    --heading:#0b1220; --text:#3a465c; --muted:#6b7890; --ru:#7d8aa1;
+    --data:#0e7aa8; --data-soft:rgba(14,122,168,.10);
+    --events:#b45309; --events-soft:rgba(180,83,9,.10);
+    --shadow:0 1px 2px rgba(15,23,42,.05), 0 6px 20px -12px rgba(15,23,42,.18);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0a1120; --grid:rgba(91,123,176,.06);
+      --panel:#0f1b30; --panel-2:#0c1626; --chip:#13233d;
+      --line:#20304c; --line-2:#2a3c5a;
+      --heading:#f1f5f9; --text:#aeb9cc; --muted:#7a8aa3; --ru:#8494ad;
+      --data:#38bdf8; --data-soft:rgba(56,189,248,.12);
+      --events:#fbbf24; --events-soft:rgba(251,191,36,.12);
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"]{
+    color-scheme: light;
+    --bg:#eaeef4; --grid:rgba(37,99,235,.05);
+    --panel:#ffffff; --panel-2:#f5f8fc; --chip:#ffffff;
+    --line:#e2e8f0; --line-2:#cbd5e1;
+    --heading:#0b1220; --text:#3a465c; --muted:#6b7890; --ru:#7d8aa1;
+    --data:#0e7aa8; --data-soft:rgba(14,122,168,.10);
+    --events:#b45309; --events-soft:rgba(180,83,9,.10);
+    --shadow:0 1px 2px rgba(15,23,42,.05), 0 6px 20px -12px rgba(15,23,42,.18);
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#0a1120; --grid:rgba(91,123,176,.06);
+    --panel:#0f1b30; --panel-2:#0c1626; --chip:#13233d;
+    --line:#20304c; --line-2:#2a3c5a;
+    --heading:#f1f5f9; --text:#aeb9cc; --muted:#7a8aa3; --ru:#8494ad;
+    --data:#38bdf8; --data-soft:rgba(56,189,248,.12);
+    --events:#fbbf24; --events-soft:rgba(251,191,36,.12);
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg);
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:40px 40px;
+    color:var(--text);
+    font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased;
+  }
+  .mono{font-family:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace}
+  .wrap{max-width:1240px; margin:0 auto; padding:0 24px}
+
+  /* header */
+  header.top{position:sticky; top:0; z-index:20; backdrop-filter:blur(10px);
+    background:color-mix(in srgb,var(--bg) 82%,transparent);
+    border-bottom:1px solid var(--line)}
+  .top .wrap{display:flex; align-items:center; gap:16px; height:60px}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:3px;
+    font-size:13px; color:var(--data)}
+  .brand .dot{width:20px;height:20px;border-radius:6px;background:#0b1624;position:relative;flex:0 0 auto}
+  .brand .dot::before{content:"";position:absolute;inset:4px;border:2px solid var(--data);border-radius:50%}
+  .brand .dot::after{content:"";position:absolute;inset:8px;background:var(--data);border-radius:50%}
+  .top .spacer{flex:1}
+  .seg{display:inline-flex;border:1px solid var(--line-2);border-radius:9px;overflow:hidden;background:var(--panel)}
+  .seg button{border:0;background:transparent;color:var(--muted);font:inherit;font-weight:600;font-size:13px;
+    padding:7px 12px;cursor:pointer;min-width:44px}
+  .seg button[aria-pressed="true"]{background:var(--data-soft);color:var(--data)}
+  .iconbtn{border:1px solid var(--line-2);background:var(--panel);color:var(--text);border-radius:9px;
+    width:38px;height:36px;cursor:pointer;font-size:15px;display:inline-flex;align-items:center;justify-content:center}
+  .iconbtn:hover{border-color:var(--muted)}
+  button:focus-visible,a:focus-visible{outline:2px solid var(--data);outline-offset:2px}
+
+  /* hero */
+  .hero{padding:56px 0 30px}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:4px;color:var(--data)}
+  .hero h1{font-size:clamp(30px,5vw,48px);line-height:1.04;margin:14px 0 6px;color:var(--heading);
+    font-weight:800;letter-spacing:-.02em;text-wrap:balance;max-width:20ch}
+  .hero .sub{font-size:clamp(16px,2.4vw,20px);color:var(--text);font-weight:500;margin:0}
+  .hero .meta{margin-top:14px;color:var(--muted);font-size:13px}
+  .hero p.lede{margin:22px 0 0;max-width:70ch;color:var(--text)}
+
+  /* legend */
+  .legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin:30px 0 8px}
+  .legend a{display:flex;gap:11px;align-items:center;text-decoration:none;padding:11px 13px;border-radius:11px;
+    background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);color:var(--text)}
+  .legend a:hover{border-color:var(--lc)}
+  .legend .n{font-size:12px;font-weight:800;width:30px;height:26px;border-radius:7px;display:grid;place-items:center;
+    background:color-mix(in srgb,var(--lc) 16%,transparent);color:var(--lc);flex:0 0 auto}
+  .legend .nm{font-size:13px;font-weight:600;color:var(--heading);line-height:1.2}
+  .legend .nm small{display:block;font-weight:500;color:var(--ru);font-size:11px}
+
+  /* flow banner */
+  .flows{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:22px 0 8px}
+  .flow{border:1px solid var(--line);border-radius:13px;padding:15px 17px;background:var(--panel);box-shadow:var(--shadow)}
+  .flow .h{display:flex;align-items:center;gap:9px;font-weight:700;color:var(--heading);font-size:14px}
+  .flow .arw{font-size:17px}
+  .flow.data{border-left:3px solid var(--data)} .flow.data .h,.flow.data .arw{color:var(--data)}
+  .flow.evt{border-left:3px solid var(--events)} .flow.evt .h,.flow.evt .arw{color:var(--events)}
+  .flow p{margin:7px 0 0;font-size:13px;color:var(--muted)}
+
+  /* layer sections */
+  main{padding:8px 0 40px}
+  .layer{position:relative;margin:26px 0;background:var(--panel);border:1px solid var(--line);
+    border-radius:18px;box-shadow:var(--shadow);overflow:hidden;scroll-margin-top:74px}
+  .layer::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--lc)}
+  .lhead{display:flex;gap:16px;align-items:flex-start;padding:22px 26px 4px}
+  .lnum{font-size:18px;font-weight:800;width:50px;height:38px;border-radius:10px;display:grid;place-items:center;
+    background:color-mix(in srgb,var(--lc) 16%,transparent);color:var(--lc);flex:0 0 auto}
+  .lhead h2{margin:0;font-size:21px;color:var(--heading);font-weight:750;line-height:1.15}
+  .lhead h2 small{display:block;font-size:13.5px;font-weight:500;color:var(--ru);margin-top:2px}
+  .lhead .purpose{margin:6px 0 0;color:var(--muted);font-size:13.5px;max-width:82ch}
+  .grid{display:grid;gap:12px;padding:16px 26px 26px}
+  .cols4{grid-template-columns:repeat(4,1fr)} .cols3{grid-template-columns:repeat(3,1fr)}
+  .cols2{grid-template-columns:repeat(2,1fr)}
+  .card{background:var(--chip);border:1px solid var(--line);border-radius:12px;padding:14px 15px;position:relative}
+  .card::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:2px;background:var(--lc)}
+  .card.evt::before{background:var(--events)}
+  .card h3{margin:0 0 2px;font-size:14.5px;color:var(--heading);font-weight:650;padding-left:6px}
+  .card .alt{font-size:11.5px;color:var(--ru);padding-left:6px}
+  .card p{margin:8px 0 0;font-size:12.5px;color:var(--muted);padding-left:6px;line-height:1.5}
+
+  /* domain services */
+  .svc{background:var(--chip);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .svc .sh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:12px 15px;
+    background:color-mix(in srgb,var(--lc) 12%,transparent);border-bottom:1px solid var(--line)}
+  .svc .sh b{color:var(--heading);font-size:14px} .svc .sh span{color:var(--ru);font-size:11.5px}
+  .svc ul{list-style:none;margin:0;padding:10px 15px 14px}
+  .svc li{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed var(--line);
+    font-size:12.5px}
+  .svc li:last-child{border-bottom:0}
+  .svc li b{color:var(--text);font-weight:600} .svc li .g{color:var(--muted);font-size:11.5px;text-align:right;flex:1}
+
+  footer{border-top:1px solid var(--line);padding:26px 0 60px;color:var(--muted);font-size:13px}
+  footer .wrap{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center}
+
+  /* language visibility */
+  body[data-lang="en"] .ru-only{display:none}
+  body[data-lang="ru"] .en-only{display:none}
+
+  @media (max-width:1000px){ .cols4{grid-template-columns:repeat(2,1fr)} .cols3{grid-template-columns:repeat(2,1fr)} }
+  @media (max-width:720px){
+    .cols4,.cols3,.cols2,.flows{grid-template-columns:1fr}
+    .brand span.long{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body data-lang="en">
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><span class="dot"></span><span class="long">AI&nbsp;VISION</span></div>
+    <div class="spacer"></div>
+    <div class="seg" role="group" aria-label="Language">
+      <button id="lang-en" aria-pressed="true" onclick="setLang('en')">EN</button>
+      <button id="lang-ru" aria-pressed="false" onclick="setLang('ru')">RU</button>
+    </div>
+    <button class="iconbtn" id="themebtn" title="Toggle theme" aria-label="Toggle theme" onclick="toggleTheme()">◐</button>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div class="eyebrow">TECHNICAL ARCHITECTURE</div>
+    <h1><span class="en-only">Enterprise Factory Operating System</span><span class="ru-only">Корпоративная операционная система завода</span></h1>
+    <p class="sub"><span class="en-only">Корпоративная операционная система завода</span><span class="ru-only">Enterprise Factory Operating System</span></p>
+    <div class="meta mono">11 layers · Bilingual EN / RU · July 2026</div>
+    <p class="lede">
+      <span class="en-only">A layered computer-vision platform that turns factory camera feeds into real-time operational intelligence. Eleven architectural layers, top to bottom — every layer's purpose and every component within it.</span>
+      <span class="ru-only">Многоуровневая платформа компьютерного зрения, превращающая видеопотоки заводских камер в операционную аналитику реального времени. Одиннадцать архитектурных уровней сверху вниз — назначение каждого уровня и функция каждого компонента.</span>
+    </p>
+    <nav class="legend" id="legend" aria-label="Layers"></nav>
+    <div class="flows">
+      <div class="flow data">
+        <div class="h"><span class="arw">↑</span><span class="en-only">Data Flow</span><span class="ru-only">Поток данных</span></div>
+        <p><span class="en-only">The upward path along the left edge: camera video rises through ingestion, AI, memory, decisions and domain services — raw pixels become business insight.</span><span class="ru-only">Восходящий путь по левой стороне: видео с камер поднимается через приём, ИИ-обработку, память, решения и доменные сервисы — «сырые» пиксели превращаются в бизнес-информацию.</span></p>
+      </div>
+      <div class="flow evt">
+        <div class="h"><span class="arw">↓</span><span class="en-only">Events &amp; Notifications</span><span class="ru-only">События и уведомления</span></div>
+        <p><span class="en-only">The downward path along the right edge: decisions and events flow back to users and external systems via the event bus and notification center, closing the perception-to-action loop.</span><span class="ru-only">Нисходящий путь по правой стороне: решения и события спускаются к пользователям и внешним системам через шину событий и центр уведомлений, замыкая контур «восприятие → действие».</span></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<main class="wrap" id="layers"></main>
+
+<footer>
+  <div class="wrap">
+    <span><span class="en-only">AI VISION — Enterprise Factory Operating System · Technical Architecture</span><span class="ru-only">AI VISION — корпоративная операционная система завода · Техническая архитектура</span></span>
+    <span class="mono">EN / RU · July 2026</span>
+  </div>
+</footer>
+
+<script>
+const T=(en,ru)=>({en,ru});
+const LAYERS=[
+ {num:"01",hue:190,en:"Presentation Layer",ru:"Уровень представления",
+  pen:"The topmost layer — all human-facing interfaces and machine access points. It renders live analytics, dashboards and control panels, and exposes REST and WebSocket entry points for external clients.",
+  pru:"Самый верхний уровень — все интерфейсы для пользователей и точки машинного доступа. Отображает аналитику в реальном времени, панели и элементы управления, а также предоставляет точки входа REST и WebSocket для внешних клиентов.",
+  cols:4,items:[
+   {t:T("Head Dashboard","Главная панель"),d:T("The executive command view. Aggregates factory-wide KPIs — production, safety, equipment and alerts — into one high-level screen for management.","Панель уровня руководства. Собирает KPI по всему заводу — производство, безопасность, оборудование и оповещения — на одном экране для менеджмента.")},
+   {t:T("User Dashboard","Панель пользователя"),d:T("A personalised workspace for operators and staff, showing only the widgets, cameras and metrics relevant to their role and area.","Персонализированное рабочее пространство для операторов и сотрудников — только виджеты, камеры и метрики их роли и зоны ответственности.")},
+   {t:T("Mobile Application","Мобильное приложение"),d:T("A smartphone/tablet client delivering alerts, live snapshots and key metrics on the go, so supervisors can respond away from a desk.","Клиент для смартфона/планшета: оповещения, снимки в реальном времени и ключевые метрики, чтобы реагировать вдали от рабочего места.")},
+   {t:T("Operator Panel","Панель оператора"),d:T("A focused real-time control surface for line operators — live feeds, immediate violation notices and quick-action controls.","Сфокусированная панель реального времени для линейных операторов — прямые потоки, мгновенные уведомления о нарушениях и быстрые действия.")},
+   {t:T("Analytics Dashboard","Аналитическая панель"),d:T("Deep historical and trend analysis: charts, reports and drill-downs over efficiency, safety and equipment performance across time.","Глубокий анализ истории и трендов: графики, отчёты и детализация по эффективности, безопасности и производительности оборудования во времени.")},
+   {t:T("REST API","REST API"),d:T("A stateless HTTP interface for request/response integration — third parties query data, config and reports on demand.","Интерфейс HTTP без сохранения состояния — сторонние системы по запросу получают данные, конфигурацию и отчёты.")},
+   {t:T("WebSocket","WebSocket"),d:T("A persistent, bidirectional channel pushing live events, detections and status changes to clients the instant they occur.","Постоянный двунаправленный канал, передающий события, обнаружения и изменения статуса клиентам в момент их возникновения.")},
+ ]},
+ {num:"02",hue:197,en:"Central System Core",ru:"Центральное ядро системы",
+  pen:"The security and governance backbone. Every request is authenticated, authorised and logged here. It also holds global configuration, routes API traffic, monitors health and enforces licensing.",
+  pru:"Основа безопасности и управления. Каждый запрос здесь аутентифицируется, авторизуется и журналируется. Ядро хранит глобальную конфигурацию, маршрутизирует API-трафик, следит за состоянием и контролирует лицензирование.",
+  cols:4,items:[
+   {t:T("Authentication","Аутентификация"),d:T("Verifies identity — confirms a user or service is who it claims to be, via passwords, tokens, SSO or multi-factor methods.","Проверяет личность — подтверждает пользователя или сервис через пароли, токены, SSO или многофакторные методы.")},
+   {t:T("Authorization","Авторизация"),d:T("Decides what an authenticated identity may do — which resources, actions and data are permitted.","Определяет, что разрешено аутентифицированной личности — какие ресурсы, действия и данные доступны.")},
+   {t:T("Role Management","Управление ролями"),d:T("Defines roles and permission sets (operator, supervisor, admin) and assigns users — scalable role-based access control.","Определяет роли и наборы прав (оператор, руководитель, администратор) и назначает пользователей — масштабируемый RBAC.")},
+   {t:T("Configuration","Конфигурация"),d:T("Central store of system-wide settings — cameras, thresholds, rules and integrations — applied consistently across services.","Централизованное хранилище настроек — камеры, пороги, правила и интеграции — единообразно во всех сервисах.")},
+   {t:T("API Gateway","Шлюз API"),d:T("The single entry point for all API traffic; handles routing, rate limiting and validation, forwarding to the right service.","Единая точка входа API-трафика; маршрутизация, ограничение частоты и валидация, перенаправление в нужный сервис.")},
+   {t:T("Audit Logs","Журналы аудита"),d:T("An immutable record of who did what and when — essential for investigations, compliance and traceability.","Неизменяемая запись «кто, что и когда» — необходима для расследований, соответствия и прослеживаемости.")},
+   {t:T("System Health","Состояние системы"),d:T("Continuously monitors the platform's vital signs — uptime, resource usage and error rates — surfacing problems early.","Непрерывно отслеживает показатели платформы — доступность, ресурсы и ошибки — заранее выявляя проблемы.")},
+   {t:T("License Management","Управление лицензиями"),d:T("Tracks licensed features, camera counts and usage limits, and enforces the deployment's license terms.","Отслеживает лицензированные функции, число камер и лимиты, контролируя условия лицензии.")},
+ ]},
+ {num:"03",hue:204,en:"Stream Management Layer",ru:"Уровень управления потоками",
+  pen:"Handles discovery, ingestion and distribution of every camera stream. It finds cameras, connects via industry protocols, splits frames to the AI engine, buffers and balances load, and monitors stream health end to end.",
+  pru:"Отвечает за обнаружение, приём и распределение видеопотоков. Находит камеры, подключается по отраслевым протоколам, распределяет кадры на ИИ-движок, буферизует и балансирует нагрузку и сквозным образом контролирует состояние потоков.",
+  cols:3,items:[
+   {t:T("Camera Discovery","Обнаружение камер"),d:T("Automatically scans the network to find and register available cameras, reducing manual setup.","Автоматически сканирует сеть для поиска и регистрации камер, сокращая ручную настройку.")},
+   {t:T("ONVIF Scanner","ONVIF-сканер"),d:T("Detects and configures ONVIF-compliant cameras using the industry-standard device protocol.","Обнаруживает и настраивает ONVIF-совместимые камеры по отраслевому протоколу устройств.")},
+   {t:T("RTSP Scanner","RTSP-сканер"),d:T("Locates and connects to RTSP streams — the common real-time protocol for IP cameras.","Находит и подключается к RTSP-потокам — распространённому протоколу для IP-камер.")},
+   {t:T("NVR Integration","Интеграция с NVR"),d:T("Connects to Network Video Recorders to pull live and recorded footage from existing infrastructure.","Подключается к сетевым видеорегистраторам для получения живого и записанного видео.")},
+   {t:T("Camera Registry","Реестр камер"),d:T("The authoritative catalogue of all cameras — identity, location, capabilities and connection parameters.","Авторитетный каталог всех камер — идентификатор, расположение, возможности и параметры подключения.")},
+   {t:T("Frame Distribution","Распределение кадров"),d:T("Splits and dispatches individual frames to the AI pipelines that need them, in parallel.","Разделяет и направляет отдельные кадры в нужные ИИ-конвейеры параллельно.")},
+   {t:T("Buffer Manager","Менеджер буфера"),d:T("Temporarily stores incoming frames to absorb network jitter and processing spikes, preventing data loss.","Временно хранит кадры, сглаживая сетевые задержки и всплески нагрузки, предотвращая потери.")},
+   {t:T("Load Balancer","Балансировщик нагрузки"),d:T("Distributes streaming and processing work evenly across compute nodes for scalability and resilience.","Равномерно распределяет работу между узлами для масштабируемости и отказоустойчивости.")},
+   {t:T("Stream Monitoring","Мониторинг потоков"),d:T("Watches every stream for outages, quality drops and latency, raising alerts on offline or degraded cameras.","Отслеживает сбои, падение качества и задержки, поднимая оповещения при отключении или деградации.")},
+ ]},
+ {num:"04",hue:211,en:"AI Processing Engine",ru:"Движок ИИ-обработки",
+  pen:"The computer-vision heart. A suite of deep-learning models detects, classifies, tracks and interprets objects, people, vehicles and events. Each module specialises in one task and runs concurrently.",
+  pru:"Компьютерно-зрительное ядро. Набор моделей глубокого обучения обнаруживает, классифицирует, отслеживает и интерпретирует объекты, людей, транспорт и события. Каждый модуль специализирован и работает параллельно.",
+  cols:3,items:[
+   {t:T("Object Detection","Обнаружение объектов"),d:T("Locates and classifies objects within a frame, drawing bounding boxes around each item of interest.","Находит и классифицирует объекты в кадре, выделяя рамками каждый интересующий элемент.")},
+   {t:T("Tracking","Отслеживание"),d:T("Follows a detected object across successive frames, keeping a consistent identity as it moves.","Сопровождает объект в последовательных кадрах, сохраняя его идентичность при движении.")},
+   {t:T("OCR","OCR"),d:T("Optical Character Recognition — reads text from images such as labels, serial numbers and signage.","Оптическое распознавание символов — считывает текст: этикетки, серийные номера, вывески.")},
+   {t:T("Pose Estimation","Оценка позы"),d:T("Infers body posture and joint positions to analyse actions, ergonomics and unsafe movements.","Определяет позу и положение суставов для анализа действий, эргономики и небезопасных движений.")},
+   {t:T("Segmentation","Сегментация"),d:T("Classifies every pixel to precisely outline object shapes and regions, beyond bounding boxes.","Классифицирует каждый пиксель для точного выделения форм и областей объектов.")},
+   {t:T("Face Detection","Обнаружение лиц"),d:T("Finds and localises human faces, enabling identification and access-control use cases.","Находит и локализует лица, обеспечивая идентификацию и контроль доступа.")},
+   {t:T("Vehicle Detection","Обнаружение транспорта"),d:T("Identifies vehicles — cars, trucks, forklifts — and their positions within the monitored area.","Идентифицирует транспорт — автомобили, грузовики, погрузчики — и их положение в зоне.")},
+   {t:T("Product Detection","Обнаружение продукции"),d:T("Recognises specific products, goods and packaging on lines and in storage for counting and tracking.","Распознаёт изделия, товары и упаковку на линиях и складе для подсчёта и отслеживания.")},
+   {t:T("PPE Detection","Обнаружение СИЗ"),d:T("Checks that workers wear required Personal Protective Equipment — helmets, vests, gloves, goggles.","Проверяет наличие обязательных СИЗ — касок, жилетов, перчаток, очков.")},
+   {t:T("Anomaly Detection","Обнаружение аномалий"),d:T("Flags unusual patterns and behaviours that deviate from the norm — events no explicit rule anticipated.","Выявляет необычные закономерности и поведение, не предусмотренные явными правилами.")},
+ ]},
+ {num:"05",hue:218,en:"Object Memory Layer",ru:"Уровень памяти объектов",
+  pen:"Gives the system persistent, structured memory about every tracked entity. It remembers identities, histories, trajectories and relationships over time, turning momentary detections into coherent object biographies.",
+  pru:"Наделяет систему постоянной структурированной памятью о каждой сущности. Запоминает идентичности, историю, траектории и связи во времени, превращая моментальные обнаружения в целостные «биографии» объектов.",
+  cols:4,items:[
+   {t:T("Identity Tracking","Отслеживание идентичности"),d:T("Maintains a stable, unique identity for each object or person across cameras and over time.","Поддерживает стабильную уникальную идентичность объекта или человека между камерами и во времени.")},
+   {t:T("Object History","История объекта"),d:T("Records the full timeline of everything that happened to an object — where it was and what it did.","Записывает полную хронологию объекта — где был и что делал.")},
+   {t:T("Trajectory","Траектория"),d:T("Stores the movement path of an object through space, enabling flow analysis and route reconstruction.","Хранит путь перемещения объекта, обеспечивая анализ потоков и восстановление маршрутов.")},
+   {t:T("Confidence","Уверенность"),d:T("Keeps the model's certainty score for each detection, so downstream logic can weigh reliability.","Хранит оценку уверенности модели для каждого обнаружения, чтобы логика учитывала надёжность.")},
+   {t:T("Snapshots","Снимки"),d:T("Saves representative still images of objects at key moments for evidence and visual review.","Сохраняет репрезентативные стоп-кадры объектов для доказательств и просмотра.")},
+   {t:T("Metadata","Метаданные"),d:T("Attaches structured attributes (type, colour, size, tags) to each object for rich search and filtering.","Прикрепляет атрибуты (тип, цвет, размер, метки) к объекту для поиска и фильтрации.")},
+   {t:T("Relationships","Связи"),d:T("Captures links between objects — a person and the forklift they operate, a box and its pallet.","Фиксирует связи между объектами — человек и погрузчик, коробка и её паллета.")},
+   {t:T("Time History","Временная история"),d:T("Indexes events by time so the system can answer questions about any moment or interval in the past.","Индексирует события по времени для ответов о любом моменте или интервале в прошлом.")},
+ ]},
+ {num:"06",hue:225,en:"Decision Engine",ru:"Движок принятия решений",
+  pen:"Converts raw perception into action. Using configurable business rules and factory logic, it evaluates scenarios, detects violations, drives workflows, generates alerts and even predicts and assesses risk.",
+  pru:"Превращает восприятие в действие. С помощью настраиваемых бизнес-правил и производственной логики оценивает сценарии, выявляет нарушения, управляет процессами, формирует оповещения и прогнозирует и оценивает риски.",
+  cols:4,items:[
+   {t:T("Business Rules","Бизнес-правила"),d:T("A configurable rule set that encodes company policies and turns them into automated evaluations.","Настраиваемый набор правил, кодирующий политики компании в автоматические проверки.")},
+   {t:T("Factory Logic","Производственная логика"),d:T("Domain-specific operational logic reflecting how this particular factory runs its processes.","Специфическая операционная логика, отражающая, как именно этот завод ведёт процессы.")},
+   {t:T("Scenario Engine","Движок сценариев"),d:T("Composes multiple conditions and events into complex, multi-step scenarios to recognise higher-level situations.","Объединяет условия и события в сложные многошаговые сценарии для распознавания ситуаций высокого уровня.")},
+   {t:T("Violation Detection","Обнаружение нарушений"),d:T("Identifies breaches of rules and safety policies the moment they occur and flags them for action.","Выявляет нарушения правил и политик безопасности в момент возникновения и помечает их.")},
+   {t:T("Workflow Engine","Движок рабочих процессов"),d:T("Orchestrates automated response sequences — escalations, approvals and actions — when conditions are met.","Оркестрирует автоматические последовательности — эскалации, согласования и действия — при выполнении условий.")},
+   {t:T("Alert Generation","Генерация оповещений"),d:T("Creates prioritised alerts and routes them to the right people and channels for timely response.","Создаёт приоритизированные оповещения и направляет их нужным людям и каналам.")},
+   {t:T("Prediction","Прогнозирование"),d:T("Uses historical patterns to forecast future events — demand, downtime, bottlenecks — before they happen.","Использует исторические закономерности для прогноза событий — спроса, простоев, узких мест.")},
+   {t:T("Risk Analysis","Анализ рисков"),d:T("Scores the likelihood and impact of hazards so resources focus on the highest-risk areas.","Оценивает вероятность и последствия опасностей, чтобы ресурсы шли в зоны наибольшего риска.")},
+ ]},
+ {num:"07",hue:232,en:"Domain Services",ru:"Доменные сервисы",services:true,
+  pen:"The business-capability layer, organised into focused services that each own one operational domain: goods, people, machines, vehicles, production and safety.",
+  pru:"Уровень бизнес-возможностей из специализированных сервисов, каждый из которых отвечает за один домен: товары, люди, машины, транспорт, производство и безопасность.",
+  groups:[
+   {en:"Goods Service",ru:"Сервис товаров",items:[
+    T("Inventory","Запасы · real-time stock & location"),T("Warehouse","Склад · layout & zones"),
+    T("Counting","Подсчёт · automated tally"),T("Pallets","Паллеты · pallets & contents"),
+    T("Boxes","Коробки · box-level monitoring"),T("Products","Продукция · per-product status")]},
+   {en:"People Service",ru:"Сервис персонала",items:[
+    T("Employees","Сотрудники · presence & activity"),T("Visitors","Посетители · guest tracking"),
+    T("Contractors","Подрядчики · third-party workers"),T("Attendance","Учёт присутствия · time logging"),
+    T("PPE","СИЗ · protective-equipment compliance"),T("Access","Доступ · entry rights & audit")]},
+   {en:"Machine Service",ru:"Сервис оборудования",items:[
+    T("Machine Status","Статус машины · run / idle / fault"),T("Production","Производство · output & cycles"),
+    T("Downtime","Простои · stoppage logging"),T("Maintenance","Обслуживание · schedules & condition"),
+    T("Performance","Производительность · throughput")]},
+   {en:"Vehicle Service",ru:"Сервис транспорта",items:[
+    T("Forklifts","Погрузчики · location, use, safety"),T("Cars","Автомобили · on-site monitoring"),
+    T("License Plates","Номерные знаки · plate recognition"),T("Movement","Движение · motion & speed"),
+    T("Routes","Маршруты · route compliance"),T("Parking","Парковка · occupancy control")]},
+   {en:"Production Service",ru:"Сервис производства",items:[
+    T("Production Orders","Заказы · status & progress"),T("Plan vs Fact","План/факт · planned vs actual"),
+    T("Efficiency","Эффективность · resource & process"),T("Reject Rate","Уровень брака · defect share"),
+    T("OEE","OEE · overall equipment effectiveness")]},
+   {en:"Safety Service",ru:"Сервис безопасности",items:[
+    T("Danger Zones","Опасные зоны · restricted areas"),T("Emergency Stops","Аварийные остановки · e-stop events"),
+    T("Collisions","Столкновения · collision & near-miss"),T("Unsafe Behaviour","Небезопасное поведение · risky actions"),
+    T("Compliance","Соответствие · safety regulations")]},
+  ]},
+ {num:"08",hue:239,en:"Event Bus",ru:"Шина событий",events:true,
+  pen:"The system's real-time nervous system. Every meaningful occurrence is published as a discrete event onto the bus, where any interested service can subscribe and react — decoupling producers from consumers.",
+  pru:"Нервная система платформы в реальном времени. Каждое значимое происшествие публикуется как отдельное событие, на которое может подписаться любой сервис — разделяя производителей и потребителей.",
+  cols:3,items:[
+   {t:T("Person Entered","Человек вошёл"),d:T("Emitted when a person enters a monitored zone.","Публикуется, когда человек входит в контролируемую зону.")},
+   {t:T("Machine Started","Машина запущена"),d:T("Emitted when a machine begins operating.","Публикуется, когда оборудование начинает работу.")},
+   {t:T("Machine Stopped","Машина остановлена"),d:T("Emitted when a machine halts, whether planned or a fault.","Публикуется при остановке оборудования — планово или из-за неисправности.")},
+   {t:T("Forklift Too Close","Погрузчик слишком близко"),d:T("Safety event when a forklift comes dangerously near a person or object.","Событие безопасности при опасном приближении погрузчика.")},
+   {t:T("Helmet Missing","Отсутствует каска"),d:T("PPE violation when a required helmet is not detected on a worker.","Нарушение СИЗ, когда у работника не обнаружена обязательная каска.")},
+   {t:T("Product Counted","Продукт подсчитан"),d:T("Emitted each time a product is tallied on a line or in storage.","Публикуется при каждом учёте изделия на линии или складе.")},
+   {t:T("Product Missing","Продукт отсутствует"),d:T("Raised when an expected product is absent.","Публикуется, когда ожидаемое изделие отсутствует.")},
+   {t:T("Camera Offline","Камера офлайн"),d:T("Infrastructure event signalling a camera has lost connection.","Инфраструктурное событие о потере связи с камерой.")},
+   {t:T("Sensor Failure","Отказ датчика"),d:T("Emitted when a connected sensor fails or stops reporting.","Публикуется при отказе датчика или прекращении передачи данных.")},
+   {t:T("Production Finished","Производство завершено"),d:T("Signals completion of a production run or order.","Сигнализирует о завершении производственного цикла или заказа.")},
+   {t:T("Warehouse Updated","Склад обновлён"),d:T("Emitted when warehouse stock or layout changes.","Публикуется при изменении запасов или планировки склада.")},
+ ]},
+ {num:"09",hue:246,en:"Notification Center",ru:"Центр уведомлений",
+  pen:"Takes alerts and events and delivers them to people and systems through every relevant channel — from an on-screen banner to an ERP transaction — ensuring the right message reaches the right recipient by the right medium.",
+  pru:"Принимает оповещения и события и доставляет их людям и системам по всем каналам — от баннера на экране до транзакции в ERP — гарантируя, что нужное сообщение достигнет нужного получателя нужным способом.",
+  cols:4,items:[
+   {t:T("Dashboard","Панель"),d:T("In-app on-screen notifications shown directly in the platform's interfaces.","Экранные уведомления внутри интерфейсов платформы.")},
+   {t:T("Push Notification","Push-уведомления"),d:T("Mobile and browser push messages for immediate, device-level alerts.","Push-сообщения на мобильные и в браузер для мгновенных оповещений.")},
+   {t:T("Telegram","Telegram"),d:T("Delivery of alerts to Telegram chats and channels.","Доставка оповещений в чаты и каналы Telegram.")},
+   {t:T("SMS","SMS"),d:T("Text-message delivery for critical alerts where other channels may not reach.","Доставка SMS для критичных оповещений там, где другие каналы могут не сработать.")},
+   {t:T("Email","Электронная почта"),d:T("Formatted email notifications and reports to individuals and groups.","Форматированные email-уведомления и отчёты лицам и группам.")},
+   {t:T("Webhook","Webhook"),d:T("HTTP callbacks that push events into any external system that can receive them.","HTTP-обратные вызовы, передающие события в любую внешнюю систему.")},
+   {t:T("ERP Integration","Интеграция с ERP"),d:T("Direct posting of events and data into enterprise resource-planning systems.","Прямая передача событий и данных в системы планирования ресурсов (ERP).")},
+ ]},
+ {num:"10",hue:251,en:"Database Layer",ru:"Уровень баз данных",
+  pen:"The persistence foundation. Each store is chosen for a specific data type and access pattern — relational, cache, media, time-series, model artefacts and knowledge — keeping the platform fast at any scale.",
+  pru:"Фундамент хранения. Каждое хранилище подобрано под тип данных и шаблон доступа — реляционные, кэш, медиа, временные ряды, артефакты моделей и знания — сохраняя скорость на любом масштабе.",
+  cols:4,items:[
+   {t:T("PostgreSQL","PostgreSQL"),d:T("The primary relational database for structured, transactional data — config, records and relationships.","Основная реляционная база для структурированных транзакционных данных — конфигурации, записей и связей.")},
+   {t:T("Redis","Redis"),d:T("An in-memory store for caching and fast, ephemeral data to accelerate reads and real-time operations.","In-memory хранилище для кэша и быстрых временных данных, ускоряющее чтение и операции реального времени.")},
+   {t:T("Object Storage","Объектное хранилище"),d:T("Scalable storage for large binary objects such as images and snapshots.","Масштабируемое хранилище для крупных бинарных объектов — изображений и снимков.")},
+   {t:T("Video Archive","Видеоархив"),d:T("Long-term retention of recorded video for review, evidence and compliance.","Долгосрочное хранение записанного видео для просмотра, доказательств и соответствия.")},
+   {t:T("Time Series DB","База временных рядов"),d:T("Optimised storage of timestamped metrics and telemetry for trends and analytics.","Оптимизированное хранение метрик и телеметрии с метками времени для трендов и аналитики.")},
+   {t:T("AI Models Repository","Репозиторий ИИ-моделей"),d:T("Versioned storage of trained AI models and their artefacts for deployment and rollback.","Версионируемое хранилище обученных моделей и артефактов для развёртывания и отката.")},
+   {t:T("Knowledge Base","База знаний"),d:T("Structured domain knowledge, rules and reference data that inform the system's reasoning.","Структурированные доменные знания, правила и справочные данные, питающие рассуждения системы.")},
+ ]},
+ {num:"11",hue:258,en:"External Systems",ru:"Внешние системы",
+  pen:"The enterprise and industrial systems the platform integrates with. Through these connections it draws context (orders, master data) and pushes results back, becoming part of the wider IT/OT landscape.",
+  pru:"Корпоративные и промышленные системы интеграции. Через эти связи платформа получает контекст (заказы, мастер-данные) и возвращает результаты, становясь частью общего ландшафта ИТ/ОТ.",
+  cols:5,items:[
+   {t:T("ERP","ERP"),d:T("Enterprise Resource Planning for business processes, finance and logistics.","Планирование ресурсов предприятия для бизнес-процессов, финансов и логистики.")},
+   {t:T("SAP","SAP"),d:T("Integration with SAP enterprise software suites.","Интеграция с корпоративными системами SAP.")},
+   {t:T("1C","1С"),d:T("Integration with 1C enterprise and accounting systems.","Интеграция с системами предприятия и учёта 1С.")},
+   {t:T("MES","MES"),d:T("Manufacturing Execution Systems governing shop-floor operations.","Системы управления производством (MES) для цеховых операций.")},
+   {t:T("CRM","CRM"),d:T("Customer Relationship Management for sales and customer data.","Управление взаимоотношениями с клиентами для продаж и данных.")},
+   {t:T("Warehouse System","Складская система"),d:T("Warehouse Management Systems (WMS) for storage and logistics.","Системы управления складом (WMS) для хранения и логистики.")},
+   {t:T("IoT Devices","IoT-устройства"),d:T("Connected sensors and smart devices supplying additional real-world signals.","Подключённые датчики и умные устройства с дополнительными сигналами.")},
+   {t:T("PLC","ПЛК"),d:T("Programmable Logic Controllers that drive industrial machinery.","Программируемые логические контроллеры для промышленного оборудования.")},
+   {t:T("SCADA","SCADA"),d:T("Supervisory Control and Data Acquisition for industrial process control.","Диспетчерское управление и сбор данных для контроля процессов.")},
+   {t:T("Robot Controllers","Контроллеры роботов"),d:T("Controllers that command industrial robots and automated cells.","Контроллеры, управляющие промышленными роботами и ячейками.")},
+ ]},
+];
+
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function bi(a,b){return `<span class="en-only">${esc(a)}</span><span class="ru-only">${esc(b)}</span>`;}
+
+// legend
+document.getElementById('legend').innerHTML = LAYERS.map(L=>
+  `<a href="#l${L.num}" style="--lc:hsl(${L.hue} 68% var(--l,52%))">
+     <span class="n">${L.num}</span>
+     <span class="nm">${bi(L.en,L.ru)}<small>${bi(L.ru,L.en)}</small></span>
+   </a>`).join('');
+
+// layers
+document.getElementById('layers').innerHTML = LAYERS.map(L=>{
+  let body;
+  if(L.services){
+    body = `<div class="grid cols3">`+L.groups.map(g=>{
+      const li = g.items.map(it=>{
+        const [term, rest] = it.ru.split(' · ');
+        return `<li><b>${bi(it.en, term)}</b><span class="g">${esc(rest||'')}</span></li>`;
+      }).join('');
+      return `<div class="svc"><div class="sh"><b>${bi(g.en,g.ru)}</b><span>${bi(g.ru,g.en)}</span></div><ul>${li}</ul></div>`;
+    }).join('')+`</div>`;
+  } else {
+    body = `<div class="grid cols${L.cols}">`+L.items.map(it=>
+      `<div class="card${L.events?' evt':''}">
+         <h3>${bi(it.t.en,it.t.ru)}</h3>
+         <div class="alt">${bi(it.t.ru,it.t.en)}</div>
+         <p>${bi(it.d.en,it.d.ru)}</p>
+       </div>`).join('')+`</div>`;
+  }
+  return `<section class="layer" id="l${L.num}" style="--lc:hsl(${L.hue} 68% var(--l,52%))">
+    <div class="lhead">
+      <div class="lnum">${L.num}</div>
+      <div><h2>${bi(L.en,L.ru)}<small>${bi(L.ru,L.en)}</small></h2>
+      <p class="purpose">${bi(L.pen,L.pru)}</p></div>
+    </div>${body}
+  </section>`;
+}).join('');
+
+// controls
+function setLang(l){
+  document.body.dataset.lang=l;
+  document.documentElement.lang=l;
+  document.getElementById('lang-en').setAttribute('aria-pressed', l==='en');
+  document.getElementById('lang-ru').setAttribute('aria-pressed', l==='ru');
+  try{localStorage.setItem('aivision-lang',l)}catch(e){}
+}
+function toggleTheme(){
+  const cur=document.documentElement.getAttribute('data-theme')
+    || (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+  const next=cur==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme',next);
+  try{localStorage.setItem('aivision-theme',next)}catch(e){}
+}
+// light layer accents need a lower lightness for contrast
+function applyLightVar(){
+  const dark = (document.documentElement.getAttribute('data-theme')||
+    (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))==='dark';
+  document.documentElement.style.setProperty('--l', dark?'62%':'40%');
+}
+const mq=matchMedia('(prefers-color-scheme: dark)');
+mq.addEventListener('change',applyLightVar);
+new MutationObserver(applyLightVar).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+try{
+  const sl=localStorage.getItem('aivision-lang'); if(sl) setLang(sl);
+  const st=localStorage.getItem('aivision-theme'); if(st) document.documentElement.setAttribute('data-theme',st);
+}catch(e){}
+applyLightVar();
+</script>
+</body>
+</html>
