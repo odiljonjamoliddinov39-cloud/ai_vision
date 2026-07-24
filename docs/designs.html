@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI VISION — Design Mockups</title>
+<style>
+  :root{
+    color-scheme: light dark;
+    --bg:#eaeef4; --panel:#ffffff; --panel-2:#f5f8fc; --line:#e2e8f0; --line-2:#cbd5e1;
+    --heading:#0b1220; --text:#3a465c; --muted:#6b7890; --ru:#7d8aa1;
+    --cy:#0e7aa8; --shadow:0 1px 2px rgba(15,23,42,.05),0 18px 40px -22px rgba(15,23,42,.35);
+    --frame:#0a1120;
+  }
+  @media (prefers-color-scheme: dark){:root{
+    --bg:#0a1120; --panel:#0f1b30; --panel-2:#0c1626; --line:#20304c; --line-2:#2a3c5a;
+    --heading:#f1f5f9; --text:#aeb9cc; --muted:#7a8aa3; --ru:#8494ad;
+    --cy:#38bdf8; --shadow:0 1px 2px rgba(0,0,0,.3),0 22px 50px -24px rgba(0,0,0,.7);
+    --frame:#05080f;
+  }}
+  :root[data-theme="light"]{color-scheme:light;
+    --bg:#eaeef4; --panel:#ffffff; --panel-2:#f5f8fc; --line:#e2e8f0; --line-2:#cbd5e1;
+    --heading:#0b1220; --text:#3a465c; --muted:#6b7890; --ru:#7d8aa1; --cy:#0e7aa8;
+    --shadow:0 1px 2px rgba(15,23,42,.05),0 18px 40px -22px rgba(15,23,42,.35); --frame:#0a1120;}
+  :root[data-theme="dark"]{color-scheme:dark;
+    --bg:#0a1120; --panel:#0f1b30; --panel-2:#0c1626; --line:#20304c; --line-2:#2a3c5a;
+    --heading:#f1f5f9; --text:#aeb9cc; --muted:#7a8aa3; --ru:#8494ad; --cy:#38bdf8;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 22px 50px -24px rgba(0,0,0,.7); --frame:#05080f;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .mono{font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+  header.top{position:sticky;top:0;z-index:20;backdrop-filter:blur(10px);
+    background:color-mix(in srgb,var(--bg) 82%,transparent);border-bottom:1px solid var(--line)}
+  .top .wrap{display:flex;align-items:center;gap:14px;height:58px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:3px;font-size:13px;color:var(--cy)}
+  .brand .dot{width:20px;height:20px;border-radius:6px;background:#0b1624;position:relative}
+  .brand .dot::before{content:"";position:absolute;inset:4px;border:2px solid var(--cy);border-radius:50%}
+  .brand .dot::after{content:"";position:absolute;inset:8px;background:var(--cy);border-radius:50%}
+  .spacer{flex:1}
+  a.link{color:var(--muted);text-decoration:none;font-size:13px;font-weight:600}
+  a.link:hover{color:var(--cy)}
+  .seg{display:inline-flex;border:1px solid var(--line-2);border-radius:9px;overflow:hidden;background:var(--panel)}
+  .seg button{border:0;background:transparent;color:var(--muted);font:inherit;font-weight:600;font-size:13px;padding:6px 12px;cursor:pointer}
+  .seg button[aria-pressed="true"]{background:color-mix(in srgb,var(--cy) 14%,transparent);color:var(--cy)}
+  .iconbtn{border:1px solid var(--line-2);background:var(--panel);color:var(--text);border-radius:9px;width:36px;height:34px;cursor:pointer}
+  button:focus-visible,a:focus-visible{outline:2px solid var(--cy);outline-offset:2px}
+
+  .hero{padding:52px 0 8px}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:4px;color:var(--cy)}
+  h1{font-size:clamp(28px,4.5vw,44px);margin:12px 0 6px;color:var(--heading);font-weight:800;letter-spacing:-.02em;text-wrap:balance;max-width:18ch}
+  .hero .sub{font-size:18px;color:var(--text);font-weight:500;margin:0}
+  .hero p.lede{margin:20px 0 0;max-width:68ch;color:var(--text)}
+  .hero .meta{margin-top:12px;color:var(--muted);font-size:13px}
+
+  .shot{margin:44px 0;scroll-margin-top:72px}
+  .shot .head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .shot .num{font-family:ui-monospace,monospace;font-size:13px;font-weight:700;color:var(--ac);
+    background:color-mix(in srgb,var(--ac) 16%,transparent);border-radius:7px;padding:4px 9px}
+  .shot h2{margin:0;font-size:23px;color:var(--heading);font-weight:750}
+  .shot h2 small{font-weight:500;font-size:14px;color:var(--ru);margin-left:8px}
+  .shot .tag{margin-left:auto;font-size:11.5px;font-weight:650;color:var(--ac);
+    border:1px solid color-mix(in srgb,var(--ac) 45%,var(--line));border-radius:20px;padding:4px 12px}
+  .layout{display:grid;grid-template-columns:1.55fr 1fr;gap:22px;align-items:start}
+  .layout.mobile{grid-template-columns:.62fr 1fr}
+  .frame{background:var(--frame);border:1px solid var(--line-2);border-radius:16px;padding:12px;box-shadow:var(--shadow);overflow:hidden}
+  .frame .bar{display:flex;gap:6px;padding:4px 6px 10px}
+  .frame .bar i{width:10px;height:10px;border-radius:50%;background:#33415a;display:block}
+  .frame img{width:100%;height:auto;display:block;border-radius:9px}
+  .info{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px 22px;box-shadow:var(--shadow)}
+  .info::before{content:"";display:block;width:44px;height:4px;border-radius:2px;background:var(--ac);margin-bottom:14px}
+  .info h3{margin:0 0 4px;font-size:13px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .info p.purpose{margin:0 0 16px;color:var(--text);font-size:14.5px;line-height:1.6}
+  .info ul{list-style:none;margin:0;padding:0}
+  .info li{display:flex;gap:10px;padding:7px 0;border-top:1px dashed var(--line);font-size:13.5px;color:var(--text)}
+  .info li:first-of-type{border-top:0}
+  .info li::before{content:"";flex:0 0 auto;width:7px;height:7px;border-radius:2px;background:var(--ac);margin-top:6px}
+
+  footer{border-top:1px solid var(--line);padding:26px 0 60px;color:var(--muted);font-size:13px;margin-top:20px}
+  .note{background:var(--panel-2);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:28px 0;color:var(--text);font-size:13.5px}
+  .note b{color:var(--heading)}
+
+  body[data-lang="en"] .ru-only{display:none}
+  body[data-lang="ru"] .en-only{display:none}
+  @media (max-width:860px){.layout,.layout.mobile{grid-template-columns:1fr}}
+</style>
+</head>
+<body data-lang="en">
+<header class="top"><div class="wrap">
+  <div class="brand"><span class="dot"></span><span>AI&nbsp;VISION</span></div>
+  <a class="link" href="architecture.html">← <span class="en-only">Architecture</span><span class="ru-only">Архитектура</span></a>
+  <div class="spacer"></div>
+  <div class="seg" role="group" aria-label="Language">
+    <button id="len" aria-pressed="true" onclick="setLang('en')">EN</button>
+    <button id="lru" aria-pressed="false" onclick="setLang('ru')">RU</button>
+  </div>
+  <button class="iconbtn" title="Toggle theme" aria-label="Toggle theme" onclick="toggleTheme()">◐</button>
+</div></header>
+
+<section class="hero"><div class="wrap">
+  <div class="eyebrow">PRODUCT DESIGN · PRESENTATION LAYER</div>
+  <h1><span class="en-only">Interface Mockups</span><span class="ru-only">Макеты интерфейсов</span></h1>
+  <p class="sub"><span class="en-only">Пять версий интерфейса и их назначение</span><span class="ru-only">Five interface versions and their purpose</span></p>
+  <p class="lede">
+    <span class="en-only">Five design mockups for the surfaces in Layer 1 (Presentation) — each a distinct version of the product for a different user and purpose. Every screen is a self-contained SVG, so it drops straight into Figma as editable layers.</span>
+    <span class="ru-only">Пять макетов для поверхностей Уровня 1 (Представление) — каждая отдельная версия продукта для своего пользователя и цели. Каждый экран — самодостаточный SVG, который импортируется в Figma как редактируемые слои.</span>
+  </p>
+  <div class="meta mono">5 screens · Inter · dark control-room theme · EN / RU</div>
+</div></section>
+
+<main class="wrap" id="shots"></main>
+
+<div class="wrap">
+  <div class="note">
+    <b><span class="en-only">Import into Figma</span><span class="ru-only">Импорт в Figma</span></b> —
+    <span class="en-only">drag any file from <span class="mono">docs/designs/</span> onto a Figma canvas. Text stays editable (Inter), and every panel comes in as a named layer.</span>
+    <span class="ru-only">перетащите любой файл из <span class="mono">docs/designs/</span> на холст Figma. Текст остаётся редактируемым (Inter), а каждая панель — именованный слой.</span>
+  </div>
+</div>
+
+<footer><div class="wrap">
+  <span class="en-only">AI VISION — Interface mockups · Presentation Layer (L1)</span>
+  <span class="ru-only">AI VISION — макеты интерфейсов · Уровень представления (L1)</span>
+</div></footer>
+
+<script>
+const SHOTS=[
+ {num:"01",ac:"#38bdf8",img:"designs/01-head-dashboard.svg",
+  en:"Head Dashboard",ru:"Главная панель",tag:"Executive · факт",
+  pen:"The executive command view. Aggregates factory-wide KPIs — OEE, output, safety and equipment — onto one high-level screen so management sees the whole plant at a glance.",
+  pru:"Панель уровня руководства. Собирает KPI по всему заводу — OEE, выпуск, безопасность и оборудование — на одном экране, чтобы менеджмент видел завод целиком.",
+  fen:["Factory-wide OEE, output & alert tiles","Plan vs Fact production trend","Live safety monitor & PPE compliance","Equipment status & zone throughput"],
+  fru:["Плитки OEE, выпуска и оповещений по заводу","Тренд производства «план / факт»","Монитор безопасности и СИЗ в реальном времени","Статус оборудования и пропускная способность зон"]},
+ {num:"02",ac:"#fbbf24",img:"designs/02-operator-panel.svg",
+  en:"Operator Panel",ru:"Панель оператора",tag:"Real-time control",
+  pen:"A focused real-time control surface for line operators — live camera feeds with on-frame detections, immediate violation notices and quick actions for the production floor.",
+  pru:"Сфокусированная панель реального времени для линейных операторов — прямые видеопотоки с обнаружениями, мгновенные уведомления о нарушениях и быстрые действия для цеха.",
+  fen:["2×2 live camera grid with detection boxes","Instant violation banner (e.g. Helmet Missing)","Streaming event feed with timestamps","Quick actions — Acknowledge / Escalate / Stop Line"],
+  fru:["Сетка камер 2×2 с рамками обнаружений","Мгновенный баннер нарушения (напр. нет каски)","Потоковая лента событий с метками времени","Быстрые действия — Подтвердить / Эскалация / Стоп"]},
+ {num:"03",ac:"#a78bfa",img:"designs/03-analytics-dashboard.svg",
+  en:"Analytics Dashboard",ru:"Аналитическая панель",tag:"History & trends",
+  pen:"Deep historical and trend analysis — production efficiency, reject rate, downtime and safety incidents over time, with filters, drill-downs and export.",
+  pru:"Глубокий анализ истории и трендов — эффективность, брак, простои и инциденты безопасности во времени, с фильтрами, детализацией и экспортом.",
+  fen:["Efficiency trend & reject-rate by line","Downtime Pareto with cumulative curve","OEE by machine","12-month safety incidents · export"],
+  fru:["Тренд эффективности и брак по линиям","Парето простоев с кумулятивной кривой","OEE по машинам","Инциденты за 12 месяцев · экспорт"]},
+ {num:"04",ac:"#34d399",img:"designs/04-user-dashboard.svg",
+  en:"User Dashboard",ru:"Панель пользователя",tag:"Personalised",
+  pen:"A personalised workspace for a single operator or staff member — only the widgets, cameras, tasks and events relevant to their role and area of responsibility.",
+  pru:"Персонализированное рабочее пространство для конкретного сотрудника — только виджеты, камеры, задачи и события его роли и зоны ответственности.",
+  fen:["Role-scoped KPI tiles","My cameras with live detections","My line status & shift target","My tasks & recent area events"],
+  fru:["Плитки KPI в рамках роли","Мои камеры с обнаружениями","Статус моей линии и цель смены","Мои задачи и события моей зоны"]},
+ {num:"05",ac:"#22d3ee",img:"designs/05-mobile-app.svg",mobile:true,
+  en:"Mobile Application",ru:"Мобильное приложение",tag:"On the go",
+  pen:"A smartphone client delivering alerts, live snapshots and key metrics on the go — so supervisors can respond to incidents away from a desk.",
+  pru:"Клиент для смартфона: оповещения, снимки и ключевые метрики в движении — чтобы руководители реагировали вдали от рабочего места.",
+  fen:["Push critical alerts with snapshot","One-tap Acknowledge","Personal KPI mini-tiles","Recent event feed & bottom nav"],
+  fru:["Push критичных оповещений со снимком","Подтверждение в одно касание","Персональные мини-плитки KPI","Лента событий и нижняя навигация"]},
+];
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const bi=(a,b)=>`<span class="en-only">${esc(a)}</span><span class="ru-only">${esc(b)}</span>`;
+document.getElementById('shots').innerHTML=SHOTS.map(S=>`
+  <section class="shot" id="s${S.num}" style="--ac:${S.ac}">
+    <div class="head">
+      <span class="num">${S.num}</span>
+      <h2>${bi(S.en,S.ru)}<small>${bi(S.ru,S.en)}</small></h2>
+      <span class="tag">${esc(S.tag)}</span>
+    </div>
+    <div class="layout${S.mobile?' mobile':''}">
+      <div class="frame">
+        <div class="bar"><i></i><i></i><i></i></div>
+        <img loading="lazy" src="${S.img}" alt="${esc(S.en)} mockup">
+      </div>
+      <div class="info">
+        <h3>${bi('Purpose','Назначение')}</h3>
+        <p class="purpose">${bi(S.pen,S.pru)}</p>
+        <h3>${bi('Key elements','Ключевые элементы')}</h3>
+        <ul>${S.fen.map((f,i)=>`<li>${bi(f,S.fru[i])}</li>`).join('')}</ul>
+      </div>
+    </div>
+  </section>`).join('');
+
+function setLang(l){document.body.dataset.lang=l;document.documentElement.lang=l;
+  document.getElementById('len').setAttribute('aria-pressed',l==='en');
+  document.getElementById('lru').setAttribute('aria-pressed',l==='ru');
+  try{localStorage.setItem('aivision-lang',l)}catch(e){}}
+function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')||
+  (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+  const n=cur==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);
+  try{localStorage.setItem('aivision-theme',n)}catch(e){}}
+try{const sl=localStorage.getItem('aivision-lang');if(sl)setLang(sl);
+  const st=localStorage.getItem('aivision-theme');if(st)document.documentElement.setAttribute('data-theme',st);}catch(e){}
+</script>
+</body>
+</html>

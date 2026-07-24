@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="992" viewBox="0 0 1440 992" font-family="Inter, sans-serif">
+<rect x="0.0" y="0.0" width="1440.0" height="992.0" rx="0" fill="#0a1120"/>
+<rect x="0.0" y="0.0" width="76.0" height="900.0" rx="0" fill="#0c1526"/>
+<line x1="76.0" y1="0.0" x2="76.0" y2="900.0" stroke="#20304c" stroke-width="1"/>
+<rect x="22.0" y="26.0" width="32.0" height="32.0" rx="9" fill="#0b1624"/>
+<circle cx="38.0" cy="42.0" r="9.0" fill="none" stroke="#38bdf8" stroke-width="2.4"/>
+<circle cx="38.0" cy="42.0" r="3.4" fill="#38bdf8"/>
+<path d="M 29.0 116 L 38.0 104 L 47.0 116 M 32.0 113 L 32.0 119 L 44.0 119 L 44.0 113" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="31.0" y="161.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<rect x="31.0" y="171.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<rect x="41.0" y="161.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<rect x="41.0" y="171.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<rect x="28.0" y="220.0" width="13.0" height="12.0" rx="2" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<path d="M 42.0 224 L 48.0 220 L 48.0 232 L 42.0 228 Z" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="10.0" y="268.0" width="56.0" height="44.0" rx="11" fill="#38bdf8" opacity="0.16"/>
+<rect x="0.0" y="268.0" width="3.0" height="44.0" rx="2" fill="#38bdf8"/>
+<path d="M 29.0 292 L 29.0 276 M 29.0 292 L 47.0 292" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 33.0 287 L 37.0 281 L 41.0 284 L 46.0 277" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 31.0 346 Q 31.0 334 38.0 334 Q 45.0 334 45.0 346 Z" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="36.0" y1="350.0" x2="40.0" y2="350.0" stroke="#5b6b86" stroke-width="2"/>
+<circle cx="38.0" cy="400.0" r="6.0" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<circle cx="38.0" cy="400.0" r="2.0" fill="#5b6b86"/>
+<rect x="76.0" y="0.0" width="1364.0" height="64.0" rx="0" fill="#122341"/>
+<line x1="76.0" y1="64.0" x2="1440.0" y2="64.0" stroke="#20304c" stroke-width="1"/>
+<text x="102.0" y="30.0" font-size="17" fill="#f1f5f9" font-weight="700" text-anchor="start">Analytics Dashboard</text>
+<text x="102.0" y="48.0" font-size="11.5" fill="#7a8aa3" font-weight="400" text-anchor="start">Аналитическая панель</text>
+<rect x="1080.0" y="17.0" width="190.0" height="30.0" rx="8" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<circle cx="1098.0" cy="32.0" r="5.0" fill="none" stroke="#5b6b86" stroke-width="1.6"/>
+<line x1="1102.0" y1="36.0" x2="1107.0" y2="41.0" stroke="#5b6b86" stroke-width="1.6"/>
+<text x="1114.0" y="36.0" font-size="11.5" fill="#5b6b86" font-weight="400" text-anchor="start">Search…</text>
+<circle cx="1290.0" cy="32.0" r="4.0" fill="#34d399"/>
+<text x="1300.0" y="36.0" font-size="12" fill="#c4cee0" font-weight="600" text-anchor="start" font-family="ui-monospace, monospace">14:32:07</text>
+<circle cx="1400.0" cy="32.0" r="15.0" fill="#a78bfa" opacity="0.35"/>
+<text x="1400.0" y="37.0" font-size="11" fill="#f1f5f9" font-weight="700" text-anchor="middle">OJ</text>
+<rect x="100.0" y="84.0" width="1300.0" height="44.0" rx="11" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<rect x="118.0" y="93.0" width="112.0" height="26.0" rx="8" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="132.0" y="110.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Last 30 days</text>
+<text x="214.0" y="110.0" font-size="9" fill="#5b6b86" font-weight="400" text-anchor="end">▾</text>
+<rect x="240.0" y="93.0" width="92.5" height="26.0" rx="8" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="254.0" y="110.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">All lines</text>
+<text x="316.5" y="110.0" font-size="9" fill="#5b6b86" font-weight="400" text-anchor="end">▾</text>
+<rect x="342.5" y="93.0" width="99.0" height="26.0" rx="8" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="356.5" y="110.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Shift: All</text>
+<text x="425.5" y="110.0" font-size="9" fill="#5b6b86" font-weight="400" text-anchor="end">▾</text>
+<rect x="451.5" y="93.0" width="164.0" height="26.0" rx="8" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="465.5" y="110.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Compare: prev period</text>
+<text x="599.5" y="110.0" font-size="9" fill="#5b6b86" font-weight="400" text-anchor="end">▾</text>
+<rect x="1282.0" y="93.0" width="100.0" height="26.0" rx="8" fill="#38bdf8" stroke="#38bdf8" stroke-width="1" opacity="0.16"/>
+<text x="1332.0" y="110.0" font-size="10.5" fill="#38bdf8" font-weight="600" text-anchor="middle">Export ↓</text>
+<rect x="100.0" y="144.0" width="832.0" height="250.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="118.0" y="171.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Production Efficiency</text>
+<text x="118.0" y="187.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Эффективность производства</text>
+<text x="124.0" y="192.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="start">weekly, %</text>
+<line x1="124.0" y1="206.0" x2="908.0" y2="206.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="124.0" y1="244.5" x2="908.0" y2="244.5" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="124.0" y1="283.0" x2="908.0" y2="283.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="124.0" y1="321.5" x2="908.0" y2="321.5" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="124.0" y1="360.0" x2="908.0" y2="360.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<path d="M 124.0 246.0 L 189.3 243.0 L 254.7 244.5 L 320.0 238.3 L 385.3 235.3 L 450.7 236.8 L 516.0 232.2 L 581.3 229.1 L 646.7 230.6 L 712.0 227.6 L 777.3 224.5 L 842.7 226.0 L 908.0 221.4 L 908.0 360.0 L 124.0 360.0 Z" fill="#38bdf8" opacity="0.08"/>
+<path d="M 124.0 246.0 L 189.3 243.0 L 254.7 244.5 L 320.0 238.3 L 385.3 235.3 L 450.7 236.8 L 516.0 232.2 L 581.3 229.1 L 646.7 230.6 L 712.0 227.6 L 777.3 224.5 L 842.7 226.0 L 908.0 221.4" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="908.0" cy="221.4" r="3.5" fill="#38bdf8"/>
+<text x="124.0" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">W1</text>
+<text x="189.3" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="254.7" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">W3</text>
+<text x="320.0" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="385.3" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">W5</text>
+<text x="450.7" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="516.0" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">W7</text>
+<text x="581.3" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="646.7" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">W9</text>
+<text x="712.0" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="777.3" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">W11</text>
+<text x="842.7" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="908.0" y="378.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">W13</text>
+<rect x="952.0" y="144.0" width="448.0" height="250.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="970.0" y="171.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Reject Rate by Line</text>
+<text x="970.0" y="187.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Уровень брака по линиям</text>
+<line x1="974.0" y1="206.0" x2="1378.0" y2="206.0" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<line x1="974.0" y1="257.3" x2="1378.0" y2="257.3" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<line x1="974.0" y1="308.7" x2="1378.0" y2="308.7" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<line x1="974.0" y1="360.0" x2="1378.0" y2="360.0" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<rect x="990.2" y="295.3" width="48.5" height="64.7" rx="4" fill="#34d399" opacity="0.9"/>
+<text x="1014.4" y="377.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">L1</text>
+<rect x="1071.0" y="255.3" width="48.5" height="104.7" rx="4" fill="#fbbf24" opacity="0.9"/>
+<text x="1095.2" y="377.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">L2</text>
+<rect x="1151.8" y="323.0" width="48.5" height="37.0" rx="4" fill="#34d399" opacity="0.9"/>
+<text x="1176.0" y="377.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">L3</text>
+<rect x="1232.6" y="236.8" width="48.5" height="123.2" rx="4" fill="#fb7185" opacity="0.9"/>
+<text x="1256.8" y="377.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">L4</text>
+<rect x="1313.4" y="273.8" width="48.5" height="86.2" rx="4" fill="#fbbf24" opacity="0.9"/>
+<text x="1337.6" y="377.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">L5</text>
+<line x1="974.0" y1="283.0" x2="1378.0" y2="283.0" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="974.0" y="380.0" font-size="10" fill="#fbbf24" font-weight="400" text-anchor="start">— target 2.5%</text>
+<rect x="100.0" y="414.0" width="420.0" height="270.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="118.0" y="441.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Downtime Causes</text>
+<text x="118.0" y="457.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Причины простоев</text>
+<line x1="122.0" y1="474.0" x2="498.0" y2="474.0" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<line x1="122.0" y1="528.0" x2="498.0" y2="528.0" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<line x1="122.0" y1="582.0" x2="498.0" y2="582.0" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<line x1="122.0" y1="636.0" x2="498.0" y2="636.0" stroke="#20304c" stroke-width="1" opacity="0.4"/>
+<rect x="137.0" y="499.9" width="45.1" height="136.1" rx="4" fill="#a78bfa" opacity="0.9"/>
+<text x="159.6" y="653.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">Setup</text>
+<rect x="212.2" y="545.3" width="45.1" height="90.7" rx="4" fill="#a78bfa" opacity="0.9"/>
+<text x="234.8" y="653.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">Fault</text>
+<rect x="287.4" y="577.7" width="45.1" height="58.3" rx="4" fill="#a78bfa" opacity="0.9"/>
+<text x="310.0" y="653.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">Material</text>
+<rect x="362.6" y="597.1" width="45.1" height="38.9" rx="4" fill="#a78bfa" opacity="0.9"/>
+<text x="385.2" y="653.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">Break</text>
+<rect x="437.8" y="610.1" width="45.1" height="25.9" rx="4" fill="#a78bfa" opacity="0.9"/>
+<text x="460.4" y="653.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="middle">Other</text>
+<path d="M 159.6 573.0 L 234.8 531.0 L 310.0 504.0 L 385.2 486.0 L 460.4 474.0" fill="none" stroke="#fbbf24" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="159.6" cy="573.0" r="2.6" fill="#fbbf24"/>
+<circle cx="234.8" cy="531.0" r="2.6" fill="#fbbf24"/>
+<circle cx="310.0" cy="504.0" r="2.6" fill="#fbbf24"/>
+<circle cx="385.2" cy="486.0" r="2.6" fill="#fbbf24"/>
+<circle cx="460.4" cy="474.0" r="2.6" fill="#fbbf24"/>
+<rect x="540.0" y="414.0" width="420.0" height="270.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="558.0" y="441.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">OEE by Machine</text>
+<text x="558.0" y="457.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">OEE по машинам</text>
+<text x="560.0" y="484.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Press A4</text>
+<rect x="660.0" y="474.0" width="270.0" height="14.0" rx="7" fill="#13233d"/>
+<rect x="660.0" y="474.0" width="191.7" height="14.0" rx="7" fill="#fb7185"/>
+<text x="940.0" y="484.0" font-size="11" fill="#f1f5f9" font-weight="650" text-anchor="end">71%</text>
+<text x="560.0" y="518.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Line 1</text>
+<rect x="660.0" y="508.0" width="270.0" height="14.0" rx="7" fill="#13233d"/>
+<rect x="660.0" y="508.0" width="237.6" height="14.0" rx="7" fill="#34d399"/>
+<text x="940.0" y="518.0" font-size="11" fill="#f1f5f9" font-weight="650" text-anchor="end">88%</text>
+<text x="560.0" y="552.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Line 2</text>
+<rect x="660.0" y="542.0" width="270.0" height="14.0" rx="7" fill="#13233d"/>
+<rect x="660.0" y="542.0" width="226.8" height="14.0" rx="7" fill="#38bdf8"/>
+<text x="940.0" y="552.0" font-size="11" fill="#f1f5f9" font-weight="650" text-anchor="end">84%</text>
+<text x="560.0" y="586.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Welder W2</text>
+<rect x="660.0" y="576.0" width="270.0" height="14.0" rx="7" fill="#13233d"/>
+<rect x="660.0" y="576.0" width="213.3" height="14.0" rx="7" fill="#fbbf24"/>
+<text x="940.0" y="586.0" font-size="11" fill="#f1f5f9" font-weight="650" text-anchor="end">79%</text>
+<text x="560.0" y="620.0" font-size="11" fill="#c4cee0" font-weight="400" text-anchor="start">Conveyor</text>
+<rect x="660.0" y="610.0" width="270.0" height="14.0" rx="7" fill="#13233d"/>
+<rect x="660.0" y="610.0" width="248.4" height="14.0" rx="7" fill="#34d399"/>
+<text x="940.0" y="620.0" font-size="11" fill="#f1f5f9" font-weight="650" text-anchor="end">92%</text>
+<rect x="980.0" y="414.0" width="420.0" height="270.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="998.0" y="441.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Safety Incidents</text>
+<text x="998.0" y="457.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Инциденты безопасности</text>
+<line x1="1002.0" y1="476.0" x2="1378.0" y2="476.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="1002.0" y1="516.5" x2="1378.0" y2="516.5" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="1002.0" y1="557.0" x2="1378.0" y2="557.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="1002.0" y1="597.5" x2="1378.0" y2="597.5" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="1002.0" y1="638.0" x2="1378.0" y2="638.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<path d="M 1002.0 540.8 L 1036.2 573.2 L 1070.4 508.4 L 1104.5 605.6 L 1138.7 573.2 L 1172.9 638.0 L 1207.1 605.6 L 1241.3 638.0 L 1275.5 638.0 L 1309.6 605.6 L 1343.8 638.0 L 1378.0 638.0 L 1378.0 638.0 L 1002.0 638.0 Z" fill="#fb7185" opacity="0.08"/>
+<path d="M 1002.0 540.8 L 1036.2 573.2 L 1070.4 508.4 L 1104.5 605.6 L 1138.7 573.2 L 1172.9 638.0 L 1207.1 605.6 L 1241.3 638.0 L 1275.5 638.0 L 1309.6 605.6 L 1343.8 638.0 L 1378.0 638.0" fill="none" stroke="#fb7185" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="1378.0" cy="638.0" r="3.5" fill="#fb7185"/>
+<text x="1002.0" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">Jan</text>
+<text x="1036.2" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="1070.4" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">Mar</text>
+<text x="1104.5" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="1138.7" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">May</text>
+<text x="1172.9" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="1207.1" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">Jul</text>
+<text x="1241.3" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="1275.5" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">Sep</text>
+<text x="1309.6" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="1343.8" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle">Nov</text>
+<text x="1378.0" y="656.0" font-size="10.5" fill="#5b6b86" font-weight="400" text-anchor="middle"></text>
+<text x="1002.0" y="670.0" font-size="10" fill="#5b6b86" font-weight="400" text-anchor="start">12-month · lower is better</text>
+<rect x="0.0" y="900.0" width="1440.0" height="92.0" rx="0" fill="#070d18"/>
+<line x1="0.0" y1="900.0" x2="1440.0" y2="900.0" stroke="#20304c" stroke-width="1"/>
+<rect x="30.0" y="924.0" width="10.0" height="44.0" rx="3" fill="#a78bfa"/>
+<text x="52.0" y="938.0" font-size="16" fill="#f1f5f9" font-weight="750" text-anchor="start">Analytics Dashboard</text>
+<text x="52.0" y="938.0" font-size="16" fill="#f1f5f9" font-weight="750" text-anchor="start">Analytics Dashboard</text>
+<text x="237.0" y="938.0" font-size="12" fill="#7a8aa3" font-weight="400" text-anchor="start">Аналитическая панель</text>
+<text x="52.0" y="960.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">Deep historical &amp; trend analysis — efficiency, reject rate, downtime and safety over time, with drill-downs and export.</text>
+<rect x="1180.0" y="926.0" width="230.0" height="40.0" rx="9" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="1196.0" y="942.0" font-size="9.5" fill="#5b6b86" font-weight="600" text-anchor="start" letter-spacing="0.4">Realizes</text>
+<text x="1196.0" y="957.0" font-size="11" fill="#a78bfa" font-weight="650" text-anchor="start">Presentation · L1</text>
+</svg>
