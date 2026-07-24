@@ -1648,6 +1648,77 @@ def _catalog_count_objects_by_camera(
     return total, counts
 
 
+def _catalog_recognition_sample_count() -> int:
+    try:
+        count = int(os.getenv("CATALOG_RECOGNITION_SAMPLES", "3"))
+    except ValueError:
+        count = 3
+    return max(1, min(count, 8))
+
+
+def _catalog_recognition_sample_interval_seconds() -> float:
+    try:
+        interval = float(os.getenv("CATALOG_RECOGNITION_SAMPLE_INTERVAL_SECONDS", "0.2"))
+    except ValueError:
+        interval = 0.2
+    return max(0.0, min(interval, 2.0))
+
+
+def _catalog_match_rank(match: dict[str, Any]) -> tuple[int, float]:
+    quantity = max(0, int(match.get("quantity") or 0))
+    confidence = max(0.0, min(1.0, float(match.get("confidence") or 0.0)))
+    return quantity, confidence
+
+
+def _catalog_merge_match_samples(samples: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    camera_counts_by_item: dict[str, dict[str, int]] = {}
+    evidence_by_item: dict[str, dict[str, dict[str, Any]]] = {}
+
+    for sample in samples:
+        for match in sample:
+            item_id = str(match.get("item_id") or "")
+            if not item_id:
+                continue
+            current = merged.get(item_id)
+            if current is None or _catalog_match_rank(match) > _catalog_match_rank(current):
+                merged[item_id] = {key: value for key, value in match.items() if not key.startswith("_")}
+            item_counts = camera_counts_by_item.setdefault(item_id, {})
+            item_evidence = evidence_by_item.setdefault(item_id, {})
+            visual_evidence = match.get("_visual_evidence") or {}
+            for entry in match.get("camera_counts") or []:
+                quantity = max(0, int(entry.get("quantity") or 0))
+                if quantity <= 0:
+                    continue
+                camera_name = _catalog_camera_label(entry.get("camera_name"))
+                if quantity > item_counts.get(camera_name, 0):
+                    item_counts[camera_name] = quantity
+                    if visual_evidence.get(camera_name):
+                        item_evidence[camera_name] = visual_evidence[camera_name]
+
+    results: list[dict[str, Any]] = []
+    for item_id, match in merged.items():
+        item_counts = camera_counts_by_item.get(item_id, {})
+        if item_counts:
+            match["quantity"] = sum(item_counts.values())
+            match["camera_counts"] = _catalog_camera_counts_payload(item_counts)
+        if evidence_by_item.get(item_id):
+            match["_visual_evidence"] = evidence_by_item[item_id]
+        results.append(match)
+    return sorted(results, key=lambda result: (-int(result.get("quantity") or 0), str(result.get("item_name") or "")))
+
+
+def _catalog_sample_current_frame(scope_id: str, include_visuals: bool = False) -> list[dict[str, Any]]:
+    sample_count = _catalog_recognition_sample_count()
+    interval = _catalog_recognition_sample_interval_seconds()
+    samples: list[list[dict[str, Any]]] = []
+    for index in range(sample_count):
+        samples.append(_catalog_match_current_frame(scope_id, include_visuals=include_visuals))
+        if interval > 0 and index < sample_count - 1:
+            time.sleep(interval)
+    return _catalog_merge_match_samples(samples)
+
+
 def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
     global _catalog_yolo_detector, _catalog_yolo_detector_key
     if not prompts:
@@ -1883,7 +1954,7 @@ def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
     interval = _catalog_interval_hours()
     run_id = db.start_run(scope_id, interval, len(cameras))
     try:
-        for match in _catalog_match_current_frame(scope_id, include_visuals=True):
+        for match in _catalog_sample_current_frame(scope_id, include_visuals=True):
             db.add_result(run_id=run_id, **_catalog_persist_match_visuals(scope_id, run_id, match))
         db.complete_run(run_id)
     except Exception:
@@ -1926,7 +1997,7 @@ async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> Non
     try:
         while datetime.now(timezone.utc) < ends_at:
             try:
-                matches = await asyncio.to_thread(_catalog_match_current_frame, scope_id)
+                matches = await asyncio.to_thread(_catalog_match_current_frame, scope_id, True)
             except Exception as exc:  # keep sampling - one bad sample shouldn't end the run
                 state["error"] = str(exc)
             else:
@@ -1934,8 +2005,10 @@ async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> Non
                     if match["quantity"] <= 0:
                         continue
                     existing = state["items"].get(match["item_id"])
-                    if existing is None or match["confidence"] > existing["confidence"]:
+                    if existing is None:
                         state["items"][match["item_id"]] = match
+                    else:
+                        state["items"][match["item_id"]] = _catalog_merge_match_samples([[existing], [match]])[0]
             remaining = (ends_at - datetime.now(timezone.utc)).total_seconds()
             if remaining <= 0:
                 break

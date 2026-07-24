@@ -123,6 +123,23 @@ detection:
 
 Restart backend/detector, then click **Run recognition now** in Result Analytics.
 
+## 6. Improve Result Accuracy
+
+`Run recognition now` samples several fresh frames and keeps the best object
+count per camera. Tune these environment variables when cameras are slow or
+boxes are missed:
+
+```bash
+CATALOG_RECOGNITION_SAMPLES=3
+CATALOG_RECOGNITION_SAMPLE_INTERVAL_SECONDS=0.2
+CATALOG_YOLO_IMAGE_SIZE=1280
+CATALOG_YOLO_CONFIDENCE_THRESHOLD=0.01
+```
+
+Increase `CATALOG_RECOGNITION_SAMPLES` to 5-8 for more stable counts. Increase
+`CATALOG_YOLO_IMAGE_SIZE` when boxes are small or far away. Lower
+`CATALOG_YOLO_CONFIDENCE_THRESHOLD` only when the model misses real boxes.
+
 ## Notes
 
 Do not commit dataset images, labels, training runs, or `.pt` files to git.

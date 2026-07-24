@@ -521,6 +521,55 @@ def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similar
     }
 
 
+def test_catalog_recognition_samples_multiple_frames_and_keeps_best_camera_count(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("CATALOG_RECOGNITION_SAMPLES", "2")
+    monkeypatch.setenv("CATALOG_RECOGNITION_SAMPLE_INTERVAL_SECONDS", "0")
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps({"cameras": [{"name": "NVR Camera 2", "slot_number": 1}]}),
+        encoding="utf-8",
+    )
+    samples = [
+        [
+            {
+                "item_id": str(item["id"]),
+                "item_name": "Baget Box",
+                "quantity": 2,
+                "confidence": 0.99,
+                "dimensions_m": None,
+                "measurement_method": "catalog-single-item-yolo-and-3d",
+                "camera_counts": [{"camera_name": "NVR Camera 2", "quantity": 2}],
+            }
+        ],
+        [
+            {
+                "item_id": str(item["id"]),
+                "item_name": "Baget Box",
+                "quantity": 5,
+                "confidence": 0.72,
+                "dimensions_m": None,
+                "measurement_method": "catalog-single-item-yolo-and-3d",
+                "camera_counts": [{"camera_name": "NVR Camera 2", "quantity": 5}],
+            }
+        ],
+    ]
+
+    def fake_match_current_frame(_scope_id, include_visuals=False):
+        return samples.pop(0)
+
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+    monkeypatch.setattr(server, "_catalog_match_current_frame", fake_match_current_frame)
+
+    payload = server._run_catalog_recognition("warehouse-a")
+
+    assert payload["results"][0]["quantity"] == 5
+    assert payload["results"][0]["confidence"] == pytest.approx(0.72)
+    assert payload["results"][0]["camera_counts"] == [{"camera_name": "NVR Camera 2", "quantity": 5}]
+
+
 def test_catalog_recognition_uses_stream_manager_when_detector_health_has_no_cameras(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     db, item = _catalog_with_item(tmp_path, name="Baget Box")
