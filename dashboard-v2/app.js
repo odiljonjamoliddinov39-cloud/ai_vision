@@ -1874,6 +1874,7 @@ async function renderCameraInfo(container) {
             <p>${escapeHtml(t("camera_info.header", { cameras: rows.length.toLocaleString(), devices: company.cameraConfig.nvrs.length.toLocaleString() }))}</p>
           </div>
           <div class="detected-list-actions">
+            <button type="button" class="export-button" data-run-camera-info-recognition>${escapeHtml(t("actions.run_recognition"))}</button>
             <button type="button" class="export-button" data-refresh-camera-info>${escapeHtml(t("actions.refresh"))}</button>
           </div>
         </header>
@@ -1889,8 +1890,28 @@ async function renderCameraInfo(container) {
       container.innerHTML = `<p class="empty">${escapeHtml(t("camera_info.loading"))}</p>`;
       void renderCameraInfo(container);
     });
+    container.querySelector("[data-run-camera-info-recognition]")?.addEventListener("click", (event) => {
+      void runCameraInfoRecognition(container, event.currentTarget);
+    });
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function runCameraInfoRecognition(container, button) {
+  button.disabled = true;
+  button.textContent = t("actions.recognizing");
+  try {
+    await catalogRequest(catalogApiPath("/api/catalog/recognition/run"), { method: "POST" });
+    toast(t("toast.recognition_complete"));
+    if (container.isConnected && accountModule === "camera_info") {
+      container.innerHTML = `<p class="empty">${escapeHtml(t("camera_info.loading"))}</p>`;
+      void renderCameraInfo(container);
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = t("actions.run_recognition");
+    toast(error.message);
   }
 }
 

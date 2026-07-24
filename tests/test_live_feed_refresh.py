@@ -116,6 +116,8 @@ def test_camera_info_page_lists_connected_camera_models():
     assert 't("table.camera")' in source
     assert 't("table.model")' in source
     assert 't("table.ai_slot")' in source
+    assert "data-run-camera-info-recognition" in source
+    assert "function runCameraInfoRecognition(container, button)" in source
     assert "Waiting for slot" in source
     assert "Not assigned" in source
     assert "response.device?.model" in source
@@ -155,7 +157,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=56" in html
+    assert "/dashboard-v2/assets/app.js?v=57" in html
     assert "/dashboard-v2/assets/styles.css?v=41" in html
 
 
