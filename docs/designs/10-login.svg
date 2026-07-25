@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="992" viewBox="0 0 1440 992" font-family="Inter, sans-serif">
+<rect x="0.0" y="0.0" width="1440.0" height="992.0" rx="0" fill="#0a1120"/>
+<rect x="0.0" y="0.0" width="1440.0" height="900.0" rx="0" fill="#0a1120"/>
+<rect x="0.0" y="0.0" width="662.4" height="900.0" rx="0" fill="#0c1a30"/>
+<line x1="662.4" y1="0.0" x2="662.4" y2="900.0" stroke="#20304c" stroke-width="1"/>
+<circle cx="331.2" cy="450.0" r="320.0" fill="none" stroke="#38bdf8" stroke-width="1" opacity="0.05"/>
+<circle cx="331.2" cy="450.0" r="240.0" fill="none" stroke="#38bdf8" stroke-width="1" opacity="0.07"/>
+<circle cx="331.2" cy="450.0" r="160.0" fill="none" stroke="#38bdf8" stroke-width="1" opacity="0.09"/>
+<rect x="305.2" y="300.0" width="52.0" height="52.0" rx="14" fill="#0b1624"/>
+<circle cx="331.2" cy="326.0" r="15.0" fill="none" stroke="#38bdf8" stroke-width="3.2"/>
+<circle cx="331.2" cy="326.0" r="5.5" fill="#38bdf8"/>
+<text x="331.2" y="380.0" font-size="30" fill="#f1f5f9" font-weight="800" text-anchor="middle" letter-spacing="5">AI VISION</text>
+<text x="331.2" y="412.0" font-size="14" fill="#38bdf8" font-weight="400" text-anchor="middle">Enterprise Factory Operating System</text>
+<text x="331.2" y="446.0" font-size="12" fill="#7a8aa3" font-weight="400" text-anchor="middle">Корпоративная операционная система завода</text>
+<circle cx="181.2" cy="502.0" r="3.0" fill="#38bdf8"/>
+<text x="193.2" y="506.0" font-size="12.5" fill="#c4cee0" font-weight="400" text-anchor="start">Turn camera feeds into real-time intelligence</text>
+<circle cx="181.2" cy="542.0" r="3.0" fill="#38bdf8"/>
+<text x="193.2" y="546.0" font-size="12.5" fill="#c4cee0" font-weight="400" text-anchor="start">Secure, role-based, fully audited access</text>
+<rect x="861.2" y="230.0" width="380.0" height="440.0" rx="20" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="895.2" y="282.0" font-size="24" fill="#f1f5f9" font-weight="750" text-anchor="start">Sign in</text>
+<text x="895.2" y="304.0" font-size="12" fill="#7a8aa3" font-weight="400" text-anchor="start">Вход в систему</text>
+<text x="895.2" y="338.0" font-size="11" fill="#7a8aa3" font-weight="600" text-anchor="start">Email</text>
+<rect x="895.2" y="348.0" width="312.0" height="44.0" rx="10" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="911.2" y="375.0" font-size="13" fill="#f1f5f9" font-weight="400" text-anchor="start">operator@factory.io</text>
+<text x="895.2" y="414.0" font-size="11" fill="#7a8aa3" font-weight="600" text-anchor="start">Password</text>
+<rect x="895.2" y="424.0" width="312.0" height="44.0" rx="10" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<circle cx="913.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="924.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="935.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="946.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="957.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="968.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="979.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="990.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<circle cx="1001.2" cy="447.0" r="3.0" fill="#c4cee0"/>
+<rect x="895.2" y="480.0" width="16.0" height="16.0" rx="5" fill="#38bdf8" stroke="#38bdf8" stroke-width="1" opacity="0.2"/>
+<path d="M 899.2 488.0 L 902.2 491.0 L 907.2 484.0" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="919.2" y="493.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">Remember me</text>
+<text x="1207.2" y="493.0" font-size="11.5" fill="#38bdf8" font-weight="600" text-anchor="end">Forgot?</text>
+<rect x="895.2" y="512.0" width="312.0" height="46.0" rx="11" fill="#38bdf8"/>
+<text x="1051.2" y="541.0" font-size="14" fill="#06121f" font-weight="750" text-anchor="middle">Sign in →</text>
+<line x1="895.2" y1="582.0" x2="1027.2" y2="582.0" stroke="#20304c" stroke-width="1"/>
+<line x1="1075.2" y1="582.0" x2="1207.2" y2="582.0" stroke="#20304c" stroke-width="1"/>
+<text x="1051.2" y="586.0" font-size="11" fill="#5b6b86" font-weight="400" text-anchor="middle">or</text>
+<rect x="895.2" y="604.0" width="150.0" height="40.0" rx="10" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<circle cx="917.2" cy="624.0" r="6.0" fill="none" stroke="#c4cee0" stroke-width="1.6"/>
+<text x="933.2" y="629.0" font-size="11" fill="#c4cee0" font-weight="500" text-anchor="start">SSO / SAML</text>
+<rect x="1057.2" y="604.0" width="150.0" height="40.0" rx="10" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<circle cx="1079.2" cy="624.0" r="6.0" fill="none" stroke="#c4cee0" stroke-width="1.6"/>
+<text x="1095.2" y="629.0" font-size="11" fill="#c4cee0" font-weight="500" text-anchor="start">MFA key</text>
+<rect x="0.0" y="900.0" width="1440.0" height="92.0" rx="0" fill="#070d18"/>
+<line x1="0.0" y1="900.0" x2="1440.0" y2="900.0" stroke="#20304c" stroke-width="1"/>
+<rect x="30.0" y="924.0" width="10.0" height="44.0" rx="3" fill="#38bdf8"/>
+<text x="52.0" y="938.0" font-size="16" fill="#f1f5f9" font-weight="750" text-anchor="start">Sign In</text>
+<text x="52.0" y="938.0" font-size="16" fill="#f1f5f9" font-weight="750" text-anchor="start">Sign In</text>
+<text x="129.0" y="938.0" font-size="12" fill="#7a8aa3" font-weight="400" text-anchor="start">Вход в систему</text>
+<text x="52.0" y="960.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">The authenticated gateway to the platform — email / SSO / MFA sign-in enforced by the Central System Core before any access is granted.</text>
+<rect x="1180.0" y="926.0" width="230.0" height="40.0" rx="9" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="1196.0" y="942.0" font-size="9.5" fill="#5b6b86" font-weight="600" text-anchor="start" letter-spacing="0.4">Realizes</text>
+<text x="1196.0" y="957.0" font-size="11" fill="#38bdf8" font-weight="650" text-anchor="start">System Core · L2</text>
+</svg>

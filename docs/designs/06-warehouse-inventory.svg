@@ -1,0 +1,280 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="992" viewBox="0 0 1440 992" font-family="Inter, sans-serif">
+<rect x="0.0" y="0.0" width="1440.0" height="992.0" rx="0" fill="#0a1120"/>
+<rect x="0.0" y="0.0" width="76.0" height="900.0" rx="0" fill="#0c1526"/>
+<line x1="76.0" y1="0.0" x2="76.0" y2="900.0" stroke="#20304c" stroke-width="1"/>
+<rect x="22.0" y="26.0" width="32.0" height="32.0" rx="9" fill="#0b1624"/>
+<circle cx="38.0" cy="42.0" r="9.0" fill="none" stroke="#38bdf8" stroke-width="2.4"/>
+<circle cx="38.0" cy="42.0" r="3.4" fill="#38bdf8"/>
+<path d="M 29.0 116 L 38.0 104 L 47.0 116 M 32.0 113 L 32.0 119 L 44.0 119 L 44.0 113" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="10.0" y="152.0" width="56.0" height="44.0" rx="11" fill="#38bdf8" opacity="0.16"/>
+<rect x="0.0" y="152.0" width="3.0" height="44.0" rx="2" fill="#38bdf8"/>
+<rect x="31.0" y="161.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#38bdf8" stroke-width="2"/>
+<rect x="31.0" y="171.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#38bdf8" stroke-width="2"/>
+<rect x="41.0" y="161.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#38bdf8" stroke-width="2"/>
+<rect x="41.0" y="171.0" width="8.0" height="8.0" rx="2" fill="none" stroke="#38bdf8" stroke-width="2"/>
+<rect x="28.0" y="220.0" width="13.0" height="12.0" rx="2" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<path d="M 42.0 224 L 48.0 220 L 48.0 232 L 42.0 228 Z" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 29.0 292 L 29.0 276 M 29.0 292 L 47.0 292" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 33.0 287 L 37.0 281 L 41.0 284 L 46.0 277" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 31.0 346 Q 31.0 334 38.0 334 Q 45.0 334 45.0 346 Z" fill="none" stroke="#5b6b86" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="36.0" y1="350.0" x2="40.0" y2="350.0" stroke="#5b6b86" stroke-width="2"/>
+<circle cx="38.0" cy="400.0" r="6.0" fill="none" stroke="#5b6b86" stroke-width="2"/>
+<circle cx="38.0" cy="400.0" r="2.0" fill="#5b6b86"/>
+<rect x="76.0" y="0.0" width="1364.0" height="64.0" rx="0" fill="#122341"/>
+<line x1="76.0" y1="64.0" x2="1440.0" y2="64.0" stroke="#20304c" stroke-width="1"/>
+<text x="102.0" y="30.0" font-size="17" fill="#f1f5f9" font-weight="700" text-anchor="start">Warehouse &amp; Inventory</text>
+<text x="102.0" y="48.0" font-size="11.5" fill="#7a8aa3" font-weight="400" text-anchor="start">Склад и запасы</text>
+<rect x="1080.0" y="17.0" width="190.0" height="30.0" rx="8" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<circle cx="1098.0" cy="32.0" r="5.0" fill="none" stroke="#5b6b86" stroke-width="1.6"/>
+<line x1="1102.0" y1="36.0" x2="1107.0" y2="41.0" stroke="#5b6b86" stroke-width="1.6"/>
+<text x="1114.0" y="36.0" font-size="11.5" fill="#5b6b86" font-weight="400" text-anchor="start">Search…</text>
+<circle cx="1290.0" cy="32.0" r="4.0" fill="#34d399"/>
+<text x="1300.0" y="36.0" font-size="12" fill="#c4cee0" font-weight="600" text-anchor="start" font-family="ui-monospace, monospace">14:32:07</text>
+<circle cx="1400.0" cy="32.0" r="15.0" fill="#a78bfa" opacity="0.35"/>
+<text x="1400.0" y="37.0" font-size="11" fill="#f1f5f9" font-weight="700" text-anchor="middle">OJ</text>
+<rect x="309.0" y="16.0" width="50.0" height="20.0" rx="10" fill="#34d399" opacity="0.16"/>
+<circle cx="321.0" cy="26.0" r="3.0" fill="#34d399"/>
+<text x="329.0" y="30.0" font-size="10.5" fill="#34d399" font-weight="650" text-anchor="start">LIVE</text>
+<rect x="100.0" y="88.0" width="310.0" height="104.0" rx="13" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<rect x="100.0" y="88.0" width="4.0" height="104.0" rx="2" fill="#38bdf8"/>
+<text x="118.0" y="114.0" font-size="11.5" fill="#7a8aa3" font-weight="600" text-anchor="start" letter-spacing="0.3">TOTAL SKUs</text>
+<text x="117.0" y="150.0" font-size="30" fill="#f1f5f9" font-weight="750" text-anchor="start">2,418</text>
+<text x="118.0" y="176.0" font-size="11.5" fill="#34d399" font-weight="650" text-anchor="start">▲ +36 today</text>
+<rect x="430.0" y="88.0" width="310.0" height="104.0" rx="13" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<rect x="430.0" y="88.0" width="4.0" height="104.0" rx="2" fill="#34d399"/>
+<text x="448.0" y="114.0" font-size="11.5" fill="#7a8aa3" font-weight="600" text-anchor="start" letter-spacing="0.3">OCCUPANCY</text>
+<text x="447.0" y="150.0" font-size="30" fill="#f1f5f9" font-weight="750" text-anchor="start">78</text>
+<text x="487.0" y="150.0" font-size="13" fill="#7a8aa3" font-weight="600" text-anchor="start">%</text>
+<text x="448.0" y="176.0" font-size="11.5" fill="#34d399" font-weight="650" text-anchor="start">▲ +4% wk</text>
+<rect x="760.0" y="88.0" width="310.0" height="104.0" rx="13" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<rect x="760.0" y="88.0" width="4.0" height="104.0" rx="2" fill="#34d399"/>
+<text x="778.0" y="114.0" font-size="11.5" fill="#7a8aa3" font-weight="600" text-anchor="start" letter-spacing="0.3">PALLETS IN / OUT</text>
+<text x="777.0" y="150.0" font-size="30" fill="#f1f5f9" font-weight="750" text-anchor="start">142</text>
+<text x="834.0" y="150.0" font-size="13" fill="#7a8aa3" font-weight="600" text-anchor="start">/118</text>
+<text x="778.0" y="176.0" font-size="11.5" fill="#34d399" font-weight="650" text-anchor="start">▲ net +24</text>
+<rect x="1090.0" y="88.0" width="310.0" height="104.0" rx="13" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<rect x="1090.0" y="88.0" width="4.0" height="104.0" rx="2" fill="#fbbf24"/>
+<text x="1108.0" y="114.0" font-size="11.5" fill="#7a8aa3" font-weight="600" text-anchor="start" letter-spacing="0.3">LOW-STOCK SKUs</text>
+<text x="1107.0" y="150.0" font-size="30" fill="#f1f5f9" font-weight="750" text-anchor="start">7</text>
+<text x="1108.0" y="176.0" font-size="11.5" fill="#fb7185" font-weight="650" text-anchor="start">▼ 2 critical</text>
+<rect x="100.0" y="212.0" width="780.0" height="336.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="118.0" y="239.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Warehouse Occupancy Map</text>
+<text x="118.0" y="255.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Карта заполнения склада</text>
+<rect x="127.0" y="271.0" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="127.0" y="315.5" width="51.8" height="4.0" rx="2" fill="#34d399"/>
+<text x="135.0" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A1</text>
+<text x="135.0" y="305.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">62%</text>
+<rect x="218.5" y="271.0" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="218.5" y="315.5" width="73.5" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="226.5" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A2</text>
+<text x="226.5" y="305.0" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">88%</text>
+<rect x="310.0" y="271.0" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="310.0" y="315.5" width="61.8" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="318.0" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A3</text>
+<text x="318.0" y="305.0" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">74%</text>
+<rect x="401.5" y="271.0" width="83.5" height="53.5" rx="7" fill="#fb7185" stroke="#fb7185" stroke-width="1" opacity="0.14"/>
+<rect x="401.5" y="315.5" width="79.3" height="4.0" rx="2" fill="#fb7185"/>
+<text x="409.5" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A4</text>
+<text x="409.5" y="305.0" font-size="11" fill="#fb7185" font-weight="650" text-anchor="start">95%</text>
+<rect x="493.0" y="271.0" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="493.0" y="315.5" width="33.4" height="4.0" rx="2" fill="#34d399"/>
+<text x="501.0" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A5</text>
+<text x="501.0" y="305.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">40%</text>
+<rect x="584.5" y="271.0" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="584.5" y="315.5" width="66.8" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="592.5" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A6</text>
+<text x="592.5" y="305.0" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">80%</text>
+<rect x="676.0" y="271.0" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="676.0" y="315.5" width="48.4" height="4.0" rx="2" fill="#34d399"/>
+<text x="684.0" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A7</text>
+<text x="684.0" y="305.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">58%</text>
+<rect x="767.5" y="271.0" width="83.5" height="53.5" rx="7" fill="#fb7185" stroke="#fb7185" stroke-width="1" opacity="0.14"/>
+<rect x="767.5" y="315.5" width="75.2" height="4.0" rx="2" fill="#fb7185"/>
+<text x="775.5" y="290.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">A8</text>
+<text x="775.5" y="305.0" font-size="11" fill="#fb7185" font-weight="650" text-anchor="start">90%</text>
+<rect x="127.0" y="332.5" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="127.0" y="377.0" width="58.5" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="135.0" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B1</text>
+<text x="135.0" y="366.5" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">70%</text>
+<rect x="218.5" y="332.5" width="83.5" height="53.5" rx="7" fill="#fb7185" stroke="#fb7185" stroke-width="1" opacity="0.14"/>
+<rect x="218.5" y="377.0" width="82.7" height="4.0" rx="2" fill="#fb7185"/>
+<text x="226.5" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B2</text>
+<text x="226.5" y="366.5" font-size="11" fill="#fb7185" font-weight="650" text-anchor="start">99%</text>
+<rect x="310.0" y="332.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="310.0" y="377.0" width="37.6" height="4.0" rx="2" fill="#34d399"/>
+<text x="318.0" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B3</text>
+<text x="318.0" y="366.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">45%</text>
+<rect x="401.5" y="332.5" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="401.5" y="377.0" width="68.5" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="409.5" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B4</text>
+<text x="409.5" y="366.5" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">82%</text>
+<rect x="493.0" y="332.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="493.0" y="377.0" width="55.1" height="4.0" rx="2" fill="#34d399"/>
+<text x="501.0" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B5</text>
+<text x="501.0" y="366.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">66%</text>
+<rect x="584.5" y="332.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="584.5" y="377.0" width="25.1" height="4.0" rx="2" fill="#34d399"/>
+<text x="592.5" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B6</text>
+<text x="592.5" y="366.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">30%</text>
+<rect x="676.0" y="332.5" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="676.0" y="377.0" width="64.3" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="684.0" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B7</text>
+<text x="684.0" y="366.5" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">77%</text>
+<rect x="767.5" y="332.5" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="767.5" y="377.0" width="73.5" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="775.5" y="351.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">B8</text>
+<text x="775.5" y="366.5" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">88%</text>
+<rect x="127.0" y="394.0" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="127.0" y="438.5" width="45.9" height="4.0" rx="2" fill="#34d399"/>
+<text x="135.0" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C1</text>
+<text x="135.0" y="428.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">55%</text>
+<rect x="218.5" y="394.0" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="218.5" y="438.5" width="60.1" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="226.5" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C2</text>
+<text x="226.5" y="428.0" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">72%</text>
+<rect x="310.0" y="394.0" width="83.5" height="53.5" rx="7" fill="#fb7185" stroke="#fb7185" stroke-width="1" opacity="0.14"/>
+<rect x="310.0" y="438.5" width="76.0" height="4.0" rx="2" fill="#fb7185"/>
+<text x="318.0" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C3</text>
+<text x="318.0" y="428.0" font-size="11" fill="#fb7185" font-weight="650" text-anchor="start">91%</text>
+<rect x="401.5" y="394.0" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="401.5" y="438.5" width="50.1" height="4.0" rx="2" fill="#34d399"/>
+<text x="409.5" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C4</text>
+<text x="409.5" y="428.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">60%</text>
+<rect x="493.0" y="394.0" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="493.0" y="438.5" width="70.1" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="501.0" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C5</text>
+<text x="501.0" y="428.0" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">84%</text>
+<rect x="584.5" y="394.0" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="584.5" y="438.5" width="41.8" height="4.0" rx="2" fill="#34d399"/>
+<text x="592.5" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C6</text>
+<text x="592.5" y="428.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">50%</text>
+<rect x="676.0" y="394.0" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="676.0" y="438.5" width="56.8" height="4.0" rx="2" fill="#34d399"/>
+<text x="684.0" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C7</text>
+<text x="684.0" y="428.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">68%</text>
+<rect x="767.5" y="394.0" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="767.5" y="438.5" width="66.0" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="775.5" y="413.0" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">C8</text>
+<text x="775.5" y="428.0" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">79%</text>
+<rect x="127.0" y="455.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="127.0" y="500.0" width="36.7" height="4.0" rx="2" fill="#34d399"/>
+<text x="135.0" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D1</text>
+<text x="135.0" y="489.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">44%</text>
+<rect x="218.5" y="455.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="218.5" y="500.0" width="55.1" height="4.0" rx="2" fill="#34d399"/>
+<text x="226.5" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D2</text>
+<text x="226.5" y="489.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">66%</text>
+<rect x="310.0" y="455.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="310.0" y="500.0" width="48.4" height="4.0" rx="2" fill="#34d399"/>
+<text x="318.0" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D3</text>
+<text x="318.0" y="489.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">58%</text>
+<rect x="401.5" y="455.5" width="83.5" height="53.5" rx="7" fill="#fb7185" stroke="#fb7185" stroke-width="1" opacity="0.14"/>
+<rect x="401.5" y="500.0" width="81.0" height="4.0" rx="2" fill="#fb7185"/>
+<text x="409.5" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D4</text>
+<text x="409.5" y="489.5" font-size="11" fill="#fb7185" font-weight="650" text-anchor="start">97%</text>
+<rect x="493.0" y="455.5" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="493.0" y="500.0" width="60.1" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="501.0" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D5</text>
+<text x="501.0" y="489.5" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">72%</text>
+<rect x="584.5" y="455.5" width="83.5" height="53.5" rx="7" fill="#fbbf24" stroke="#fbbf24" stroke-width="1" opacity="0.14"/>
+<rect x="584.5" y="500.0" width="71.0" height="4.0" rx="2" fill="#fbbf24"/>
+<text x="592.5" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D6</text>
+<text x="592.5" y="489.5" font-size="11" fill="#fbbf24" font-weight="650" text-anchor="start">85%</text>
+<rect x="676.0" y="455.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="676.0" y="500.0" width="32.6" height="4.0" rx="2" fill="#34d399"/>
+<text x="684.0" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D7</text>
+<text x="684.0" y="489.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">39%</text>
+<rect x="767.5" y="455.5" width="83.5" height="53.5" rx="7" fill="#34d399" stroke="#34d399" stroke-width="1" opacity="0.14"/>
+<rect x="767.5" y="500.0" width="50.9" height="4.0" rx="2" fill="#34d399"/>
+<text x="775.5" y="474.5" font-size="10.5" fill="#f1f5f9" font-weight="650" text-anchor="start">D8</text>
+<text x="775.5" y="489.5" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">61%</text>
+<circle cx="130.0" cy="532.0" r="4.0" fill="#34d399"/>
+<text x="140.0" y="536.0" font-size="10.5" fill="#7a8aa3" font-weight="400" text-anchor="start">free</text>
+<circle cx="194.0" cy="532.0" r="4.0" fill="#fbbf24"/>
+<text x="204.0" y="536.0" font-size="10.5" fill="#7a8aa3" font-weight="400" text-anchor="start">filling</text>
+<circle cx="276.0" cy="532.0" r="4.0" fill="#fb7185"/>
+<text x="286.0" y="536.0" font-size="10.5" fill="#7a8aa3" font-weight="400" text-anchor="start">full</text>
+<rect x="900.0" y="212.0" width="500.0" height="180.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="918.0" y="239.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Inbound vs Outbound</text>
+<text x="918.0" y="255.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Приём / отгрузка</text>
+<rect x="1224.0" y="228.0" width="76.0" height="22.0" rx="7" fill="#34d399" opacity="0.16"/>
+<circle cx="1234.0" cy="239.0" r="3.0" fill="#34d399"/>
+<text x="1244.0" y="243.0" font-size="10.5" fill="#34d399" font-weight="600" text-anchor="start">In</text>
+<rect x="1308.0" y="228.0" width="76.0" height="22.0" rx="7" fill="#38bdf8" opacity="0.16"/>
+<circle cx="1318.0" cy="239.0" r="3.0" fill="#38bdf8"/>
+<text x="1328.0" y="243.0" font-size="10.5" fill="#38bdf8" font-weight="600" text-anchor="start">Out</text>
+<line x1="922.0" y1="270.0" x2="1378.0" y2="270.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="922.0" y1="291.0" x2="1378.0" y2="291.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="922.0" y1="312.0" x2="1378.0" y2="312.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="922.0" y1="333.0" x2="1378.0" y2="333.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<line x1="922.0" y1="354.0" x2="1378.0" y2="354.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<path d="M 922.0 323.5 L 987.1 308.2 L 1052.3 315.8 L 1117.4 300.5 L 1182.6 292.9 L 1247.7 304.4 L 1312.9 285.3 L 1378.0 277.6 L 1378.0 354.0 L 922.0 354.0 Z" fill="#34d399" opacity="0.08"/>
+<path d="M 922.0 323.5 L 987.1 308.2 L 1052.3 315.8 L 1117.4 300.5 L 1182.6 292.9 L 1247.7 304.4 L 1312.9 285.3 L 1378.0 277.6" fill="none" stroke="#34d399" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="1378.0" cy="277.6" r="3.5" fill="#34d399"/>
+<path d="M 922.0 327.3 L 987.1 319.6 L 1052.3 312.0 L 1117.4 315.8 L 1182.6 308.2 L 1247.7 300.5 L 1312.9 304.4 L 1378.0 292.9 L 1378.0 354.0 L 922.0 354.0 Z" fill="#38bdf8" opacity="0.08"/>
+<path d="M 922.0 327.3 L 987.1 319.6 L 1052.3 312.0 L 1117.4 315.8 L 1182.6 308.2 L 1247.7 300.5 L 1312.9 304.4 L 1378.0 292.9" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="1378.0" cy="292.9" r="3.5" fill="#38bdf8"/>
+<rect x="900.0" y="408.0" width="500.0" height="140.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="918.0" y="435.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Zone Occupancy</text>
+<text x="918.0" y="451.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Заполнение зон</text>
+<circle cx="1150.0" cy="504.0" r="58.0" fill="none" stroke="#2a3c5a" stroke-width="12"/>
+<path d="M 1150.0 446.0 A 58 58 0 1 1 1093.0 493.1" fill="none" stroke="#34d399" stroke-width="12" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="1150.0" y="508.0" font-size="30" fill="#f1f5f9" font-weight="750" text-anchor="middle">78</text>
+<text x="1150.0" y="528.0" font-size="10.5" fill="#7a8aa3" font-weight="400" text-anchor="middle">occupied</text>
+<rect x="100.0" y="568.0" width="1300.0" height="292.0" rx="14" fill="#0f1b30" stroke="#20304c" stroke-width="1"/>
+<text x="118.0" y="595.0" font-size="14" fill="#f1f5f9" font-weight="650" text-anchor="start">Inventory · Recent Movements</text>
+<text x="118.0" y="611.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">Запасы · движения</text>
+<text x="124.0" y="638.0" font-size="10.5" fill="#5b6b86" font-weight="650" text-anchor="start" letter-spacing="0.3">SKU</text>
+<text x="324.3" y="638.0" font-size="10.5" fill="#5b6b86" font-weight="650" text-anchor="start" letter-spacing="0.3">Product</text>
+<text x="649.8" y="638.0" font-size="10.5" fill="#5b6b86" font-weight="650" text-anchor="start" letter-spacing="0.3">Zone</text>
+<text x="800.1" y="638.0" font-size="10.5" fill="#5b6b86" font-weight="650" text-anchor="start" letter-spacing="0.3">Qty</text>
+<text x="975.4" y="638.0" font-size="10.5" fill="#5b6b86" font-weight="650" text-anchor="start" letter-spacing="0.3">Updated</text>
+<text x="1175.7" y="638.0" font-size="10.5" fill="#5b6b86" font-weight="650" text-anchor="start" letter-spacing="0.3">Status</text>
+<line x1="124.0" y1="646.0" x2="1376.0" y2="646.0" stroke="#20304c" stroke-width="1"/>
+<text x="124.0" y="668.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">SKU-40218</text>
+<text x="324.3" y="668.0" font-size="11.5" fill="#f1f5f9" font-weight="500" text-anchor="start">Steel bracket M8</text>
+<text x="649.8" y="668.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">B2</text>
+<text x="800.1" y="668.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">1,240</text>
+<text x="975.4" y="668.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">2m ago</text>
+<rect x="1175.7" y="655.0" width="71.2" height="19.0" rx="9" fill="#34d399" opacity="0.16"/>
+<circle cx="1186.7" cy="664.0" r="3.0" fill="#34d399"/>
+<text x="1195.7" y="668.0" font-size="10.5" fill="#34d399" font-weight="600" text-anchor="start">In stock</text>
+<line x1="124.0" y1="679.0" x2="1376.0" y2="679.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<text x="124.0" y="702.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">SKU-11907</text>
+<text x="324.3" y="702.0" font-size="11.5" fill="#f1f5f9" font-weight="500" text-anchor="start">Hydraulic hose 3/4</text>
+<text x="649.8" y="702.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">D4</text>
+<text x="800.1" y="702.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">86</text>
+<text x="975.4" y="702.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">5m ago</text>
+<rect x="1175.7" y="689.0" width="39.2" height="19.0" rx="9" fill="#fbbf24" opacity="0.16"/>
+<circle cx="1186.7" cy="698.0" r="3.0" fill="#fbbf24"/>
+<text x="1195.7" y="702.0" font-size="10.5" fill="#fbbf24" font-weight="600" text-anchor="start">Low</text>
+<line x1="124.0" y1="713.0" x2="1376.0" y2="713.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<text x="124.0" y="736.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">SKU-88123</text>
+<text x="324.3" y="736.0" font-size="11.5" fill="#f1f5f9" font-weight="500" text-anchor="start">Pallet wrap film</text>
+<text x="649.8" y="736.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">A1</text>
+<text x="800.1" y="736.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">0</text>
+<text x="975.4" y="736.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">8m ago</text>
+<rect x="1175.7" y="723.0" width="96.8" height="19.0" rx="9" fill="#fb7185" opacity="0.16"/>
+<circle cx="1186.7" cy="732.0" r="3.0" fill="#fb7185"/>
+<text x="1195.7" y="736.0" font-size="10.5" fill="#fb7185" font-weight="600" text-anchor="start">Out of stock</text>
+<line x1="124.0" y1="747.0" x2="1376.0" y2="747.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<text x="124.0" y="770.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">SKU-52640</text>
+<text x="324.3" y="770.0" font-size="11.5" fill="#f1f5f9" font-weight="500" text-anchor="start">Gasket set X</text>
+<text x="649.8" y="770.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">C3</text>
+<text x="800.1" y="770.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start" font-family="ui-monospace, monospace">742</text>
+<text x="975.4" y="770.0" font-size="11" fill="#7a8aa3" font-weight="400" text-anchor="start">11m ago</text>
+<rect x="1175.7" y="757.0" width="71.2" height="19.0" rx="9" fill="#34d399" opacity="0.16"/>
+<circle cx="1186.7" cy="766.0" r="3.0" fill="#34d399"/>
+<text x="1195.7" y="770.0" font-size="10.5" fill="#34d399" font-weight="600" text-anchor="start">In stock</text>
+<line x1="124.0" y1="781.0" x2="1376.0" y2="781.0" stroke="#20304c" stroke-width="1" opacity="0.5"/>
+<rect x="0.0" y="900.0" width="1440.0" height="92.0" rx="0" fill="#070d18"/>
+<line x1="0.0" y1="900.0" x2="1440.0" y2="900.0" stroke="#20304c" stroke-width="1"/>
+<rect x="30.0" y="924.0" width="10.0" height="44.0" rx="3" fill="#34d399"/>
+<text x="52.0" y="938.0" font-size="16" fill="#f1f5f9" font-weight="750" text-anchor="start">Warehouse &amp; Inventory</text>
+<text x="52.0" y="938.0" font-size="16" fill="#f1f5f9" font-weight="750" text-anchor="start">Warehouse &amp; Inventory</text>
+<text x="255.0" y="938.0" font-size="12" fill="#7a8aa3" font-weight="400" text-anchor="start">Склад и запасы</text>
+<text x="52.0" y="960.0" font-size="11.5" fill="#c4cee0" font-weight="400" text-anchor="start">Real-time stock levels, rack occupancy and pallet flow — inbound/outbound movements and low-stock alerts across the warehouse.</text>
+<rect x="1180.0" y="926.0" width="230.0" height="40.0" rx="9" fill="#13233d" stroke="#20304c" stroke-width="1"/>
+<text x="1196.0" y="942.0" font-size="9.5" fill="#5b6b86" font-weight="600" text-anchor="start" letter-spacing="0.4">Realizes</text>
+<text x="1196.0" y="957.0" font-size="11" fill="#34d399" font-weight="650" text-anchor="start">Goods Service · L7</text>
+</svg>

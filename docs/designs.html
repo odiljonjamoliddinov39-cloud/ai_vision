@@ -99,14 +99,14 @@
 </div></header>
 
 <section class="hero"><div class="wrap">
-  <div class="eyebrow">PRODUCT DESIGN · PRESENTATION LAYER</div>
+  <div class="eyebrow">PRODUCT DESIGN · INTERFACE SYSTEM</div>
   <h1><span class="en-only">Interface Mockups</span><span class="ru-only">Макеты интерфейсов</span></h1>
-  <p class="sub"><span class="en-only">Пять версий интерфейса и их назначение</span><span class="ru-only">Five interface versions and their purpose</span></p>
+  <p class="sub"><span class="en-only">Десять экранов продукта и их назначение</span><span class="ru-only">Ten product screens and their purpose</span></p>
   <p class="lede">
-    <span class="en-only">Five design mockups for the surfaces in Layer 1 (Presentation) — each a distinct version of the product for a different user and purpose. Every screen is a self-contained SVG, so it drops straight into Figma as editable layers.</span>
-    <span class="ru-only">Пять макетов для поверхностей Уровня 1 (Представление) — каждая отдельная версия продукта для своего пользователя и цели. Каждый экран — самодостаточный SVG, который импортируется в Figma как редактируемые слои.</span>
+    <span class="en-only">Ten design mockups spanning the platform's key surfaces — executive and operator dashboards, real-time control, domain consoles (warehouse, safety, maintenance, cameras) and sign-in. Each maps to a layer of the architecture, and every screen is a self-contained SVG that drops straight into Figma as editable layers.</span>
+    <span class="ru-only">Десять макетов, охватывающих ключевые поверхности платформы — панели руководства и операторов, управление в реальном времени, доменные консоли (склад, безопасность, ТО, камеры) и вход. Каждый связан с уровнем архитектуры, и каждый экран — самодостаточный SVG, импортируемый в Figma как редактируемые слои.</span>
   </p>
-  <div class="meta mono">5 screens · Inter · dark control-room theme · EN / RU</div>
+  <div class="meta mono">10 screens · Inter · dark control-room theme · EN / RU</div>
 </div></section>
 
 <main class="wrap" id="shots"></main>
@@ -156,6 +156,36 @@ const SHOTS=[
   pru:"Клиент для смартфона: оповещения, снимки и ключевые метрики в движении — чтобы руководители реагировали вдали от рабочего места.",
   fen:["Push critical alerts with snapshot","One-tap Acknowledge","Personal KPI mini-tiles","Recent event feed & bottom nav"],
   fru:["Push критичных оповещений со снимком","Подтверждение в одно касание","Персональные мини-плитки KPI","Лента событий и нижняя навигация"]},
+ {num:"06",ac:"#34d399",img:"designs/06-warehouse-inventory.svg",
+  en:"Warehouse & Inventory",ru:"Склад и запасы",tag:"Goods · L7",
+  pen:"Real-time stock levels, rack occupancy and pallet flow — inbound/outbound movements and low-stock alerts across the whole warehouse.",
+  pru:"Уровни запасов, заполнение стеллажей и движение паллет в реальном времени — приём/отгрузка и оповещения о низком остатке по всему складу.",
+  fen:["Rack occupancy heat map","Inbound vs outbound flow","Zone occupancy gauge","Inventory table with stock status"],
+  fru:["Тепловая карта заполнения стеллажей","Приём против отгрузки","Индикатор заполнения зон","Таблица запасов со статусом"]},
+ {num:"07",ac:"#fb7185",img:"designs/07-safety-console.svg",
+  en:"Safety & PPE Console",ru:"Безопасность и СИЗ",tag:"Safety · L7",
+  pen:"Live safety enforcement — PPE-violation detections with snapshots, danger-zone breaches, per-zone compliance and a same-day incident log.",
+  pru:"Контроль безопасности в реальном времени — нарушения СИЗ со снимками, проникновения в опасные зоны, соблюдение по зонам и журнал за день.",
+  fen:["Live violations with snapshot evidence","PPE compliance by zone","Near-miss trend","Same-day incident log"],
+  fru:["Активные нарушения со снимками","Соблюдение СИЗ по зонам","Тренд опасных сближений","Журнал инцидентов за день"]},
+ {num:"08",ac:"#a78bfa",img:"designs/08-maintenance-board.svg",
+  en:"Maintenance & Equipment",ru:"Обслуживание и оборудование",tag:"Machine · L7",
+  pen:"Condition monitoring and service planning — machine health, fault causes, downtime trends and a live preventive-maintenance schedule.",
+  pru:"Мониторинг состояния и планирование ТО — здоровье машин, причины отказов, тренды простоев и живой график планового обслуживания.",
+  fen:["Equipment health with PM due-dates","14-day downtime chart","Fault breakdown","Preventive-maintenance schedule"],
+  fru:["Здоровье оборудования и сроки ТО","Простои за 14 дней","Причины отказов","График планового обслуживания"]},
+ {num:"09",ac:"#38bdf8",img:"designs/09-camera-management.svg",
+  en:"Camera Management",ru:"Управление камерами",tag:"Streams · L3",
+  pen:"Discovery, health and configuration of every camera — ONVIF/RTSP/NVR registry, live network scan, per-stream FPS and signal health.",
+  pru:"Обнаружение, состояние и настройка камер — реестр ONVIF/RTSP/NVR, живое сканирование сети, FPS потоков и качество сигнала.",
+  fen:["Camera registry with signal sparklines","Protocol & status per stream","Live network discovery","Multi-camera preview grid"],
+  fru:["Реестр камер с графиками сигнала","Протокол и статус по потоку","Живое обнаружение в сети","Сетка предпросмотра камер"]},
+ {num:"10",ac:"#22d3ee",img:"designs/10-login.svg",wide:true,
+  en:"Sign In",ru:"Вход в систему",tag:"Core · L2",
+  pen:"The authenticated gateway to the platform — email / SSO / MFA sign-in enforced by the Central System Core before any access is granted.",
+  pru:"Аутентифицированный вход в платформу — email / SSO / MFA, контролируемый Центральным ядром до предоставления доступа.",
+  fen:["Branded split-screen sign-in","Email + password auth","SSO / SAML and MFA options","Remember-me & recovery"],
+  fru:["Фирменный экран входа","Email + пароль","Опции SSO / SAML и MFA","Запомнить меня и восстановление"]},
 ];
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const bi=(a,b)=>`<span class="en-only">${esc(a)}</span><span class="ru-only">${esc(b)}</span>`;
