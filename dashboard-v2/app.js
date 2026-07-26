@@ -2407,18 +2407,19 @@ function productLearningPanelHtml(session) {
   if (session.status === "failed") {
     return `<div class="module-placeholder"><h3>Learning could not finish</h3><p>${escapeHtml(session.error || "No stable product views were found.")}</p><button type="button" data-acc-action="learn-product">Try again</button></div>`;
   }
+  const existing = session.existing_match;
+  const matchingViewIndices = new Set(existing?.matching_view_indices || []);
   const previews = (session.views || [])
     .map((view) => `
       <label style="display:block;cursor:pointer;border:2px solid #2563eb;border-radius:10px;padding:5px">
         <img src="${API_BASE}${view.url}" alt="Learned product view" style="display:block;width:110px;height:90px;object-fit:cover;border-radius:7px" />
         <span style="display:flex;gap:5px;align-items:center;font-size:11px;margin-top:5px">
-          <input type="checkbox" name="learned-view" value="${Number(view.index)}" checked />
+          <input type="checkbox" name="learned-view" value="${Number(view.index)}" ${existing ? (matchingViewIndices.has(Number(view.index)) ? "checked" : "") : "checked"} />
           Use this view
         </span>
       </label>`)
     .join("");
   if (session.status === "ready") {
-    const existing = session.existing_match;
     return `
       <div class="module-placeholder">
         <h3>${Number(session.view_count || 0)} reusable product views captured</h3>
@@ -2428,10 +2429,11 @@ function productLearningPanelHtml(session) {
           ${existing ? `
             <label style="display:flex;gap:8px;align-items:center;padding:12px;background:#ecfdf5;border:1px solid #86efac;border-radius:9px;margin-bottom:12px">
               <input type="checkbox" name="use-existing-product" value="${escapeAttr(existing.item_id)}" checked />
-              <span><strong>Existing manual product found: ${escapeHtml(existing.name)}</strong><br><small>${Math.round(Number(existing.confidence) * 100)}% visual match. Add these selected views to its fingerprint.</small></span>
+              <span><strong>Existing manual product found: ${escapeHtml(existing.name)}</strong><br><small>${Math.round(Number(existing.confidence) * 100)}% multi-view match across ${Number(existing.matching_view_count)} pictures. This product is already in the AI Check-in list; saving adds the selected views to it.</small></span>
             </label>` : ""}
           <div style="display:flex;gap:10px;align-items:end">
           <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:5px">Product Name</span><input name="name" required maxlength="60" placeholder="Baget Box" value="${escapeAttr(existing?.name || "")}" autocomplete="off" style="width:100%" /></label>
+          <button type="button" data-acc-action="learn-product">Retake pictures</button>
           <button type="submit">Save and start counting</button>
           </div>
         </form>

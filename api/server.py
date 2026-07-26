@@ -2167,27 +2167,47 @@ def _run_product_learning_session(session_id: str) -> None:
         existing_matches = []
         for item in catalog.list_items(str(session["scope_id"]), active_only=True):
             references = catalog.list_images(str(item["id"]), include_embeddings=True)
-            score = max(
-                (
-                    cosine_similarity(view["embedding"], reference.get("embedding") or [])
-                    for view in selected
-                    for reference in references
-                ),
-                default=0.0,
+            per_view_scores = [
+                max(
+                    (
+                        cosine_similarity(
+                            view["embedding"], reference.get("embedding") or []
+                        )
+                        for reference in references
+                    ),
+                    default=0.0,
+                )
+                for view in selected
+            ]
+            required_score = float(
+                os.getenv("CATALOG_EXISTING_PRODUCT_SIMILARITY_THRESHOLD", "0.82")
             )
+            matching_indices = [
+                index
+                for index, score in enumerate(per_view_scores)
+                if score >= required_score
+            ]
+            strongest = sorted(per_view_scores, reverse=True)[:2]
+            score = sum(strongest) / len(strongest) if strongest else 0.0
             existing_matches.append(
                 {
                     "item_id": str(item["id"]),
                     "name": str(item["name"]),
                     "confidence": round(float(score), 4),
+                    "matching_view_indices": matching_indices,
+                    "matching_view_count": len(matching_indices),
                 }
             )
         existing_matches.sort(key=lambda match: match["confidence"], reverse=True)
         session["existing_matches"] = existing_matches[:3]
-        threshold = float(os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.62"))
+        threshold = float(
+            os.getenv("CATALOG_EXISTING_PRODUCT_SIMILARITY_THRESHOLD", "0.82")
+        )
         session["existing_match"] = (
             existing_matches[0]
-            if existing_matches and existing_matches[0]["confidence"] >= threshold
+            if existing_matches
+            and existing_matches[0]["confidence"] >= threshold
+            and existing_matches[0]["matching_view_count"] >= 2
             else None
         )
 
