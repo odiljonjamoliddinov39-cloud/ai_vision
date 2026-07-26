@@ -820,6 +820,7 @@ class ProductLearningSave(BaseModel):
     session_id: str = Field(min_length=8, max_length=120)
     product_name: str = Field(min_length=1, max_length=60)
     view_indices: list[int] = Field(min_length=2, max_length=8)
+    existing_item_id: str | None = Field(default=None, max_length=120)
 
 
 class WarehouseTaskRequest(BaseModel):
@@ -2161,6 +2162,34 @@ def _run_product_learning_session(session_id: str) -> None:
             raise RuntimeError(
                 "The object was not visible in enough distinct frames. Move or rotate it and try again."
             )
+
+        catalog = _get_catalog_db()
+        existing_matches = []
+        for item in catalog.list_items(str(session["scope_id"]), active_only=True):
+            references = catalog.list_images(str(item["id"]), include_embeddings=True)
+            score = max(
+                (
+                    cosine_similarity(view["embedding"], reference.get("embedding") or [])
+                    for view in selected
+                    for reference in references
+                ),
+                default=0.0,
+            )
+            existing_matches.append(
+                {
+                    "item_id": str(item["id"]),
+                    "name": str(item["name"]),
+                    "confidence": round(float(score), 4),
+                }
+            )
+        existing_matches.sort(key=lambda match: match["confidence"], reverse=True)
+        session["existing_matches"] = existing_matches[:3]
+        threshold = float(os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.62"))
+        session["existing_match"] = (
+            existing_matches[0]
+            if existing_matches and existing_matches[0]["confidence"] >= threshold
+            else None
+        )
 
         previews = []
         for index, view in enumerate(selected, start=1):
@@ -4748,15 +4777,6 @@ def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[st
         raise HTTPException(status_code=409, detail="Product learning has not completed.")
     product_name = " ".join(request.product_name.split()).strip()
     db = _get_catalog_db()
-    if any(
-        _catalog_normalize_name(item["name"]) == _catalog_normalize_name(product_name)
-        for item in db.list_items(scope)
-    ):
-        raise HTTPException(status_code=409, detail="An item with this name already exists.")
-
-    item = db.create_item(scope, product_name)
-    item_dir = CATALOG_IMAGE_DIR / scope / str(item["id"])
-    item_dir.mkdir(parents=True, exist_ok=True)
     all_views = session["_views"]
     indices = sorted(set(int(index) for index in request.view_indices))
     if any(index < 0 or index >= len(all_views) for index in indices):
@@ -4764,8 +4784,27 @@ def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[st
     views = [all_views[index] for index in indices]
     if len(views) < 2:
         raise HTTPException(status_code=400, detail="Select at least two product views.")
+    if request.existing_item_id:
+        item = db.get_item(request.existing_item_id)
+        if not item or str(item.get("scope_id")) != scope:
+            raise HTTPException(status_code=404, detail="Existing catalog product not found.")
+        product_name = str(item["name"])
+    else:
+        if any(
+            _catalog_normalize_name(item["name"]) == _catalog_normalize_name(product_name)
+            for item in db.list_items(scope)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This product already exists. Select the suggested existing product instead.",
+            )
+        item = db.create_item(scope, product_name)
+
+    item_dir = CATALOG_IMAGE_DIR / scope / str(item["id"])
+    item_dir.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time())
     for index, view in enumerate(views, start=1):
-        filename = f"learned_{index:02d}.jpg"
+        filename = f"learned_{stamp}_{index:02d}.jpg"
         path = item_dir / filename
         if not cv2.imwrite(str(path), view["crop"]):
             continue
@@ -4779,16 +4818,21 @@ def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[st
             height_px=int(frame.shape[0]),
         )
 
-    prompts = _catalog_save_item_prompts(scope, str(item["id"]), [product_name])
+    prompts = _catalog_save_item_prompts(
+        scope,
+        str(item["id"]),
+        [product_name, *_catalog_item_prompts(scope, str(item["id"]))],
+    )
     global _catalog_yolo_detector, _catalog_yolo_detector_key
     _catalog_yolo_detector = None
     _catalog_yolo_detector_key = None
     fingerprints = _read_json(PRODUCT_FINGERPRINTS_PATH) or {"products": {}}
-    fingerprints.setdefault("products", {})[str(item["id"])] = {
+    previous_fingerprint = fingerprints.setdefault("products", {}).get(str(item["id"])) or {}
+    fingerprints["products"][str(item["id"])] = {
         "product_id": str(item["id"]),
         "product_name": product_name,
         "scope_id": scope,
-        "created_at": _now_iso(),
+        "created_at": previous_fingerprint.get("created_at") or _now_iso(),
         "last_updated_at": _now_iso(),
         "matching_confidence": float(
             os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.62")
@@ -4798,7 +4842,9 @@ def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[st
             "camera_count": session["camera_count"],
             "frames_seen": session["frames_seen"],
             "proposal_count": session["proposal_count"],
-            "reference_count": len(views),
+            "reference_count": len(db.list_images(str(item["id"]))),
+            "latest_learning_reference_count": len(views),
+            "updated_existing_product": bool(request.existing_item_id),
         },
         "detection_prompts": prompts,
     }

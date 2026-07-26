@@ -2418,14 +2418,22 @@ function productLearningPanelHtml(session) {
       </label>`)
     .join("");
   if (session.status === "ready") {
+    const existing = session.existing_match;
     return `
       <div class="module-placeholder">
         <h3>${Number(session.view_count || 0)} reusable product views captured</h3>
         <p>Select only the pictures that clearly contain the product. Deselect warehouse background or the wrong object. At least two views are required.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">${previews}</div>
-        <form data-acc-form="learned-product-save" data-session-id="${escapeAttr(session.session_id)}" style="display:flex;gap:10px;align-items:end">
-          <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:5px">Product Name</span><input name="name" required maxlength="60" placeholder="Baget Box" autocomplete="off" style="width:100%" /></label>
+        <form data-acc-form="learned-product-save" data-session-id="${escapeAttr(session.session_id)}">
+          ${existing ? `
+            <label style="display:flex;gap:8px;align-items:center;padding:12px;background:#ecfdf5;border:1px solid #86efac;border-radius:9px;margin-bottom:12px">
+              <input type="checkbox" name="use-existing-product" value="${escapeAttr(existing.item_id)}" checked />
+              <span><strong>Existing manual product found: ${escapeHtml(existing.name)}</strong><br><small>${Math.round(Number(existing.confidence) * 100)}% visual match. Add these selected views to its fingerprint.</small></span>
+            </label>` : ""}
+          <div style="display:flex;gap:10px;align-items:end">
+          <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:5px">Product Name</span><input name="name" required maxlength="60" placeholder="Baget Box" value="${escapeAttr(existing?.name || "")}" autocomplete="off" style="width:100%" /></label>
           <button type="submit">Save and start counting</button>
+          </div>
         </form>
       </div>`;
   }
@@ -3267,6 +3275,7 @@ async function handleAccountSubmit(event) {
     if (!productName) return;
     const viewIndices = Array.from(form.querySelectorAll('input[name="learned-view"]:checked'))
       .map((input) => Number(input.value));
+    const existingItemId = form.querySelector('input[name="use-existing-product"]:checked')?.value || null;
     if (viewIndices.length < 2) {
       toast("Select at least two clear pictures of the product.");
       return;
@@ -3282,6 +3291,7 @@ async function handleAccountSubmit(event) {
           session_id: form.dataset.sessionId,
           product_name: productName,
           view_indices: viewIndices,
+          existing_item_id: existingItemId,
         }),
       });
       productLearningSessionId = null;
