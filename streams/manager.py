@@ -31,9 +31,9 @@ class StreamSessionConfig:
     source: str
     slot_number: int | None = None
     snapshot_dir: str | Path = "snapshots"
-    width: int = 960
-    jpeg_quality: int = 70
-    preview_fps: float = 15.0
+    width: int = 1280
+    jpeg_quality: int = 85
+    preview_fps: float = 12.0
 
 
 @dataclass
@@ -445,8 +445,9 @@ class _ManagedStreamSession:
 
         self.status_data.status = "online"
         self.status_data.codec = "mjpeg"
-        self.status_data.width = max(240, min(int(self.config.width), 1280))
-        self.status_data.height = None
+        dimensions = _jpeg_dimensions(data)
+        self.status_data.width = dimensions[0] if dimensions else self.config.width
+        self.status_data.height = dimensions[1] if dimensions else None
         self.status_data.fps = float(self.config.preview_fps)
         self.status_data.last_frame_at = datetime.now().isoformat(timespec="seconds")
         self.status_data.last_error = None
@@ -489,7 +490,7 @@ class _RateLimitedWarnings:
         return True
 
 
-def _ffmpeg_command(source: str, width: int = 960, jpeg_quality: int = 70, fps: float = 15.0) -> list[str]:
+def _ffmpeg_command(source: str, width: int = 1280, jpeg_quality: int = 85, fps: float = 12.0) -> list[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     preview_width = max(240, min(int(width), 1280))
     # Decode every frame (no -skip_frame nokey) so the preview is smooth
@@ -551,6 +552,44 @@ _BENIGN_FFMPEG_MARKERS = (
 
 def _is_benign_ffmpeg_noise(text: str) -> bool:
     return any(marker in text for marker in _BENIGN_FFMPEG_MARKERS)
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    """Read JPEG dimensions without decoding the image."""
+    index = 2
+    while index + 9 < len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        marker = data[index + 1]
+        index += 2
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            continue
+        if index + 2 > len(data):
+            return None
+        length = int.from_bytes(data[index : index + 2], "big")
+        if length < 2 or index + length > len(data):
+            return None
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
+            height = int.from_bytes(data[index + 3 : index + 5], "big")
+            width = int.from_bytes(data[index + 5 : index + 7], "big")
+            return width, height
+        index += length
+    return None
 
 
 _SECRET_URL_RE = re.compile(r"\b(?P<scheme>rtsp|https?)://(?P<username>[^:/\s]+):(?P<password>[^@\s]+)@")

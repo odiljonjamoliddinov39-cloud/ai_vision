@@ -98,7 +98,7 @@ def test_backend_multiplexes_slots_on_one_websocket():
     assert '@app.websocket("/api/live_ws")' in source
     assert 'raw_slots = websocket.query_params.get("slots", "")' in source
     assert 'await websocket.send_bytes(struct.pack("!H", slot) + data)' in source
-    assert 'os.getenv("LIVE_WEBSOCKET_FPS", "8")' in source
+    assert 'os.getenv("LIVE_WEBSOCKET_FPS", "10")' in source
 
 
 def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():

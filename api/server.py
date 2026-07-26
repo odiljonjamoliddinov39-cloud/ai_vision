@@ -4517,7 +4517,7 @@ async def live_websocket(websocket: WebSocket):
 
     await websocket.accept()
     last_sent: dict[int, bytes] = {}
-    target_fps = max(1.0, min(float(os.getenv("LIVE_WEBSOCKET_FPS", "8")), 15.0))
+    target_fps = max(1.0, min(float(os.getenv("LIVE_WEBSOCKET_FPS", "10")), 15.0))
     interval = 1.0 / target_fps
     try:
         while True:
