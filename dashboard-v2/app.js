@@ -2791,7 +2791,7 @@ function discoveryConnectFormHtml(isNvr) {
       <input placeholder="${escapeAttr(t("discovery.username_placeholder"))}" autocomplete="off" data-discovery-username />
       <input type="password" placeholder="${escapeAttr(t("discovery.password_placeholder"))}" autocomplete="new-password" data-discovery-password />
       ${isNvr
-        ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="4" data-discovery-channels aria-label="${escapeAttr(t("discovery.channels_label"))}" title="${escapeAttr(t("discovery.channels_label"))}" />`
+        ? `<input type="number" min="1" max="${MAX_NVR_SLOTS}" value="26" data-discovery-channels aria-label="${escapeAttr(t("discovery.channels_label"))}" title="${escapeAttr(t("discovery.channels_label"))}" />`
         : ""}
       <button type="button" data-discovery-connect ${discoveryState.connecting ? "disabled" : ""}>
         ${escapeHtml(discoveryState.connecting ? t("actions.connecting") : t("actions.connect"))}
