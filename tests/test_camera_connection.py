@@ -282,6 +282,24 @@ def test_start_detection_syncs_config_from_active_camera_slots(monkeypatch, tmp_
     assert [camera["slot_number"] for camera in data["cameras"]] == [1, 2]
 
 
+def test_start_detection_is_idempotent_when_already_running(monkeypatch):
+    monkeypatch.setattr(server, "_detector_pid", lambda: 12345)
+    monkeypatch.setattr(
+        server,
+        "_status",
+        lambda: {"running": True, "pid": 12345, "health": {"state": "running"}},
+    )
+
+    status = server.start_detection()
+
+    assert status == {
+        "running": True,
+        "pid": 12345,
+        "health": {"state": "running"},
+        "already_running": True,
+    }
+
+
 def test_start_detection_clears_manual_stop_latch_even_when_validation_fails(monkeypatch):
     monkeypatch.setattr(server, "_detector_pid", lambda: None)
     monkeypatch.setattr(server, "_sync_config_active_cameras", lambda db: None)

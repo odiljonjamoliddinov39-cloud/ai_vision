@@ -3786,7 +3786,13 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle, _manual_stop_requested
     request = request or StartRequest()
     if _detector_pid() is not None:
-        raise HTTPException(status_code=409, detail="Detection is already running.")
+        # Starting an already-running persistent service is a successful no-op.
+        # The dashboard may repeat this request after reconnects, navigation, or
+        # React remounts; treating that as a conflict creates a noisy 409 even
+        # though the requested state has already been reached.
+        status = _status()
+        status["already_running"] = True
+        return status
     # Clear the manual-stop latch as soon as a start is attempted, not after
     # validation succeeds. Otherwise a start that's triggered right after a
     # stop (e.g. restarting to pick up a newly added camera) and then fails
