@@ -93,3 +93,6 @@ def test_dashboard_exposes_engine_operations_and_task_builder():
     assert "Movement timeline" in source
     assert "AI Task Builder" in source
     assert 'catalogRequest("/api/warehouse-engine/tasks/parse"' in source
+    assert '{ id: "logs", label: "Logs", sub: "Engine actions" }' in source
+    assert 'catalogRequest("/api/warehouse-engine/events?limit=500")' in source
+    assert "Warehouse action logs" in source

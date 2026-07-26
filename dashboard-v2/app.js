@@ -121,6 +121,7 @@ const I18N = {
     "menu.camera_info": "Camera Info",
     "menu.dimension": "3D Dimensioning",
     "menu.feed": "Camera Feed",
+    "menu.logs": "Logs",
     "menu.result_analytics": "Result Analytics",
     "menu.settings": "Settings",
     "profile.super_admin": "Super Admin",
@@ -326,6 +327,7 @@ const I18N = {
     "menu.camera_info": "Инфо камер",
     "menu.dimension": "3D измерение",
     "menu.feed": "Видеопоток",
+    "menu.logs": "Журнал действий",
     "menu.result_analytics": "Аналитика результатов",
     "menu.settings": "Настройки",
     "profile.super_admin": "Супер админ",
@@ -701,6 +703,7 @@ const NAV_ICONS = {
   feed: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`,
   ai: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V4M8 4h8M9 12h.01M15 12h.01M9 16h6"/></svg>`,
   dimension: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></svg>`,
+  logs: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a2 2 0 0 1 2 2v16l-4-2-4 2-4-2-4 2V5a2 2 0 0 1 2-2z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>`,
 };
 
 function renderNavigation() {
@@ -1804,6 +1807,7 @@ function accountMenus(role) {
   if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
   menus.push({ id: "ai", label: "AI Check-in", sub: "Products to count" });
   menus.push({ id: "dimension", label: "3D Dimensioning", sub: "Item measurements" });
+  if (role.access?.analytics) menus.push({ id: "logs", label: "Logs", sub: "Engine actions" });
   return menus;
 }
 
@@ -2636,6 +2640,62 @@ async function renderCatalogDimensions(container) {
   }
 }
 
+function warehouseLogAction(event) {
+  const type = String(event.event_type || "event").replaceAll("_", " ");
+  const delta = Number(event.inventory_delta || 0);
+  if (delta > 0) return `Added ${delta} to inventory`;
+  if (delta < 0) return `Removed ${Math.abs(delta)} from inventory`;
+  if (event.previous_zone && event.zone && event.previous_zone !== event.zone) {
+    return `Moved from ${event.previous_zone} to ${event.zone}`;
+  }
+  return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function warehouseLogsHtml(events) {
+  if (!events.length) return `<p class="empty">No engine actions have been recorded yet.</p>`;
+  return `
+    <div class="detected-table-wrap">
+      <table class="detected-table">
+        <thead><tr><th>Time</th><th>Action</th><th>Camera</th><th>Object</th><th>Product</th><th>Zone</th><th>Confidence</th><th>Inventory Δ</th></tr></thead>
+        <tbody>${events.map((event) => `
+          <tr>
+            <td>${escapeHtml(formatCatalogTime(event.timestamp))}</td>
+            <td><strong>${escapeHtml(warehouseLogAction(event))}</strong><br><small>${escapeHtml(String(event.event_type || "").replaceAll("_", " "))}</small></td>
+            <td>${escapeHtml(event.camera_id || "—")}</td>
+            <td>${escapeHtml(event.object_id || "—")}</td>
+            <td>${escapeHtml(event.product_name || "Unidentified")}</td>
+            <td>${escapeHtml(event.zone || "Unassigned")}</td>
+            <td>${Math.round(Number(event.confidence || 0) * 100)}%</td>
+            <td class="count-cell">${Number(event.inventory_delta || 0) > 0 ? "+" : ""}${Number(event.inventory_delta || 0).toLocaleString()}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function renderWarehouseLogs(container) {
+  try {
+    const payload = await catalogRequest("/api/warehouse-engine/events?limit=500");
+    if (!container.isConnected || accountModule !== "logs") return;
+    const events = payload.events || [];
+    container.innerHTML = `
+      <section class="detected-list">
+        <header class="detected-list-head">
+          <div><h3>Warehouse action logs</h3><p>Every detection, movement, zone transition, rule decision, and inventory change recorded by the engine.</p></div>
+          <button type="button" class="export-button" data-refresh-warehouse-logs>Refresh logs</button>
+        </header>
+        <p class="chart-note">Showing the latest ${events.length.toLocaleString()} actions, newest first.</p>
+        ${warehouseLogsHtml(events)}
+      </section>`;
+    container.querySelector("[data-refresh-warehouse-logs]")?.addEventListener("click", () => {
+      container.innerHTML = `<p class="empty">Refreshing action logs…</p>`;
+      void renderWarehouseLogs(container);
+    });
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
 function renderAccountModule() {
   const { company, role } = accountState;
   companyConfig(company);
@@ -2789,6 +2849,12 @@ function renderAccountModule() {
   if (menu.id === "dimension") {
     els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("dimension.loading"))}</p>`;
     void renderCatalogDimensions(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "logs") {
+    els.moduleContent.innerHTML = `<p class="empty">Loading warehouse action logs…</p>`;
+    void renderWarehouseLogs(els.moduleContent);
     return;
   }
 }
