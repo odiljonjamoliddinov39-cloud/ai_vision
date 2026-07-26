@@ -511,37 +511,13 @@ const LIVE_STREAM_RECONNECT_MS = 1500;
 let liveFrameSocket = null;
 let liveFrameSocketSlots = "";
 let liveFrameReconnectTimer = null;
+const liveFrameGenerations = new Map();
 
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
   if (!badge) return;
   badge.textContent = isLive ? t("status.live") : t("status.waiting_video");
   badge.classList.toggle("feed-stale-badge", !isLive);
-}
-
-function attachLiveFrameHandlers(image) {
-  if (image.dataset.liveHandlersAttached === "true") return;
-  image.dataset.liveHandlersAttached = "true";
-  image.addEventListener("load", () => {
-    delete image.dataset.livePriming;
-    delete image.dataset.liveErrorUntil;
-    image.classList.remove("feed-stale");
-    image.removeAttribute("title");
-    image.dataset.liveLastUpdate = new Date().toISOString();
-    setFeedBadgeLive(image, true);
-  });
-  image.addEventListener("error", () => {
-    delete image.dataset.livePriming;
-    image.classList.add("feed-stale");
-    image.title = t("status.waiting_fresh_frame");
-    setFeedBadgeLive(image, false);
-  });
-  if (image.complete && image.naturalWidth > 0) {
-    delete image.dataset.livePriming;
-    image.classList.remove("feed-stale");
-    image.removeAttribute("title");
-    setFeedBadgeLive(image, true);
-  }
 }
 
 function liveWebSocketUrl(slots) {
@@ -552,23 +528,32 @@ function liveWebSocketUrl(slots) {
 }
 
 function renderLiveSocketFrame(slot, jpegBytes) {
-  const images = Array.from(
-    els.moduleContent.querySelectorAll(`img[data-live-frame][data-live-slot="${slot}"]`)
-  );
-  images.forEach((image) => {
-    attachLiveFrameHandlers(image);
-    const nextUrl = URL.createObjectURL(new Blob([jpegBytes], { type: "image/jpeg" }));
-    const previousUrl = image.dataset.liveObjectUrl;
-    image.dataset.liveObjectUrl = nextUrl;
-    image.addEventListener(
-      "load",
-      () => {
-        if (previousUrl) URL.revokeObjectURL(previousUrl);
-      },
-      { once: true }
-    );
-    image.src = nextUrl;
-  });
+  const generation = (liveFrameGenerations.get(slot) || 0) + 1;
+  liveFrameGenerations.set(slot, generation);
+  createImageBitmap(new Blob([jpegBytes], { type: "image/jpeg" }))
+    .then((bitmap) => {
+      if (liveFrameGenerations.get(slot) !== generation) {
+        bitmap.close();
+        return;
+      }
+      const canvases = Array.from(
+        els.moduleContent.querySelectorAll(`[data-live-frame][data-live-slot="${slot}"]`)
+      );
+      canvases.forEach((canvas) => {
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+        }
+        canvas.getContext("2d", { alpha: false }).drawImage(bitmap, 0, 0);
+        delete canvas.dataset.livePriming;
+        canvas.classList.remove("feed-stale");
+        canvas.removeAttribute("title");
+        canvas.dataset.liveLastUpdate = new Date().toISOString();
+        setFeedBadgeLive(canvas, true);
+      });
+      bitmap.close();
+    })
+    .catch(() => {});
 }
 
 function scheduleLiveSocketReconnect() {
@@ -580,9 +565,8 @@ function scheduleLiveSocketReconnect() {
 }
 
 function reconcileLiveStreams() {
-  const images = Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]"));
-  images.forEach(attachLiveFrameHandlers);
-  const slots = [...new Set(images.map((image) => Number(image.dataset.liveSlot)).filter(Boolean))]
+  const surfaces = Array.from(els.moduleContent.querySelectorAll("[data-live-frame]"));
+  const slots = [...new Set(surfaces.map((surface) => Number(surface.dataset.liveSlot)).filter(Boolean))]
     .sort((left, right) => left - right)
     .join(",");
   if (!slots) {
@@ -629,7 +613,7 @@ function stopLiveFrameRefresh() {
 }
 
 function syncLiveFrameRefresh() {
-  const hasLiveFrames = Boolean(els.moduleContent.querySelector("img[data-live-frame]"));
+  const hasLiveFrames = Boolean(els.moduleContent.querySelector("[data-live-frame]"));
   if (!hasLiveFrames) {
     stopLiveFrameRefresh();
     return;
@@ -854,7 +838,7 @@ function renderModuleContent() {
       <div class="live-preview">
         ${Array.from({ length: Math.min(Number(summary.active_cameras || health.camera_count || 10), 10) }, (_, index) => {
           const slot = index + 1;
-          return `<figure><img data-live-frame data-live-slot="${slot}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+          return `<figure><canvas data-live-frame data-live-slot="${slot}" role="img" aria-label="Camera slot ${slot}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>Slot ${slot}</figcaption></figure>`;
         }).join("")}
       </div>
     `;
@@ -1587,7 +1571,7 @@ function livePreviewHtml(summary, health) {
     <div class="live-preview">
       ${Array.from({ length: slots }, (_, index) => {
         const slot = index + 1;
-        return `<figure><img data-live-frame data-live-slot="${slot}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+        return `<figure><canvas data-live-frame data-live-slot="${slot}" role="img" aria-label="Camera slot ${slot}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>Slot ${slot}</figcaption></figure>`;
       }).join("")}
     </div>
   `;
@@ -1675,7 +1659,7 @@ function renderFeedTile(nvr, channel) {
     return `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
   }
   if (channel.active && channel.slot_number != null) {
-    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" loading="eager" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><canvas class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" role="img" aria-label="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
   }
   return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
 }

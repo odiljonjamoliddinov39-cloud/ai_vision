@@ -36,7 +36,8 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
     assert 'socket.addEventListener("message"' in source
     assert "new IntersectionObserver(" not in source
     assert "window.setInterval(reconcileLiveStreams" not in source
-    assert 'loading="eager" decoding="async"' in source
+    assert source.count("<canvas data-live-frame") == 2
+    assert '<canvas class="feed-stale" data-live-frame' in source
     assert 'document.addEventListener("visibilitychange"' not in source
 
 
@@ -49,12 +50,12 @@ def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
     assert "new MutationObserver((mutations) => {" in source
     # Every mounted tile receives frames from one multiplexed WebSocket.
     assert "renderLiveSocketFrame(slot, payload.slice(2));" in source
-    assert "new Blob([jpegBytes]" in source
+    assert "createImageBitmap(new Blob([jpegBytes]" in source
+    assert '.drawImage(bitmap, 0, 0);' in source
     assert "function stopLiveFrameRefresh()" in source
-    assert 'data-live-priming="true" loading="eager"' in source
+    assert 'data-live-priming="true" role="img"' in source
     assert "/api/live_frame?slot=${slot}" not in source
-    assert 'loading="eager" decoding="async"' in source
-    assert "image.complete && image.naturalWidth > 0" in source
+    assert "image.complete && image.naturalWidth > 0" not in source
 
 
 def test_dashboard_streams_offscreen_cameras_without_viewport_gating():
