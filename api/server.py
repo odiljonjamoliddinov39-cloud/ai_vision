@@ -3284,7 +3284,18 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
             slot_number=assigned_slot,
         )
         if active is not None:
-            status = _start_stream_for_camera(active)
+            try:
+                status = _start_stream_for_camera(active)
+            except Exception as exc:
+                # Registration is a database operation; a camera that is
+                # temporarily offline or already reconnecting must not abort
+                # the remaining NVR channels or produce a raw CORS-masked 500.
+                status = {
+                    "channel_id": str(active["id"]),
+                    "slot_number": active.get("slot_number"),
+                    "status": "reconnecting",
+                    "last_error": _redact_sensitive_text(str(exc)),
+                }
             db.update_stream_session(channel["id"], status)
             stream_statuses.append(status)
         channels.append(channel)
@@ -3628,18 +3639,20 @@ def test_saved_camera(camera_id: int) -> dict[str, Any]:
 def delete_saved_camera(camera_id: int) -> dict[str, Any]:
     db = _get_camera_db()
     deleted = db.delete_camera(camera_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Camera not found.")
-
-    _sync_config_active_cameras(db)
-    if _status()["running"]:
-        stop_detection()
-        start_detection(StartRequest())
+    if deleted:
+        try:
+            _sync_config_active_cameras(db)
+        except Exception as exc:
+            _audit(
+                "camera_config_sync_failed",
+                {"camera_id": camera_id, "error": _redact_sensitive_text(str(exc))},
+            )
 
     cameras = db.list_cameras(include_secret=False)
     active_cameras = [row for row in cameras if row["is_active"]]
     return {
-        "deleted": True,
+        "deleted": deleted,
+        "already_absent": not deleted,
         "cameras": cameras,
         "active_cameras": active_cameras,
         "active_camera": active_cameras[0] if active_cameras else None,
