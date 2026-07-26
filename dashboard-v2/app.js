@@ -2398,6 +2398,62 @@ async function renderResultAnalytics(container) {
   }
 }
 
+let productLearningSessionId = null;
+
+function productLearningPanelHtml(session) {
+  if (!session) {
+    return `<div class="module-placeholder"><h3>One Click Product Learning</h3><p>Press the button, then hold one product in view of a camera and slowly rotate or move it for 10–20 seconds.</p></div>`;
+  }
+  if (session.status === "failed") {
+    return `<div class="module-placeholder"><h3>Learning could not finish</h3><p>${escapeHtml(session.error || "No stable product views were found.")}</p><button type="button" data-acc-action="learn-product">Try again</button></div>`;
+  }
+  const previews = (session.views || [])
+    .map((view) => `<figure style="margin:0"><img src="${API_BASE}${view.url}" alt="Learned product view" style="width:110px;height:90px;object-fit:cover;border-radius:8px" /><figcaption style="font-size:11px">${escapeHtml(view.camera_name || "")}</figcaption></figure>`)
+    .join("");
+  if (session.status === "ready") {
+    return `
+      <div class="module-placeholder">
+        <h3>${Number(session.view_count || 0)} reusable product views captured</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">${previews}</div>
+        <form data-acc-form="learned-product-save" data-session-id="${escapeAttr(session.session_id)}" style="display:flex;gap:10px;align-items:end">
+          <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:5px">Product Name</span><input name="name" required maxlength="60" placeholder="Baget Box" autocomplete="off" style="width:100%" /></label>
+          <button type="submit">Save and start counting</button>
+        </form>
+      </div>`;
+  }
+  if (session.status === "saved") {
+    return `<div class="module-placeholder"><h3>${escapeHtml(session.product_name || "Product")} is learned and active</h3><p>The fingerprint is saved and counting can begin immediately. No restart is required.</p></div>`;
+  }
+  return `
+    <div class="module-placeholder">
+      <h3>Learning from live cameras… ${Number(session.remaining_seconds || 0)}s</h3>
+      <p>Keep the product visible and slowly show different sides. ${Number(session.frames_seen || 0).toLocaleString()} frames inspected; ${Number(session.proposal_count || 0).toLocaleString()} candidate views found.</p>
+    </div>`;
+}
+
+async function startProductLearning(container, button) {
+  button.disabled = true;
+  try {
+    let session = await catalogRequest(catalogApiPath("/api/catalog/learning/start"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration_seconds: 12 }),
+    });
+    productLearningSessionId = session.session_id;
+    const panel = container.querySelector("[data-product-learning-panel]");
+    if (panel) panel.innerHTML = productLearningPanelHtml(session);
+    while (session.status === "capturing" || session.status === "processing") {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      if (!container.isConnected || accountModule !== "ai") return;
+      session = await catalogRequest(catalogApiPath(`/api/catalog/learning/${encodeURIComponent(productLearningSessionId)}`));
+      if (panel) panel.innerHTML = productLearningPanelHtml(session);
+    }
+  } catch (error) {
+    toast(error.message);
+    button.disabled = false;
+  }
+}
+
 async function renderCatalogEnrollment(container) {
   try {
     const payload = await catalogRequest(catalogApiPath("/api/catalog/items"));
@@ -2427,6 +2483,15 @@ async function renderCatalogEnrollment(container) {
       .join("");
     container.innerHTML = `
       <p class="chart-note">${escapeHtml(t("ai.intro"))}</p>
+      <section class="detected-list" style="margin-bottom:18px">
+        <header class="detected-list-head">
+          <div><h3>Learn New Product</h3><p>Show the product to a live camera. AI Vision captures its views and builds the reusable fingerprint automatically.</p></div>
+          <button type="button" class="export-button" data-acc-action="learn-product">Learn New Product</button>
+        </header>
+        <div data-product-learning-panel>${productLearningPanelHtml(null)}</div>
+      </section>
+      <details>
+        <summary style="cursor:pointer;font-weight:700;margin-bottom:12px">Manual image upload</summary>
       <form class="catalog-form" data-acc-form="catalog-product">
         <label class="catalog-name-field">
           <span>${escapeHtml(t("ai.item_name"))}</span>
@@ -2439,6 +2504,7 @@ async function renderCatalogEnrollment(container) {
         <small class="catalog-upload-help" data-image-count>${escapeHtml(t("ai.add_help"))}</small>
         <button type="submit">${escapeHtml(t("ai.add_item"))}</button>
       </form>
+      </details>
       <div class="recognition-schedule">
         <strong>${escapeHtml(t("ai.auto_recognition", { hours: payload.schedule.interval_hours }))}</strong>
         <span>${escapeHtml(t("ai.last_run", { time: formatCatalogTime(payload.schedule.last_run_at) }))}</span>
@@ -3174,6 +3240,32 @@ async function handleAccountSubmit(event) {
     return;
   }
 
+  if (form.dataset.accForm === "learned-product-save") {
+    const productName = form.elements.name.value.trim();
+    if (!productName) return;
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = "Saving fingerprint…";
+    try {
+      await catalogRequest(catalogApiPath("/api/catalog/learning/save"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: form.dataset.sessionId,
+          product_name: productName,
+        }),
+      });
+      productLearningSessionId = null;
+      toast(`"${productName}" learned and activated. Counting can start now.`);
+      renderAccountModule();
+    } catch (error) {
+      toast(error.message);
+      submit.disabled = false;
+      submit.textContent = "Save and start counting";
+    }
+    return;
+  }
+
   if (form.dataset.accForm === "catalog-product") {
     const name = form.elements.name.value.trim();
     const files = Array.from(form.elements.images.files || []);
@@ -3284,6 +3376,13 @@ async function handleAccountClick(event) {
   const { company } = accountState;
   companyConfig(company);
   const action = button.dataset.accAction;
+
+  if (action === "learn-product") {
+    const panel = els.moduleContent.querySelector("[data-product-learning-panel]");
+    if (panel) panel.innerHTML = `<div class="module-placeholder"><h3>Starting live capture…</h3><p>Place the product clearly in view of a camera now.</p></div>`;
+    void startProductLearning(els.moduleContent, button);
+    return;
+  }
 
   if (action === "remove-catalog-item") {
     button.disabled = true;

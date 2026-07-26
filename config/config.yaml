@@ -92,7 +92,7 @@ recognition:
   model: gemini-3.1-flash-lite
   db_path: database/products.db
   confidence_threshold: 0.9
-  similarity_threshold: 0.92
+  similarity_threshold: 0.62
   cache_enabled: true
   cache_expiration: 1800
   timeout: 30

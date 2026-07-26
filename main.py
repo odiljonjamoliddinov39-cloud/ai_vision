@@ -404,6 +404,15 @@ def main():
                 last_detection_count = len(detections)
                 if product_recognizer is not None:
                     product_recognizer.annotate(cam.name, frame, detections)
+                # Class-agnostic proposals are observations, never inventory by
+                # themselves. Only a learned catalog fingerprint may promote a
+                # tracked proposal into a countable warehouse object.
+                for detection in detections:
+                    if (
+                        detection.class_name == "object proposal"
+                        and getattr(detection, "inventory_name", None)
+                    ):
+                        detection.confidence = max(float(detection.confidence), 0.85)
 
                 if spatial_analyzer is not None:
                     measurements = spatial_analyzer.enrich(frame, detections)
@@ -431,9 +440,14 @@ def main():
                     )
                     if line:
                         draw_counting_line(frame, line)
+                    learned_detections = [
+                        detection
+                        for detection in detections
+                        if getattr(detection, "inventory_name", None)
+                    ]
                     engine_events = warehouse_engine.process(
                         camera_id=cam.name,
-                        detections=detections,
+                        detections=learned_detections,
                         timestamp=inference_result.inference_at,
                     )
                     for engine_event in engine_events:

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from detection.proposals import object_proposal_boxes
+
 
 @dataclass
 class TrackedObject:
@@ -101,33 +103,32 @@ class ObjectTracker:
             )
 
         tracked: list[TrackedObject] = []
-        if not results:
-            return tracked
-
-        result = results[0]
-        names = result.names
-        boxes = result.boxes
-
-        if boxes is None:
-            self._age_unmatched_tracks(set())
-            return tracked
-
         candidates = []
-        supplied_ids = boxes.id.tolist() if getattr(boxes, "id", None) is not None else None
-        for i in range(len(boxes.cls.tolist())):
-            class_id = int(boxes.cls[i])
-            class_name = names.get(class_id, str(class_id))
-            if self.classes_filter and class_name not in self.classes_filter:
-                continue
-            confidence = float(boxes.conf[i])
-            x1, y1, x2, y2 = boxes.xyxy[i].tolist()
-            candidates.append(
-                (
-                    confidence,
-                    class_name,
-                    (int(x1), int(y1), int(x2), int(y2)),
-                    int(supplied_ids[i]) if supplied_ids is not None else None,
-                )
+        if results:
+            result = results[0]
+            names = result.names
+            boxes = result.boxes
+            if boxes is not None:
+                supplied_ids = boxes.id.tolist() if getattr(boxes, "id", None) is not None else None
+                for i in range(len(boxes.cls.tolist())):
+                    class_id = int(boxes.cls[i])
+                    class_name = names.get(class_id, str(class_id))
+                    if self.classes_filter and class_name not in self.classes_filter:
+                        continue
+                    confidence = float(boxes.conf[i])
+                    x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+                    candidates.append(
+                        (
+                            confidence,
+                            class_name,
+                            (int(x1), int(y1), int(x2), int(y2)),
+                            int(supplied_ids[i]) if supplied_ids is not None else None,
+                        )
+                    )
+        if not candidates:
+            candidates.extend(
+                (0.65, "object proposal", box, None)
+                for box in object_proposal_boxes(frame)
             )
 
         matched_ids: set[int] = set()

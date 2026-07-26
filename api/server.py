@@ -89,6 +89,7 @@ SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
 CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
 CATALOG_PROMPTS_PATH = ROOT / "logs" / "catalog_prompts.json"
+PRODUCT_FINGERPRINTS_PATH = ROOT / "logs" / "product_fingerprints.json"
 WAREHOUSE_ENGINE_DB_PATH = ROOT / "database" / "warehouse_engine.db"
 ACCOUNTS_DB_PATH = ROOT / "database" / "accounts.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
@@ -136,6 +137,8 @@ _watchdog_last_start_attempt = 0.0
 # simply gone, which is fine for an ephemeral progress indicator.
 _live_catalog_runs: dict[str, dict[str, Any]] = {}
 _live_catalog_tasks: dict[str, asyncio.Task] = {}
+_product_learning_sessions: dict[str, dict[str, Any]] = {}
+_product_learning_tasks: dict[str, asyncio.Task] = {}
 CATALOG_LIVE_RUN_DURATION_SECONDS = 60
 CATALOG_LIVE_RUN_SAMPLE_INTERVAL_SECONDS = 8
 
@@ -806,6 +809,15 @@ class InventoryAction(BaseModel):
 
 class CatalogPromptUpdate(BaseModel):
     prompts: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ProductLearningStart(BaseModel):
+    duration_seconds: int = Field(default=12, ge=10, le=20)
+
+
+class ProductLearningSave(BaseModel):
+    session_id: str = Field(min_length=8, max_length=120)
+    product_name: str = Field(min_length=1, max_length=60)
 
 
 class WarehouseTaskRequest(BaseModel):
@@ -2007,6 +2019,166 @@ def _catalog_class_agnostic_candidates(frames: list[dict[str, Any]]) -> list[dic
                 }
             )
     return candidates
+
+
+def _product_learning_public(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in session.items()
+        if not key.startswith("_")
+    }
+
+
+def _product_learning_preview(session_id: str, index: int, crop: Any) -> str | None:
+    try:
+        import cv2
+    except ImportError:
+        return None
+    directory = SNAPSHOT_DIR / "product-learning" / _catalog_visual_slug(session_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"view_{index:02d}.jpg"
+    if not cv2.imwrite(str(path), crop):
+        return None
+    return f"/snapshots/product-learning/{quote(_catalog_visual_slug(session_id))}/{quote(path.name)}"
+
+
+def _run_product_learning_session(session_id: str) -> None:
+    """Collect stable, diverse views of the object presented after Learn starts."""
+    try:
+        import cv2
+        from knowledge.similarity import cosine_similarity
+        from recognition.embedding import image_embedding
+
+        session = _product_learning_sessions[session_id]
+        duration = int(session["duration_seconds"])
+        baseline: dict[str, Any] = {}
+        ranked: list[dict[str, Any]] = []
+        started = time.monotonic()
+        sample_index = 0
+        while time.monotonic() - started < duration:
+            health = _catalog_health_snapshot()
+            frames = _catalog_live_frames(health, max_frames=100)
+            session["camera_count"] = max(int(session.get("camera_count") or 0), len(frames))
+            session["frames_seen"] = int(session.get("frames_seen") or 0) + len(frames)
+            session["remaining_seconds"] = max(
+                0, int(duration - (time.monotonic() - started))
+            )
+            for entry in frames:
+                frame = entry["frame"]
+                camera_name = _catalog_camera_label(entry["camera_name"])
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray = cv2.resize(gray, (320, 180))
+                previous = baseline.get(camera_name)
+                if previous is None:
+                    baseline[camera_name] = gray
+                    continue
+                motion_map = cv2.absdiff(previous, gray)
+                baseline[camera_name] = gray
+                height, width = frame.shape[:2]
+                scored: list[tuple[float, tuple[int, int, int, int], Any]] = []
+                for box in _catalog_class_agnostic_boxes(frame):
+                    x1, y1, x2, y2 = box
+                    crop = _catalog_detection_crop(
+                        frame, {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                    )
+                    if crop is None:
+                        continue
+                    mx1 = max(0, min(319, int(x1 * 320 / width)))
+                    my1 = max(0, min(179, int(y1 * 180 / height)))
+                    mx2 = max(mx1 + 1, min(320, int(x2 * 320 / width)))
+                    my2 = max(my1 + 1, min(180, int(y2 * 180 / height)))
+                    motion = float(motion_map[my1:my2, mx1:mx2].mean()) / 255.0
+                    area_ratio = ((x2 - x1) * (y2 - y1)) / max(1.0, width * height)
+                    sharpness = min(
+                        1.0,
+                        float(cv2.Laplacian(crop, cv2.CV_64F).var()) / 600.0,
+                    )
+                    center_x = (x1 + x2) / (2.0 * width)
+                    center_y = (y1 + y2) / (2.0 * height)
+                    centrality = max(
+                        0.0, 1.0 - (((center_x - 0.5) ** 2 + (center_y - 0.5) ** 2) ** 0.5)
+                    )
+                    score = motion * 5.0 + min(area_ratio, 0.35) + sharpness * 0.15 + centrality * 0.10
+                    scored.append((score, box, crop))
+                for score, box, crop in sorted(scored, key=lambda row: row[0], reverse=True)[:2]:
+                    ranked.append(
+                        {
+                            "score": score,
+                            "camera_name": camera_name,
+                            "bbox": box,
+                            "crop": crop,
+                            "sample_index": sample_index,
+                        }
+                    )
+                    session["proposal_count"] = int(session.get("proposal_count") or 0) + 1
+            sample_index += 1
+            time.sleep(1.0)
+
+        session["status"] = "processing"
+        session["remaining_seconds"] = 0
+        embedded: list[dict[str, Any]] = []
+        for candidate in sorted(ranked, key=lambda row: row["score"], reverse=True)[:80]:
+            candidate["embedding"] = image_embedding(candidate["crop"])
+            embedded.append(candidate)
+        if not embedded:
+            raise RuntimeError("No usable object candidates were found in the live camera frames.")
+
+        seed = embedded[0]
+        same_object = [
+            candidate
+            for candidate in embedded
+            if cosine_similarity(candidate["embedding"], seed["embedding"]) >= 0.50
+        ]
+        selected: list[dict[str, Any]] = []
+        seen_samples: set[tuple[str, int]] = set()
+        for candidate in same_object:
+            sample_key = (candidate["camera_name"], int(candidate["sample_index"]))
+            if sample_key in seen_samples:
+                continue
+            if selected and max(
+                cosine_similarity(candidate["embedding"], view["embedding"])
+                for view in selected
+            ) > 0.992:
+                continue
+            selected.append(candidate)
+            seen_samples.add(sample_key)
+            if len(selected) >= 8:
+                break
+        for candidate in same_object:
+            if len(selected) >= 4:
+                break
+            if all(candidate is not existing for existing in selected):
+                selected.append(candidate)
+        if len(selected) < 2:
+            raise RuntimeError(
+                "The object was not visible in enough distinct frames. Move or rotate it and try again."
+            )
+
+        previews = []
+        for index, view in enumerate(selected, start=1):
+            url = _product_learning_preview(session_id, index, view["crop"])
+            if url:
+                previews.append(
+                    {
+                        "url": url,
+                        "camera_name": view["camera_name"],
+                        "score": round(float(view["score"]), 4),
+                    }
+                )
+        session["_views"] = selected
+        session["views"] = previews
+        session["view_count"] = len(selected)
+        session["remaining_seconds"] = 0
+        session["status"] = "ready"
+        session["completed_at"] = _now_iso()
+    except Exception as exc:  # noqa: BLE001 - learning failures are returned to the operator
+        session = _product_learning_sessions.get(session_id)
+        if session is not None:
+            session["status"] = "failed"
+            session["remaining_seconds"] = 0
+            session["error"] = str(exc)
+            session["completed_at"] = _now_iso()
+        _audit("product_learning_failed", {"session_id": session_id, "error": str(exc)})
 
 
 def _catalog_fresh_yolo_crop_candidates(
@@ -4503,6 +4675,138 @@ def catalog_items(scope_id: str) -> dict[str, Any]:
         "items": items,
         "schedule": _catalog_schedule(scope),
         "latest_run": db.latest_run(scope),
+    }
+
+
+@app.post("/api/catalog/learning/start")
+async def start_product_learning(
+    scope_id: str, request: ProductLearningStart
+) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    active = next(
+        (
+            session
+            for session in _product_learning_sessions.values()
+            if session.get("scope_id") == scope
+            and session.get("status") in {"capturing", "processing"}
+        ),
+        None,
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="A product learning session is already active.")
+    session_id = secrets.token_urlsafe(18)
+    session = {
+        "session_id": session_id,
+        "scope_id": scope,
+        "status": "capturing",
+        "duration_seconds": request.duration_seconds,
+        "remaining_seconds": request.duration_seconds,
+        "started_at": _now_iso(),
+        "completed_at": None,
+        "camera_count": 0,
+        "frames_seen": 0,
+        "proposal_count": 0,
+        "view_count": 0,
+        "views": [],
+        "error": None,
+    }
+    _product_learning_sessions[session_id] = session
+    task = asyncio.create_task(asyncio.to_thread(_run_product_learning_session, session_id))
+    _product_learning_tasks[session_id] = task
+    _audit("product_learning_started", {"scope_id": scope, "session_id": session_id})
+    return _product_learning_public(session)
+
+
+@app.get("/api/catalog/learning/{session_id}")
+def product_learning_status(session_id: str, scope_id: str) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    session = _product_learning_sessions.get(session_id)
+    if not session or session.get("scope_id") != scope:
+        raise HTTPException(status_code=404, detail="Product learning session not found.")
+    return _product_learning_public(session)
+
+
+@app.post("/api/catalog/learning/save")
+def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[str, Any]:
+    import cv2
+
+    scope = _catalog_scope(scope_id)
+    session = _product_learning_sessions.get(request.session_id)
+    if not session or session.get("scope_id") != scope:
+        raise HTTPException(status_code=404, detail="Product learning session not found.")
+    if session.get("status") != "ready" or len(session.get("_views") or []) < 2:
+        raise HTTPException(status_code=409, detail="Product learning has not completed.")
+    product_name = " ".join(request.product_name.split()).strip()
+    db = _get_catalog_db()
+    if any(
+        _catalog_normalize_name(item["name"]) == _catalog_normalize_name(product_name)
+        for item in db.list_items(scope)
+    ):
+        raise HTTPException(status_code=409, detail="An item with this name already exists.")
+
+    item = db.create_item(scope, product_name)
+    item_dir = CATALOG_IMAGE_DIR / scope / str(item["id"])
+    item_dir.mkdir(parents=True, exist_ok=True)
+    views = session["_views"]
+    for index, view in enumerate(views, start=1):
+        filename = f"learned_{index:02d}.jpg"
+        path = item_dir / filename
+        if not cv2.imwrite(str(path), view["crop"]):
+            continue
+        frame = view["crop"]
+        db.add_image(
+            item_id=str(item["id"]),
+            filename=filename,
+            url=f"/snapshots/catalog/{quote(scope)}/{quote(str(item['id']))}/{quote(filename)}",
+            embedding=view["embedding"],
+            width_px=int(frame.shape[1]),
+            height_px=int(frame.shape[0]),
+        )
+
+    prompts = _catalog_save_item_prompts(scope, str(item["id"]), [product_name])
+    global _catalog_yolo_detector, _catalog_yolo_detector_key
+    _catalog_yolo_detector = None
+    _catalog_yolo_detector_key = None
+    fingerprints = _read_json(PRODUCT_FINGERPRINTS_PATH) or {"products": {}}
+    fingerprints.setdefault("products", {})[str(item["id"])] = {
+        "product_id": str(item["id"]),
+        "product_name": product_name,
+        "scope_id": scope,
+        "created_at": _now_iso(),
+        "last_updated_at": _now_iso(),
+        "matching_confidence": float(
+            os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.62")
+        ),
+        "learning_statistics": {
+            "duration_seconds": session["duration_seconds"],
+            "camera_count": session["camera_count"],
+            "frames_seen": session["frames_seen"],
+            "proposal_count": session["proposal_count"],
+            "reference_count": len(views),
+        },
+        "detection_prompts": prompts,
+    }
+    PRODUCT_FINGERPRINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PRODUCT_FINGERPRINTS_PATH.write_text(
+        json.dumps(fingerprints, indent=2), encoding="utf-8"
+    )
+    session["status"] = "saved"
+    session["product_id"] = str(item["id"])
+    session["product_name"] = product_name
+    _audit(
+        "product_learning_saved",
+        {
+            "scope_id": scope,
+            "session_id": request.session_id,
+            "item_id": item["id"],
+            "name": product_name,
+            "reference_count": len(views),
+        },
+    )
+    return {
+        "item": db.get_item(str(item["id"])),
+        "fingerprint": fingerprints["products"][str(item["id"])],
+        "active": True,
     }
 
 
