@@ -133,7 +133,7 @@ _watchdog_last_start_attempt = 0.0
 # simply gone, which is fine for an ephemeral progress indicator.
 _live_catalog_runs: dict[str, dict[str, Any]] = {}
 _live_catalog_tasks: dict[str, asyncio.Task] = {}
-CATALOG_LIVE_RUN_DURATION_SECONDS = 240
+CATALOG_LIVE_RUN_DURATION_SECONDS = 60
 CATALOG_LIVE_RUN_SAMPLE_INTERVAL_SECONDS = 8
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
@@ -1684,6 +1684,7 @@ def _catalog_persist_match_visuals(scope_id: str, run_id: str, match: dict[str, 
     item_slug = _catalog_visual_slug(persisted.get("item_name"))
     for entry in persisted.get("camera_counts") or []:
         enriched = dict(entry)
+        enriched.setdefault("detected_at", _now_iso())
         camera_name = _catalog_camera_label(enriched.get("camera_name"))
         visual = evidence.get(camera_name)
         if visual:

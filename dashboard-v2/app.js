@@ -2053,6 +2053,7 @@ function catalogCameraCountsHtml(result) {
           ${entry.crop_url ? `<img src="${escapeAttr(`${API_BASE}${entry.crop_url}`)}" alt="${escapeAttr(`${result.item_name || "Item"} from ${entry.camera_name || "camera"}`)}" style="width:72px;height:52px;object-fit:cover;border-radius:7px;border:1px solid #cbd5e1;margin-right:8px;vertical-align:middle" />` : ""}
           <strong>${escapeHtml(entry.camera_name || t("table.camera"))}</strong>
           ${Number(entry.quantity).toLocaleString()}
+          ${entry.detected_at ? `<small style="display:block;margin-left:8px;color:#64748b">${escapeHtml(formatCatalogTime(entry.detected_at))}</small>` : ""}
         </span>`
     )
     .join("");
@@ -2132,7 +2133,7 @@ function resultAnalyticsRows(results) {
         : [{ camera_name: t("table.unknown_camera"), quantity: Number(result.quantity || 0) }];
       return entries.map((entry) => {
         const parts = splitCatalogCameraName(entry.camera_name);
-        const completedAt = result.completed_at || result.created_at;
+        const completedAt = entry.detected_at || result.completed_at || result.created_at;
         const parsedTime = new Date(completedAt);
         const cameraName = String(entry.camera_name || t("table.unknown_camera"));
         return {

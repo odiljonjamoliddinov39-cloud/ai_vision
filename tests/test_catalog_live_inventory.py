@@ -93,3 +93,13 @@ def test_catalog_yolo_scans_all_loaded_camera_frames_by_default():
     assert 'CATALOG_RECOGNITION_MAX_FRAMES", "100"' in source
     assert '"camera_count": len(frames)' in source
     assert '"detection_count": 0' in source
+
+
+def test_live_recognition_is_one_minute_and_results_keep_detection_time():
+    backend = (server.ROOT / "api" / "server.py").read_text(encoding="utf-8")
+    frontend = (server.ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "CATALOG_LIVE_RUN_DURATION_SECONDS = 60" in backend
+    assert 'enriched.setdefault("detected_at", _now_iso())' in backend
+    assert "entry.detected_at || result.completed_at" in frontend
+    assert "formatCatalogTime(entry.detected_at)" in frontend
