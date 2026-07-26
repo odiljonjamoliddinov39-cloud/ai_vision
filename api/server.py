@@ -2366,7 +2366,7 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
     # the same package fail after normal changes in angle, scale and lighting.
     crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.70"))
     proposal_threshold = float(
-        os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.62")
+        os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.88")
     )
     if scan is not None:
         scan["crop_similarity_threshold"] = crop_threshold
