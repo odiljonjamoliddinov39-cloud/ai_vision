@@ -206,6 +206,62 @@ class DeviceDB:
                 )
         return self.get_device(device_id)
 
+    def upsert_channel(
+        self,
+        device_id: int,
+        external_channel_id: str,
+        name: str,
+        stream_reference: str,
+        profile: str | None = None,
+        camera_id: int | None = None,
+        slot_number: int | None = None,
+    ) -> dict[str, Any]:
+        """Update a discovered channel instead of duplicating it on retries."""
+        with self._connect() as conn:
+            row = conn.execute(
+                self._sql(
+                    """
+                    SELECT id
+                    FROM channels
+                    WHERE device_id = ? AND external_channel_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ),
+                (device_id, external_channel_id),
+            ).fetchone()
+            if row:
+                channel_id = int(row["id"])
+                conn.execute(
+                    self._sql(
+                        """
+                        UPDATE channels
+                        SET name = ?, profile = ?, stream_reference = ?,
+                            camera_id = ?, slot_number = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """
+                    ),
+                    (
+                        name,
+                        profile,
+                        stream_reference,
+                        camera_id,
+                        slot_number,
+                        channel_id,
+                    ),
+                )
+        if row:
+            return self.get_channel(channel_id, include_secret=False)
+        return self.add_channel(
+            device_id=device_id,
+            external_channel_id=external_channel_id,
+            name=name,
+            stream_reference=stream_reference,
+            profile=profile,
+            camera_id=camera_id,
+            slot_number=slot_number,
+        )
     def add_channel(
         self,
         device_id: int,
@@ -274,7 +330,20 @@ class DeviceDB:
                 (device_id,),
             ).fetchall()
             channels = conn.execute(
-                self._sql("SELECT * FROM channels WHERE device_id = ? ORDER BY slot_number IS NULL, slot_number, id"),
+                self._sql(
+                    """
+                    SELECT *
+                    FROM channels AS channel
+                    WHERE device_id = ?
+                      AND id = (
+                          SELECT MAX(candidate.id)
+                          FROM channels AS candidate
+                          WHERE candidate.device_id = channel.device_id
+                            AND candidate.external_channel_id = channel.external_channel_id
+                      )
+                    ORDER BY slot_number IS NULL, slot_number, id
+                    """
+                ),
                 (device_id,),
             ).fetchall()
         data = self._serialize_device(device) if device else {}
