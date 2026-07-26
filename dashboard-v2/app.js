@@ -2049,7 +2049,11 @@ function catalogCameraCountsHtml(result) {
     .filter((entry) => Number(entry.quantity) > 0)
     .map(
       (entry) =>
-        `<span class="camera-count-pill"><strong>${escapeHtml(entry.camera_name || t("table.camera"))}</strong>${Number(entry.quantity).toLocaleString()}</span>`
+        `<span class="camera-count-pill">
+          ${entry.crop_url ? `<img src="${escapeAttr(`${API_BASE}${entry.crop_url}`)}" alt="${escapeAttr(`${result.item_name || "Item"} from ${entry.camera_name || "camera"}`)}" style="width:72px;height:52px;object-fit:cover;border-radius:7px;border:1px solid #cbd5e1;margin-right:8px;vertical-align:middle" />` : ""}
+          <strong>${escapeHtml(entry.camera_name || t("table.camera"))}</strong>
+          ${Number(entry.quantity).toLocaleString()}
+        </span>`
     )
     .join("");
   return rows || `<span class="muted">${escapeHtml(t("table.unknown_camera"))}</span>`;
@@ -2502,7 +2506,14 @@ async function startLiveCatalogRecognition(container, button) {
     let status = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live"), { method: "POST" });
     while (status.running) {
       if (!container.isConnected || accountModule !== "analytics") return;
-      await refreshCatalogResultsTable(container, status.results || []);
+      if ((status.results || []).length) {
+        await refreshCatalogResultsTable(container, status.results);
+      } else {
+        const table = container.querySelector("[data-catalog-table]");
+        if (table) {
+          table.innerHTML = `<p class="empty">Scanning live feeds… matched items, quantities, cameras, and crops will appear here during this countdown.</p>`;
+        }
+      }
       button.textContent = `${t("actions.recognizing")} ${Number(status.remaining_seconds || 0).toLocaleString()}s`;
       await new Promise((resolve) => setTimeout(resolve, 1000));
       status = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live/status"));

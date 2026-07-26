@@ -56,3 +56,5 @@ def test_dashboard_uses_persistent_live_recognition_session():
     assert 'catalogApiPath("/api/catalog/recognition/run-live")' in source
     assert 'catalogApiPath("/api/catalog/recognition/run-live/status")' in source
     assert "status.remaining_seconds" in source
+    assert "entry.crop_url" in source
+    assert "Scanning live feeds" in source

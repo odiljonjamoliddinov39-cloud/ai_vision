@@ -2058,6 +2058,7 @@ def _live_catalog_status_payload(scope_id: str) -> dict[str, Any]:
 async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> None:
     global _catalog_run_lock
     state = _live_catalog_runs[scope_id]
+    live_visual_run_id = f"live-{_catalog_visual_slug(state['started_at'])}"
     try:
         while datetime.now(timezone.utc) < ends_at:
             try:
@@ -2074,13 +2075,31 @@ async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> Non
                     if match["quantity"] <= 0:
                         continue
                     state_key = str(match.get("_state_key") or match["item_id"])
+                    persisted = _catalog_persist_match_visuals(
+                        scope_id, live_visual_run_id, match
+                    )
+                    if match.get("_state_key"):
+                        persisted["_state_key"] = match["_state_key"]
                     existing = state["items"].get(state_key)
                     if existing is None:
-                        state["items"][state_key] = match
+                        state["items"][state_key] = persisted
                     else:
-                        merged = _catalog_merge_match_samples([[existing], [match]])[0]
-                        if match.get("_state_key"):
-                            merged["_state_key"] = match["_state_key"]
+                        merged = _catalog_merge_match_samples([[existing], [persisted]])[0]
+                        media_by_camera = {}
+                        for result in (existing, persisted):
+                            for entry in result.get("camera_counts") or []:
+                                if entry.get("frame_url") or entry.get("crop_url"):
+                                    media_by_camera[_catalog_camera_label(entry.get("camera_name"))] = entry
+                        for entry in merged.get("camera_counts") or []:
+                            media = media_by_camera.get(
+                                _catalog_camera_label(entry.get("camera_name"))
+                            )
+                            if media:
+                                for key in ("frame_url", "crop_url", "bbox", "class_name"):
+                                    if media.get(key) is not None:
+                                        entry[key] = media[key]
+                        if persisted.get("_state_key"):
+                            merged["_state_key"] = persisted["_state_key"]
                         state["items"][state_key] = merged
             remaining = (ends_at - datetime.now(timezone.utc)).total_seconds()
             if remaining <= 0:
