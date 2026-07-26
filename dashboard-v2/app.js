@@ -2408,12 +2408,20 @@ function productLearningPanelHtml(session) {
     return `<div class="module-placeholder"><h3>Learning could not finish</h3><p>${escapeHtml(session.error || "No stable product views were found.")}</p><button type="button" data-acc-action="learn-product">Try again</button></div>`;
   }
   const previews = (session.views || [])
-    .map((view) => `<figure style="margin:0"><img src="${API_BASE}${view.url}" alt="Learned product view" style="width:110px;height:90px;object-fit:cover;border-radius:8px" /><figcaption style="font-size:11px">${escapeHtml(view.camera_name || "")}</figcaption></figure>`)
+    .map((view) => `
+      <label style="display:block;cursor:pointer;border:2px solid #2563eb;border-radius:10px;padding:5px">
+        <img src="${API_BASE}${view.url}" alt="Learned product view" style="display:block;width:110px;height:90px;object-fit:cover;border-radius:7px" />
+        <span style="display:flex;gap:5px;align-items:center;font-size:11px;margin-top:5px">
+          <input type="checkbox" name="learned-view" value="${Number(view.index)}" checked />
+          Use this view
+        </span>
+      </label>`)
     .join("");
   if (session.status === "ready") {
     return `
       <div class="module-placeholder">
         <h3>${Number(session.view_count || 0)} reusable product views captured</h3>
+        <p>Select only the pictures that clearly contain the product. Deselect warehouse background or the wrong object. At least two views are required.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">${previews}</div>
         <form data-acc-form="learned-product-save" data-session-id="${escapeAttr(session.session_id)}" style="display:flex;gap:10px;align-items:end">
           <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:5px">Product Name</span><input name="name" required maxlength="60" placeholder="Baget Box" autocomplete="off" style="width:100%" /></label>
@@ -2431,13 +2439,13 @@ function productLearningPanelHtml(session) {
     </div>`;
 }
 
-async function startProductLearning(container, button) {
+async function startProductLearning(container, button, cameraName) {
   button.disabled = true;
   try {
     let session = await catalogRequest(catalogApiPath("/api/catalog/learning/start"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ duration_seconds: 12 }),
+      body: JSON.stringify({ duration_seconds: 12, camera_name: cameraName }),
     });
     productLearningSessionId = session.session_id;
     const panel = container.querySelector("[data-product-learning-panel]");
@@ -2458,6 +2466,12 @@ async function renderCatalogEnrollment(container) {
   try {
     const payload = await catalogRequest(catalogApiPath("/api/catalog/items"));
     if (!container.isConnected || accountModule !== "ai") return;
+    const cameraOptions = (accountState?.company?.cameraConfig?.nvrs || [])
+      .flatMap((nvr) => (nvr.channelsDetail || []).map((channel) => ({
+        name: channel.name || `${nvr.name} Channel ${channel.channel}`,
+        active: channel.active !== false && channel.slot_number != null,
+      })))
+      .filter((camera) => camera.active);
     const rows = payload.items
       .map(
         (item) => `
@@ -2486,8 +2500,16 @@ async function renderCatalogEnrollment(container) {
       <section class="detected-list" style="margin-bottom:18px">
         <header class="detected-list-head">
           <div><h3>Learn New Product</h3><p>Show the product to a live camera. AI Vision captures its views and builds the reusable fingerprint automatically.</p></div>
-          <button type="button" class="export-button" data-acc-action="learn-product">Learn New Product</button>
+          <div style="display:flex;gap:8px;align-items:end">
+            <label><span style="display:block;font-size:12px;font-weight:700;margin-bottom:5px">Camera showing the product</span>
+              <select data-learning-camera style="min-width:260px">
+                ${cameraOptions.map((camera) => `<option value="${escapeAttr(camera.name)}">${escapeHtml(camera.name)}</option>`).join("")}
+              </select>
+            </label>
+            <button type="button" class="export-button" data-acc-action="learn-product" ${cameraOptions.length ? "" : "disabled"}>Learn New Product</button>
+          </div>
         </header>
+        ${cameraOptions.length ? "" : '<p class="empty">Connect an active camera before starting product learning.</p>'}
         <div data-product-learning-panel>${productLearningPanelHtml(null)}</div>
       </section>
       <details>
@@ -3243,6 +3265,12 @@ async function handleAccountSubmit(event) {
   if (form.dataset.accForm === "learned-product-save") {
     const productName = form.elements.name.value.trim();
     if (!productName) return;
+    const viewIndices = Array.from(form.querySelectorAll('input[name="learned-view"]:checked'))
+      .map((input) => Number(input.value));
+    if (viewIndices.length < 2) {
+      toast("Select at least two clear pictures of the product.");
+      return;
+    }
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
     submit.textContent = "Saving fingerprint…";
@@ -3253,6 +3281,7 @@ async function handleAccountSubmit(event) {
         body: JSON.stringify({
           session_id: form.dataset.sessionId,
           product_name: productName,
+          view_indices: viewIndices,
         }),
       });
       productLearningSessionId = null;
@@ -3378,9 +3407,14 @@ async function handleAccountClick(event) {
   const action = button.dataset.accAction;
 
   if (action === "learn-product") {
+    const cameraName = els.moduleContent.querySelector("[data-learning-camera]")?.value;
+    if (!cameraName) {
+      toast("Select the camera where you will show the product.");
+      return;
+    }
     const panel = els.moduleContent.querySelector("[data-product-learning-panel]");
     if (panel) panel.innerHTML = `<div class="module-placeholder"><h3>Starting live capture…</h3><p>Place the product clearly in view of a camera now.</p></div>`;
-    void startProductLearning(els.moduleContent, button);
+    void startProductLearning(els.moduleContent, button, cameraName);
     return;
   }
 

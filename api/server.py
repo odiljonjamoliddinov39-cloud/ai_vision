@@ -813,11 +813,13 @@ class CatalogPromptUpdate(BaseModel):
 
 class ProductLearningStart(BaseModel):
     duration_seconds: int = Field(default=12, ge=10, le=20)
+    camera_name: str = Field(min_length=1, max_length=200)
 
 
 class ProductLearningSave(BaseModel):
     session_id: str = Field(min_length=8, max_length=120)
     product_name: str = Field(min_length=1, max_length=60)
+    view_indices: list[int] = Field(min_length=2, max_length=8)
 
 
 class WarehouseTaskRequest(BaseModel):
@@ -2058,6 +2060,12 @@ def _run_product_learning_session(session_id: str) -> None:
         while time.monotonic() - started < duration:
             health = _catalog_health_snapshot()
             frames = _catalog_live_frames(health, max_frames=100)
+            selected_camera = _catalog_camera_label(session["camera_name"])
+            frames = [
+                entry
+                for entry in frames
+                if _catalog_camera_label(entry.get("camera_name")) == selected_camera
+            ]
             session["camera_count"] = max(int(session.get("camera_count") or 0), len(frames))
             session["frames_seen"] = int(session.get("frames_seen") or 0) + len(frames)
             session["remaining_seconds"] = max(
@@ -2160,6 +2168,7 @@ def _run_product_learning_session(session_id: str) -> None:
             if url:
                 previews.append(
                     {
+                        "index": index - 1,
                         "url": url,
                         "camera_name": view["camera_name"],
                         "score": round(float(view["score"]), 4),
@@ -4700,6 +4709,7 @@ async def start_product_learning(
         "scope_id": scope,
         "status": "capturing",
         "duration_seconds": request.duration_seconds,
+        "camera_name": _catalog_camera_label(request.camera_name),
         "remaining_seconds": request.duration_seconds,
         "started_at": _now_iso(),
         "completed_at": None,
@@ -4747,7 +4757,13 @@ def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[st
     item = db.create_item(scope, product_name)
     item_dir = CATALOG_IMAGE_DIR / scope / str(item["id"])
     item_dir.mkdir(parents=True, exist_ok=True)
-    views = session["_views"]
+    all_views = session["_views"]
+    indices = sorted(set(int(index) for index in request.view_indices))
+    if any(index < 0 or index >= len(all_views) for index in indices):
+        raise HTTPException(status_code=400, detail="One or more selected views are invalid.")
+    views = [all_views[index] for index in indices]
+    if len(views) < 2:
+        raise HTTPException(status_code=400, detail="Select at least two product views.")
     for index, view in enumerate(views, start=1):
         filename = f"learned_{index:02d}.jpg"
         path = item_dir / filename
