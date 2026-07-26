@@ -3201,7 +3201,22 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
         raise HTTPException(status_code=404, detail="Device not found.")
 
     port = request.port or STREAM_DEFAULT_PORTS.get(request.protocol.lower(), 554)
-    credentials = StreamCredentials(request.username or "", request.password or "")
+    username = request.username or ""
+    password = request.password or ""
+    if not username:
+        # Reuse credentials already stored server-side for this NVR host. This
+        # allows a rediscovered recorder to expand its channel count without
+        # sending secrets back to the browser or asking the operator again.
+        for camera in _get_camera_db().list_cameras(include_secret=True):
+            try:
+                parsed = urlsplit(str(camera.get("stream_url") or ""))
+            except ValueError:
+                continue
+            if parsed.hostname == str(device["host"]) and parsed.username:
+                username = parsed.username
+                password = parsed.password or ""
+                break
+    credentials = StreamCredentials(username, password)
     enumeration = enumerate_streams(
         host=str(device["host"]),
         port=port,
