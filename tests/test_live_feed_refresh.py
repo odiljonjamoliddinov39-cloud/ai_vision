@@ -31,11 +31,13 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
     assert source.count("data-live-frame data-live-slot") == 3
-    assert "window.setInterval(reconcileLiveStreams, LIVE_FRAME_REFRESH_MS)" in source
+    assert "new WebSocket(liveWebSocketUrl(slots))" in source
+    assert 'socket.binaryType = "arraybuffer";' in source
+    assert 'socket.addEventListener("message"' in source
     assert "new IntersectionObserver(" not in source
-    assert "images.forEach(startLiveStream);" in source
+    assert "window.setInterval(reconcileLiveStreams" not in source
     assert 'loading="eager" decoding="async"' in source
-    assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
+    assert 'document.addEventListener("visibilitychange"' not in source
 
 
 def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
@@ -45,22 +47,24 @@ def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
     assert "for (let slot = 1; slot <= MAX_NVR_SLOTS; slot += 1)" in source
     assert "Math.max(...usedSlots) + 1" not in source
     assert "new MutationObserver((mutations) => {" in source
-    # Every mounted tile polls the persistent Stream Manager buffer.
-    assert "image.src = liveFrameUrl(slot);" in source
-    assert 'image.dataset.liveLoading = "true";' in source
-    assert "function stopLiveStream(image)" in source
-    assert 'data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}"' in source
+    # Every mounted tile receives frames from one multiplexed WebSocket.
+    assert "renderLiveSocketFrame(slot, payload.slice(2));" in source
+    assert "new Blob([jpegBytes]" in source
+    assert "function stopLiveFrameRefresh()" in source
+    assert 'data-live-priming="true" loading="eager"' in source
+    assert "/api/live_frame?slot=${slot}" not in source
     assert 'loading="eager" decoding="async"' in source
     assert "image.complete && image.naturalWidth > 0" in source
 
 
-def test_dashboard_refreshes_offscreen_streams_without_viewport_gating():
+def test_dashboard_streams_offscreen_cameras_without_viewport_gating():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "const LIVE_FRAME_REFRESH_MS = 500;" in source
     assert "MAX_LIVE_STREAMS" not in source
     assert "liveVisible" not in source
-    assert "images.forEach(startLiveStream);" in source
+    assert "document.hidden" not in source
+    assert "url.searchParams.set(\"slots\", slots);" in source
+    assert ".join(\",\");" in source
 
 
 def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
@@ -78,20 +82,22 @@ def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
     assert "if (structuralChange) syncLiveFrameRefresh();" in source
 
 
-def test_dashboard_backs_off_a_failed_stream_instead_of_holding_the_connection():
+def test_dashboard_reconnects_the_continuous_socket_after_failure():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "const LIVE_STREAM_ERROR_BACKOFF_MS = 4000;" in source
-    assert (
-        "image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);"
-        in source
-    )
-    # A failed still-frame request releases its loading guard and waits out the
-    # backoff before trying the same persistent worker buffer again.
-    assert "delete image.dataset.liveLoading;" in source
-    assert (
-        "if (backoffUntil && Date.now() < backoffUntil) return;" in source
-    )
+    assert "const LIVE_STREAM_RECONNECT_MS = 1500;" in source
+    assert "function scheduleLiveSocketReconnect()" in source
+    assert "scheduleLiveSocketReconnect();" in source
+    assert 'socket.addEventListener("error", () => socket.close());' in source
+
+
+def test_backend_multiplexes_slots_on_one_websocket():
+    source = (ROOT / "api" / "server.py").read_text(encoding="utf-8")
+
+    assert '@app.websocket("/api/live_ws")' in source
+    assert 'raw_slots = websocket.query_params.get("slots", "")' in source
+    assert 'await websocket.send_bytes(struct.pack("!H", slot) + data)' in source
+    assert 'os.getenv("LIVE_WEBSOCKET_FPS", "8")' in source
 
 
 def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():

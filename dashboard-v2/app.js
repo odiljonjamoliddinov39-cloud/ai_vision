@@ -504,21 +504,13 @@ function rerenderCurrentViewForLanguage() {
 const LOAD_RETRY_DELAYS_MS = [500, 1000, 2000];
 let loadRetryTimer = null;
 
-// The Stream Manager keeps every RTSP connection and decoder alive server-side.
-// The dashboard only polls each worker's latest buffered JPEG. Short requests
-// avoid the browser's per-origin limit for long-lived MJPEG connections and
-// keep every mounted tile current even while it is off-screen.
-const LIVE_FRAME_REFRESH_MS = 500;
-const LIVE_STREAM_ERROR_BACKOFF_MS = 4000;
-let liveFrameTimer = null;
-
-function liveFrameUrl(slot) {
-  // Single still frame - used as the initial poster before the stream connects.
-  const url = new URL(`${API_BASE}/api/live_frame`);
-  url.searchParams.set("slot", slot);
-  url.searchParams.set("v", Date.now());
-  return url.toString();
-}
+// One WebSocket multiplexes every mounted camera. The connection stays alive
+// regardless of scroll position and avoids the browser's per-origin limit on
+// separate long-lived MJPEG requests.
+const LIVE_STREAM_RECONNECT_MS = 1500;
+let liveFrameSocket = null;
+let liveFrameSocketSlots = "";
+let liveFrameReconnectTimer = null;
 
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
@@ -531,7 +523,6 @@ function attachLiveFrameHandlers(image) {
   if (image.dataset.liveHandlersAttached === "true") return;
   image.dataset.liveHandlersAttached = "true";
   image.addEventListener("load", () => {
-    delete image.dataset.liveLoading;
     delete image.dataset.livePriming;
     delete image.dataset.liveErrorUntil;
     image.classList.remove("feed-stale");
@@ -540,9 +531,7 @@ function attachLiveFrameHandlers(image) {
     setFeedBadgeLive(image, true);
   });
   image.addEventListener("error", () => {
-    delete image.dataset.liveLoading;
     delete image.dataset.livePriming;
-    image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);
     image.classList.add("feed-stale");
     image.title = t("status.waiting_fresh_frame");
     setFeedBadgeLive(image, false);
@@ -555,56 +544,97 @@ function attachLiveFrameHandlers(image) {
   }
 }
 
-function observeLiveFrameImage(image) {
-  attachLiveFrameHandlers(image);
-  if (image.dataset.liveObserved === "true") return;
-  image.dataset.liveObserved = "true";
+function liveWebSocketUrl(slots) {
+  const url = new URL(`${API_BASE}/api/live_ws`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("slots", slots);
+  return url.toString();
 }
 
-function startLiveStream(image) {
-  const slot = image.dataset.liveSlot;
-  if (!slot) return;
-  if (image.dataset.liveLoading === "true") return;
-  const backoffUntil = Number(image.dataset.liveErrorUntil || 0);
-  if (backoffUntil && Date.now() < backoffUntil) return;
-  image.dataset.liveLoading = "true";
-  image.src = liveFrameUrl(slot);
+function renderLiveSocketFrame(slot, jpegBytes) {
+  const images = Array.from(
+    els.moduleContent.querySelectorAll(`img[data-live-frame][data-live-slot="${slot}"]`)
+  );
+  images.forEach((image) => {
+    attachLiveFrameHandlers(image);
+    const nextUrl = URL.createObjectURL(new Blob([jpegBytes], { type: "image/jpeg" }));
+    const previousUrl = image.dataset.liveObjectUrl;
+    image.dataset.liveObjectUrl = nextUrl;
+    image.addEventListener(
+      "load",
+      () => {
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+      },
+      { once: true }
+    );
+    image.src = nextUrl;
+  });
 }
 
-function stopLiveStream(image) {
-  delete image.dataset.liveLoading;
+function scheduleLiveSocketReconnect() {
+  if (liveFrameReconnectTimer !== null) return;
+  liveFrameReconnectTimer = window.setTimeout(() => {
+    liveFrameReconnectTimer = null;
+    syncLiveFrameRefresh();
+  }, LIVE_STREAM_RECONNECT_MS);
 }
 
 function reconcileLiveStreams() {
-  if (document.hidden) {
+  const images = Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]"));
+  images.forEach(attachLiveFrameHandlers);
+  const slots = [...new Set(images.map((image) => Number(image.dataset.liveSlot)).filter(Boolean))]
+    .sort((left, right) => left - right)
+    .join(",");
+  if (!slots) {
     stopLiveFrameRefresh();
     return;
   }
-  const images = Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]"));
-  images.forEach(observeLiveFrameImage);
-  images.forEach(startLiveStream);
+  if (
+    liveFrameSocket
+    && liveFrameSocketSlots === slots
+    && (liveFrameSocket.readyState === WebSocket.OPEN
+      || liveFrameSocket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+
+  stopLiveFrameRefresh();
+  liveFrameSocketSlots = slots;
+  const socket = new WebSocket(liveWebSocketUrl(slots));
+  socket.binaryType = "arraybuffer";
+  liveFrameSocket = socket;
+  socket.addEventListener("message", (event) => {
+    const payload = new Uint8Array(event.data);
+    if (payload.byteLength <= 2) return;
+    const slot = new DataView(payload.buffer, payload.byteOffset, 2).getUint16(0);
+    renderLiveSocketFrame(slot, payload.slice(2));
+  });
+  socket.addEventListener("close", () => {
+    if (liveFrameSocket !== socket) return;
+    liveFrameSocket = null;
+    scheduleLiveSocketReconnect();
+  });
+  socket.addEventListener("error", () => socket.close());
 }
 
 function stopLiveFrameRefresh() {
-  if (liveFrameTimer !== null) {
-    window.clearInterval(liveFrameTimer);
-    liveFrameTimer = null;
+  if (liveFrameReconnectTimer !== null) {
+    window.clearTimeout(liveFrameReconnectTimer);
+    liveFrameReconnectTimer = null;
   }
-  Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]")).forEach(stopLiveStream);
+  const socket = liveFrameSocket;
+  liveFrameSocket = null;
+  liveFrameSocketSlots = "";
+  if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
 }
 
 function syncLiveFrameRefresh() {
   const hasLiveFrames = Boolean(els.moduleContent.querySelector("img[data-live-frame]"));
-  if (document.hidden || !hasLiveFrames) {
+  if (!hasLiveFrames) {
     stopLiveFrameRefresh();
     return;
   }
   reconcileLiveStreams();
-  if (liveFrameTimer === null) {
-    // Re-arm errored streams after backoff and refresh every mounted camera,
-    // regardless of its current scroll position.
-    liveFrameTimer = window.setInterval(reconcileLiveStreams, LIVE_FRAME_REFRESH_MS);
-  }
 }
 
 const HEAD_MODULE_IDS = new Set(["overview", "users"]);
@@ -824,7 +854,7 @@ function renderModuleContent() {
       <div class="live-preview">
         ${Array.from({ length: Math.min(Number(summary.active_cameras || health.camera_count || 10), 10) }, (_, index) => {
           const slot = index + 1;
-          return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+          return `<figure><img data-live-frame data-live-slot="${slot}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
         }).join("")}
       </div>
     `;
@@ -1557,7 +1587,7 @@ function livePreviewHtml(summary, health) {
     <div class="live-preview">
       ${Array.from({ length: slots }, (_, index) => {
         const slot = index + 1;
-        return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+        return `<figure><img data-live-frame data-live-slot="${slot}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
       }).join("")}
     </div>
   `;
@@ -1645,7 +1675,7 @@ function renderFeedTile(nvr, channel) {
     return `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
   }
   if (channel.active && channel.slot_number != null) {
-    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="eager" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" loading="eager" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
   }
   return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
 }
@@ -3958,7 +3988,6 @@ const liveFrameObserver = new MutationObserver((mutations) => {
   if (structuralChange) syncLiveFrameRefresh();
 });
 liveFrameObserver.observe(els.moduleContent, { childList: true, subtree: true });
-document.addEventListener("visibilitychange", syncLiveFrameRefresh);
 window.addEventListener("beforeunload", stopLiveFrameRefresh);
 
 migrateLegacyLocalStorage()

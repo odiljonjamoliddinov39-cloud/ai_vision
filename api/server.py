@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -23,7 +24,16 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import asyncio
@@ -4483,6 +4493,45 @@ async def live_mjpeg(slot: int | None = None, camera: str | None = None):
             await asyncio.sleep(0.03)
 
     return StreamingResponse(frame_generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
+
+
+@app.websocket("/api/live_ws")
+async def live_websocket(websocket: WebSocket):
+    """Multiplex every requested camera over one continuous connection.
+
+    Binary messages contain a two-byte unsigned slot number followed by one
+    complete JPEG. The Stream Manager remains the sole RTSP decoder owner.
+    """
+
+    raw_slots = websocket.query_params.get("slots", "")
+    slots = sorted(
+        {
+            int(value)
+            for value in raw_slots.split(",")
+            if value.strip().isdigit() and 1 <= int(value) <= MAX_CAMERA_SLOTS
+        }
+    )
+    if not slots:
+        await websocket.close(code=1008, reason="At least one camera slot is required.")
+        return
+
+    await websocket.accept()
+    last_sent: dict[int, bytes] = {}
+    target_fps = max(1.0, min(float(os.getenv("LIVE_WEBSOCKET_FPS", "8")), 15.0))
+    interval = 1.0 / target_fps
+    try:
+        while True:
+            cycle_started = time.monotonic()
+            for slot in slots:
+                data = _get_stream_manager().latest_frame_bytes(slot_number=slot)
+                if data is None or data == last_sent.get(slot):
+                    continue
+                await websocket.send_bytes(struct.pack("!H", slot) + data)
+                last_sent[slot] = data
+            elapsed = time.monotonic() - cycle_started
+            await asyncio.sleep(max(0.001, interval - elapsed))
+    except (WebSocketDisconnect, RuntimeError):
+        return
 
 
 @app.get("/api/live_frame")
