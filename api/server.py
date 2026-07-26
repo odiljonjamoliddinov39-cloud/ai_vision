@@ -1395,11 +1395,39 @@ def _catalog_frame_embeddings(health: dict[str, Any]) -> dict[str, list[float]]:
         name = str(camera.get("name") or f"slot-{slot}")
         if not slot:
             continue
-        path = _live_feed_path(slot=int(slot))
-        frame = cv2.imread(str(path)) if path.exists() else None
+        frame = _catalog_live_frame_image(slot=int(slot), camera=name)
         if frame is not None:
             embeddings[name] = image_embedding(frame)
     return embeddings
+
+
+def _catalog_live_frame_image(slot: int | None = None, camera: str | None = None):
+    """Decode the current frame owned by Stream Manager for one camera."""
+    try:
+        import cv2
+        import numpy as np
+
+        data = _get_stream_manager().latest_frame_bytes(
+            slot_number=slot, name=camera
+        )
+        if data:
+            frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                return frame
+    except Exception:
+        pass
+
+    try:
+        import cv2
+    except ImportError:
+        return None
+    for path in _live_feed_paths(slot=slot, camera=camera):
+        if not path.exists():
+            continue
+        frame = cv2.imread(str(path))
+        if frame is not None:
+            return frame
+    return None
 
 
 def _catalog_health_snapshot() -> dict[str, Any]:
@@ -1442,11 +1470,9 @@ def _catalog_crop_candidates(health: dict[str, Any]) -> list[dict[str, Any]]:
     by_camera = health.get("last_detections_by_camera") or {}
     for camera_name, detections in by_camera.items():
         slot = slots_by_camera.get(str(camera_name))
-        frame = None
-        for path in _live_feed_paths(slot=int(slot) if slot else None, camera=str(camera_name)):
-            frame = cv2.imread(str(path)) if path.exists() else None
-            if frame is not None:
-                break
+        frame = _catalog_live_frame_image(
+            slot=int(slot) if slot else None, camera=str(camera_name)
+        )
         if frame is None:
             continue
 
@@ -1496,18 +1522,11 @@ def _catalog_live_frames(health: dict[str, Any], max_frames: int | None = None) 
             break
         slot = camera.get("slot_number")
         camera_name = str(camera.get("name") or f"slot-{slot}")
-        for path in _live_feed_paths(slot=int(slot) if slot else None, camera=camera_name):
-            if not path.exists():
-                continue
-            try:
-                import cv2
-
-                frame = cv2.imread(str(path))
-            except ImportError:
-                return frames
-            if frame is not None:
-                frames.append({"camera_name": camera_name, "slot": slot, "frame": frame})
-                break
+        frame = _catalog_live_frame_image(
+            slot=int(slot) if slot else None, camera=camera_name
+        )
+        if frame is not None:
+            frames.append({"camera_name": camera_name, "slot": slot, "frame": frame})
     return frames
 
 
@@ -1599,24 +1618,15 @@ def _catalog_visual_slug(value: Any) -> str:
 
 
 def _catalog_read_camera_frame(health: dict[str, Any], camera_name: str):
-    try:
-        import cv2
-    except ImportError:
-        return None
-
     camera_label = _catalog_camera_label(camera_name)
     slots_by_camera = {
         _catalog_camera_label(camera.get("name") or f"slot-{camera.get('slot_number')}"): camera.get("slot_number")
         for camera in health.get("cameras") or []
     }
     slot = slots_by_camera.get(camera_label)
-    for path in _live_feed_paths(slot=int(slot) if slot else None, camera=camera_label):
-        if not path.exists():
-            continue
-        frame = cv2.imread(str(path))
-        if frame is not None:
-            return frame
-    return None
+    return _catalog_live_frame_image(
+        slot=int(slot) if slot else None, camera=camera_label
+    )
 
 
 def _catalog_spatial_visuals(
@@ -4790,7 +4800,8 @@ def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list
     if camera:
         safe_name = "".join(ch if ch.isalnum() else "_" for ch in camera).strip("_") or "camera"
         paths.append(SNAPSHOT_DIR / f"latest_{safe_name}.jpg")
-    paths.append(SNAPSHOT_DIR / "latest.jpg")
+    if slot is None and not camera:
+        paths.append(SNAPSHOT_DIR / "latest.jpg")
     return paths
 
 

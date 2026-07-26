@@ -103,3 +103,11 @@ def test_live_recognition_is_one_minute_and_results_keep_detection_time():
     assert 'enriched.setdefault("detected_at", _now_iso())' in backend
     assert "entry.detected_at || result.completed_at" in frontend
     assert "formatCatalogTime(entry.detected_at)" in frontend
+
+
+def test_catalog_yolo_reads_each_persistent_stream_manager_frame():
+    source = (server.ROOT / "api" / "server.py").read_text(encoding="utf-8")
+
+    assert "def _catalog_live_frame_image(" in source
+    assert "_get_stream_manager().latest_frame_bytes(" in source
+    assert "frame = _catalog_live_frame_image(" in source

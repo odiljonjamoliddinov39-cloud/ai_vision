@@ -111,7 +111,6 @@ def test_live_feed_paths_do_not_fall_back_to_global_latest_for_slots():
     assert [path.name for path in paths] == [
         "latest_stream_slot_3.jpg",
         "latest_slot_3.jpg",
-        "latest.jpg",
     ]
 
 
