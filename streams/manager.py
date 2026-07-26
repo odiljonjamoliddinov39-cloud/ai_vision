@@ -352,9 +352,12 @@ class _ManagedStreamSession:
             cap.release()
 
     def _run_ffmpeg(self) -> None:
+        source = _rtsp_source_for_attempt(
+            self.config.source, self.status_data.reconnect_count
+        )
         process = subprocess.Popen(
             _ffmpeg_command(
-                self.config.source,
+                source,
                 width=self.config.width,
                 jpeg_quality=self.config.jpeg_quality,
                 fps=self.config.preview_fps,
@@ -371,6 +374,8 @@ class _ManagedStreamSession:
         ).start()
 
         buffer = b""
+        attempt_started = time.monotonic()
+        frame_before_attempt = self._last_frame_monotonic
         try:
             while not self._stop.is_set():
                 if process.poll() is not None or process.stdout is None:
@@ -387,6 +392,13 @@ class _ManagedStreamSession:
                     buffer = buffer[end + 2 :]
                     start = buffer.find(b"\xff\xd8")
                     end = buffer.find(b"\xff\xd9", start + 2) if start != -1 else -1
+                if (
+                    self._last_frame_monotonic <= frame_before_attempt
+                    and time.monotonic() - attempt_started > 15.0
+                ):
+                    raise ConnectionError(
+                        "ffmpeg decoded no usable frames; switching stream profile"
+                    )
         finally:
             self._terminate_process()
 
@@ -535,6 +547,24 @@ def _ffmpeg_command(source: str, width: int = 1280, jpeg_quality: int = 85, fps:
         "error",
         "-",
     ]
+
+
+def _rtsp_source_for_attempt(source: str, reconnect_count: int) -> str:
+    """Fall back from a Hikvision main stream (..01) to its substream (..02).
+
+    Some NVR channels are registered but have a broken/unsupported main profile
+    while their substream remains healthy. Keep the configured URL unchanged
+    and select the fallback only inside the persistent worker.
+    """
+    if reconnect_count < 2:
+        return source
+    return re.sub(
+        r"(/Streaming/Channels/\d+)01(?=($|[/?#]))",
+        r"\g<1>02",
+        source,
+        count=1,
+        flags=re.IGNORECASE,
+    )
 
 
 _BENIGN_FFMPEG_MARKERS = (
