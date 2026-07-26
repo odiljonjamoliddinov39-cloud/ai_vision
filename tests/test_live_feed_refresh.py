@@ -32,9 +32,9 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
 
     assert source.count("data-live-frame data-live-slot") == 3
     assert "window.setInterval(reconcileLiveStreams, LIVE_FRAME_REFRESH_MS)" in source
-    assert "const MAX_LIVE_STREAMS = 6;" in source
-    assert "new IntersectionObserver(" in source
-    assert 'image.dataset.liveVisible !== "false"' in source
+    assert "new IntersectionObserver(" not in source
+    assert "images.forEach(startLiveStream);" in source
+    assert 'loading="eager" decoding="async"' in source
     assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
 
 
@@ -45,26 +45,22 @@ def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
     assert "for (let slot = 1; slot <= MAX_NVR_SLOTS; slot += 1)" in source
     assert "Math.max(...usedSlots) + 1" not in source
     assert "new MutationObserver((mutations) => {" in source
-    # Native MJPEG stream: one long-lived connection per visible tile, no
-    # per-frame fetch/objectURL polling.
-    assert "image.src = url;" in source
-    assert 'image.dataset.liveStreaming = "true";' in source
+    # Every mounted tile polls the persistent Stream Manager buffer.
+    assert "image.src = liveFrameUrl(slot);" in source
+    assert 'image.dataset.liveLoading = "true";' in source
     assert "function stopLiveStream(image)" in source
-    assert 'image.removeAttribute("src");' in source
     assert 'data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}"' in source
-    assert 'loading="lazy" decoding="async"' in source
+    assert 'loading="eager" decoding="async"' in source
     assert "image.complete && image.naturalWidth > 0" in source
 
 
-def test_dashboard_caps_concurrent_live_streams_to_stay_under_connection_limit():
+def test_dashboard_refreshes_offscreen_streams_without_viewport_gating():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "const LIVE_FRAME_REFRESH_MS = 150;" in source
-    # Only the first MAX_LIVE_STREAMS visible tiles hold an MJPEG connection so
-    # the browser's ~6-per-origin connection cap never starves API calls.
-    assert "const streaming = visibleImages.slice(0, MAX_LIVE_STREAMS);" in source
-    assert "streaming.forEach(startLiveStream);" in source
-    assert "if (!streamingSet.has(image)) stopLiveStream(image);" in source
+    assert "const LIVE_FRAME_REFRESH_MS = 500;" in source
+    assert "MAX_LIVE_STREAMS" not in source
+    assert "liveVisible" not in source
+    assert "images.forEach(startLiveStream);" in source
 
 
 def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
@@ -90,9 +86,9 @@ def test_dashboard_backs_off_a_failed_stream_instead_of_holding_the_connection()
         "image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);"
         in source
     )
-    # On error we drop the connection (freeing a stream slot) and wait out the
-    # backoff before reconnecting.
-    assert "stopLiveStream(image);" in source
+    # A failed still-frame request releases its loading guard and waits out the
+    # backoff before trying the same persistent worker buffer again.
+    assert "delete image.dataset.liveLoading;" in source
     assert (
         "if (backoffUntil && Date.now() < backoffUntil) return;" in source
     )

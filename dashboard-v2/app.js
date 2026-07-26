@@ -504,24 +504,13 @@ function rerenderCurrentViewForLanguage() {
 const LOAD_RETRY_DELAYS_MS = [500, 1000, 2000];
 let loadRetryTimer = null;
 
-// Each mounted camera renders a real, continuous MJPEG stream from the Stream
-// Manager (`/api/live_mjpeg`) - the browser paints it as full-motion video with
-// no per-frame polling. Browsers cap concurrent connections per origin (~6 in
-// Chrome), so we only ever keep MAX_LIVE_STREAMS of the *visible* tiles
-// connected at once; the rest are disconnected until they scroll into view.
-const LIVE_FRAME_REFRESH_MS = 150;
-const MAX_LIVE_STREAMS = 6;
-// A stream that errors (slot has no active camera yet, or upstream dropped) is
-// backed off before we spend one of the scarce connection slots retrying it.
+// The Stream Manager keeps every RTSP connection and decoder alive server-side.
+// The dashboard only polls each worker's latest buffered JPEG. Short requests
+// avoid the browser's per-origin limit for long-lived MJPEG connections and
+// keep every mounted tile current even while it is off-screen.
+const LIVE_FRAME_REFRESH_MS = 500;
 const LIVE_STREAM_ERROR_BACKOFF_MS = 4000;
 let liveFrameTimer = null;
-let liveFrameVisibilityObserver = null;
-
-function liveStreamUrl(slot) {
-  const url = new URL(`${API_BASE}/api/live_mjpeg`);
-  url.searchParams.set("slot", slot);
-  return url.toString();
-}
 
 function liveFrameUrl(slot) {
   // Single still frame - used as the initial poster before the stream connects.
@@ -542,6 +531,7 @@ function attachLiveFrameHandlers(image) {
   if (image.dataset.liveHandlersAttached === "true") return;
   image.dataset.liveHandlersAttached = "true";
   image.addEventListener("load", () => {
+    delete image.dataset.liveLoading;
     delete image.dataset.livePriming;
     delete image.dataset.liveErrorUntil;
     image.classList.remove("feed-stale");
@@ -550,11 +540,9 @@ function attachLiveFrameHandlers(image) {
     setFeedBadgeLive(image, true);
   });
   image.addEventListener("error", () => {
+    delete image.dataset.liveLoading;
     delete image.dataset.livePriming;
-    // Drop the failed connection and back off so the slot is freed for another
-    // visible tile instead of being held open on a dead stream.
     image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);
-    stopLiveStream(image);
     image.classList.add("feed-stale");
     image.title = t("status.waiting_fresh_frame");
     setFeedBadgeLive(image, false);
@@ -567,49 +555,24 @@ function attachLiveFrameHandlers(image) {
   }
 }
 
-function ensureLiveFrameVisibilityObserver() {
-  if (!("IntersectionObserver" in window)) return null;
-  if (liveFrameVisibilityObserver) return liveFrameVisibilityObserver;
-  liveFrameVisibilityObserver = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        entry.target.dataset.liveVisible = entry.isIntersecting ? "true" : "false";
-      });
-      reconcileLiveStreams();
-    },
-    { root: null, rootMargin: "300px 0px", threshold: 0.01 }
-  );
-  return liveFrameVisibilityObserver;
-}
-
 function observeLiveFrameImage(image) {
   attachLiveFrameHandlers(image);
   if (image.dataset.liveObserved === "true") return;
   image.dataset.liveObserved = "true";
-  image.dataset.liveVisible = "true";
-  ensureLiveFrameVisibilityObserver()?.observe(image);
 }
 
 function startLiveStream(image) {
   const slot = image.dataset.liveSlot;
   if (!slot) return;
+  if (image.dataset.liveLoading === "true") return;
   const backoffUntil = Number(image.dataset.liveErrorUntil || 0);
   if (backoffUntil && Date.now() < backoffUntil) return;
-  const url = liveStreamUrl(slot);
-  if (image.dataset.liveStreaming === "true" && image.dataset.liveStreamUrl === url) return;
-  image.dataset.liveStreaming = "true";
-  image.dataset.liveStreamUrl = url;
-  // Setting src to the multipart endpoint opens one long-lived MJPEG
-  // connection; the browser keeps repainting the <img> as frames arrive.
-  image.src = url;
+  image.dataset.liveLoading = "true";
+  image.src = liveFrameUrl(slot);
 }
 
 function stopLiveStream(image) {
-  if (image.dataset.liveStreaming !== "true") return;
-  delete image.dataset.liveStreaming;
-  delete image.dataset.liveStreamUrl;
-  // Dropping src closes the connection so the slot is available again.
-  image.removeAttribute("src");
+  delete image.dataset.liveLoading;
 }
 
 function reconcileLiveStreams() {
@@ -619,23 +582,13 @@ function reconcileLiveStreams() {
   }
   const images = Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]"));
   images.forEach(observeLiveFrameImage);
-  const visibleImages = images.filter((image) => image.dataset.liveVisible !== "false");
-  const streaming = visibleImages.slice(0, MAX_LIVE_STREAMS);
-  const streamingSet = new Set(streaming);
-  streaming.forEach(startLiveStream);
-  images.forEach((image) => {
-    if (!streamingSet.has(image)) stopLiveStream(image);
-  });
+  images.forEach(startLiveStream);
 }
 
 function stopLiveFrameRefresh() {
   if (liveFrameTimer !== null) {
     window.clearInterval(liveFrameTimer);
     liveFrameTimer = null;
-  }
-  if (liveFrameVisibilityObserver) {
-    liveFrameVisibilityObserver.disconnect();
-    liveFrameVisibilityObserver = null;
   }
   Array.from(els.moduleContent.querySelectorAll("img[data-live-frame]")).forEach(stopLiveStream);
 }
@@ -648,8 +601,8 @@ function syncLiveFrameRefresh() {
   }
   reconcileLiveStreams();
   if (liveFrameTimer === null) {
-    // A light periodic reconcile re-arms streams that errored past their
-    // backoff and picks up newly visible tiles even without an observer event.
+    // Re-arm errored streams after backoff and refresh every mounted camera,
+    // regardless of its current scroll position.
     liveFrameTimer = window.setInterval(reconcileLiveStreams, LIVE_FRAME_REFRESH_MS);
   }
 }
@@ -871,7 +824,7 @@ function renderModuleContent() {
       <div class="live-preview">
         ${Array.from({ length: Math.min(Number(summary.active_cameras || health.camera_count || 10), 10) }, (_, index) => {
           const slot = index + 1;
-          return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="lazy" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+          return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
         }).join("")}
       </div>
     `;
@@ -1604,7 +1557,7 @@ function livePreviewHtml(summary, health) {
     <div class="live-preview">
       ${Array.from({ length: slots }, (_, index) => {
         const slot = index + 1;
-        return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="lazy" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+        return `<figure><img data-live-frame data-live-slot="${slot}" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" loading="eager" decoding="async" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
       }).join("")}
     </div>
   `;
@@ -1692,7 +1645,7 @@ function renderFeedTile(nvr, channel) {
     return `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
   }
   if (channel.active && channel.slot_number != null) {
-    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="lazy" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><img class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}" loading="eager" decoding="async" alt="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" /><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
   }
   return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
 }
