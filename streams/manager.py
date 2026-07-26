@@ -375,7 +375,7 @@ class _ManagedStreamSession:
 
         buffer = b""
         attempt_started = time.monotonic()
-        frame_before_attempt = self._last_frame_monotonic
+        frame_before_attempt = float(self._last_frame_monotonic or 0.0)
         try:
             while not self._stop.is_set():
                 if process.poll() is not None or process.stdout is None:
@@ -393,7 +393,7 @@ class _ManagedStreamSession:
                     start = buffer.find(b"\xff\xd8")
                     end = buffer.find(b"\xff\xd9", start + 2) if start != -1 else -1
                 if (
-                    self._last_frame_monotonic <= frame_before_attempt
+                    float(self._last_frame_monotonic or 0.0) <= frame_before_attempt
                     and time.monotonic() - attempt_started > 15.0
                 ):
                     raise ConnectionError(
