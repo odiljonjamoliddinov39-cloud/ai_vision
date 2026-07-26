@@ -514,6 +514,7 @@ let liveFrameSocket = null;
 let liveFrameSocketSlots = "";
 let liveFrameReconnectTimer = null;
 const liveFrameGenerations = new Map();
+const liveFrameCache = new Map();
 
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
@@ -529,7 +530,8 @@ function liveWebSocketUrl(slots) {
   return url.toString();
 }
 
-function renderLiveSocketFrame(slot, jpegBytes) {
+function renderLiveSocketFrame(slot, jpegBytes, cacheFrame = true) {
+  if (cacheFrame) liveFrameCache.set(slot, jpegBytes);
   const generation = (liveFrameGenerations.get(slot) || 0) + 1;
   liveFrameGenerations.set(slot, generation);
   createImageBitmap(new Blob([jpegBytes], { type: "image/jpeg" }))
@@ -568,13 +570,24 @@ function scheduleLiveSocketReconnect() {
 
 function reconcileLiveStreams() {
   const surfaces = Array.from(els.moduleContent.querySelectorAll("[data-live-frame]"));
-  const slots = [...new Set(surfaces.map((surface) => Number(surface.dataset.liveSlot)).filter(Boolean))]
-    .sort((left, right) => left - right)
-    .join(",");
+  const slotNumbers = [...new Set(
+    surfaces.map((surface) => Number(surface.dataset.liveSlot)).filter(Boolean)
+  )].sort((left, right) => left - right);
+  const slots = slotNumbers.join(",");
   if (!slots) {
-    stopLiveFrameRefresh();
+    // Leaving the feed view must not behave like switching the cameras off.
+    // Keep the multiplexed browser connection alive so the current frames are
+    // ready when the operator returns. The server-side Stream Manager remains
+    // the permanent RTSP owner independently of this connection.
     return;
   }
+
+  // Paint the most recently received frame synchronously with mounting the
+  // feed grid. A fresh WebSocket frame will replace it on the next server tick.
+  slotNumbers.forEach((slot) => {
+    const cachedFrame = liveFrameCache.get(slot);
+    if (cachedFrame) renderLiveSocketFrame(slot, cachedFrame, false);
+  });
   if (
     liveFrameSocket
     && liveFrameSocketSlots === slots
@@ -617,7 +630,6 @@ function stopLiveFrameRefresh() {
 function syncLiveFrameRefresh() {
   const hasLiveFrames = Boolean(els.moduleContent.querySelector("[data-live-frame]"));
   if (!hasLiveFrames) {
-    stopLiveFrameRefresh();
     return;
   }
   reconcileLiveStreams();
