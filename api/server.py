@@ -3259,7 +3259,7 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
                 reuse_existing_slot=False,
             )
 
-        channel = db.add_channel(
+        channel = db.upsert_channel(
             device_id=device_id,
             external_channel_id=str(stream.channel),
             name=f"{device['name']} {stream.name}",
@@ -3274,13 +3274,25 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
             stream_statuses.append(status)
         channels.append(channel)
 
-    _sync_config_active_cameras(camera_db)
+    config_sync_warning = None
+    try:
+        _sync_config_active_cameras(camera_db)
+    except Exception as exc:
+        # The database is the source of truth. A stale/read-only compatibility
+        # YAML file must not turn a successful device registration into a raw
+        # 500 response (which browsers misleadingly report as a CORS failure).
+        config_sync_warning = _redact_sensitive_text(str(exc))
+        _audit(
+            "v2_device_config_sync_failed",
+            {"device_id": device_id, "error": config_sync_warning},
+        )
     _audit("v2_device_authenticate", {"device_id": device_id, "channels": len(channels)})
     return {
         "provider": enumeration.provider,
         "device": db.get_device(device_id),
         "channels": channels,
         "streams": stream_statuses,
+        "warning": config_sync_warning,
     }
 
 
