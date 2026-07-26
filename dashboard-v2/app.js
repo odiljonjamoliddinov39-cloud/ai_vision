@@ -2582,7 +2582,7 @@ async function startLiveCatalogRecognition(container, button) {
         if (table) {
           const scan = status.yolo_scan;
           const detail = scan
-            ? ` YOLO scanned ${Number(scan.camera_count || 0).toLocaleString()} camera feeds and produced ${Number(scan.detection_count || 0).toLocaleString()} fresh detections; ${Number(scan.cached_candidate_count || 0).toLocaleString()} existing detector crops were also checked.${scan.catalog_scores ? ` Best catalog similarity: ${Object.entries(scan.catalog_scores).map(([name, score]) => `${name} ${Math.round(Number(score) * 100)}%`).join(", ")}.` : ""}${scan.error ? ` Error: ${scan.error}` : ""}`
+            ? ` YOLO scanned ${Number(scan.camera_count || 0).toLocaleString()} camera feeds and produced ${Number(scan.detection_count || 0).toLocaleString()} fresh detections; ${Number(scan.cached_candidate_count || 0).toLocaleString()} existing detector crops were also checked.${Number(scan.proposal_count || 0) > 0 ? ` The class-agnostic fallback generated ${Number(scan.proposal_count).toLocaleString()} object proposals for reference matching.` : ""}${scan.catalog_scores ? ` Best catalog similarity: ${Object.entries(scan.catalog_scores).map(([name, score]) => `${name} ${Math.round(Number(score) * 100)}%`).join(", ")}.` : ""}${scan.error ? ` YOLO error: ${scan.error}; fallback proposals were still evaluated.` : ""}`
             : "";
           table.innerHTML = `<p class="empty">Scanning all live feeds… matched items, quantities, cameras, and crops will appear here during this countdown.${escapeHtml(detail)}</p>`;
         }

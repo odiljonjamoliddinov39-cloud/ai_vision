@@ -1849,6 +1849,128 @@ def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
         return None
 
 
+def _catalog_box_iou(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> float:
+    x1 = max(left[0], right[0])
+    y1 = max(left[1], right[1])
+    x2 = min(left[2], right[2])
+    y2 = min(left[3], right[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    if intersection <= 0:
+        return 0.0
+    left_area = max(1, (left[2] - left[0]) * (left[3] - left[1]))
+    right_area = max(1, (right[2] - right[0]) * (right[3] - right[1]))
+    return intersection / max(1, left_area + right_area - intersection)
+
+
+def _catalog_class_agnostic_boxes(frame) -> list[tuple[int, int, int, int]]:
+    """Return object-like regions without requiring a trained class label.
+
+    This intentionally uses inexpensive edge/contour proposals so it can run as
+    a fallback over many warehouse feeds. Product identity is decided later by
+    reference matching; these boxes only answer "where might an object be?".
+    """
+    try:
+        import cv2
+    except ImportError:
+        return []
+
+    height, width = frame.shape[:2]
+    if height < 32 or width < 32:
+        return []
+    max_dimension = max(height, width)
+    scale = min(1.0, 960.0 / max_dimension)
+    working = (
+        cv2.resize(frame, (max(1, int(width * scale)), max(1, int(height * scale))))
+        if scale < 1.0
+        else frame
+    )
+    gray = cv2.cvtColor(working, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(gray, 35, 110)
+    edges = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)),
+        iterations=2,
+    )
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    work_height, work_width = gray.shape[:2]
+    frame_area = float(work_height * work_width)
+    proposals: list[tuple[float, tuple[int, int, int, int]]] = []
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        area = float(box_width * box_height)
+        area_ratio = area / frame_area
+        aspect = box_width / max(1.0, float(box_height))
+        fill = float(cv2.contourArea(contour)) / max(1.0, area)
+        if (
+            area_ratio < 0.0015
+            or area_ratio > 0.65
+            or box_width < 24
+            or box_height < 24
+            or aspect < 0.15
+            or aspect > 6.5
+            or fill < 0.08
+        ):
+            continue
+        inverse_scale = 1.0 / scale
+        pad_x = max(4, int(box_width * 0.04))
+        pad_y = max(4, int(box_height * 0.04))
+        box = (
+            max(0, int((x - pad_x) * inverse_scale)),
+            max(0, int((y - pad_y) * inverse_scale)),
+            min(width, int((x + box_width + pad_x) * inverse_scale)),
+            min(height, int((y + box_height + pad_y) * inverse_scale)),
+        )
+        proposals.append((area_ratio * (0.5 + fill), box))
+
+    selected: list[tuple[int, int, int, int]] = []
+    max_per_camera = max(
+        1, min(int(os.getenv("CATALOG_PROPOSAL_MAX_PER_CAMERA", "24")), 60)
+    )
+    for _, box in sorted(proposals, key=lambda value: value[0], reverse=True):
+        if any(_catalog_box_iou(box, existing) >= 0.40 for existing in selected):
+            continue
+        selected.append(box)
+        if len(selected) >= max_per_camera:
+            break
+    return selected
+
+
+def _catalog_class_agnostic_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        from recognition.embedding import image_embedding
+    except ImportError:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for entry in frames:
+        frame = entry["frame"]
+        for index, (x1, y1, x2, y2) in enumerate(_catalog_class_agnostic_boxes(frame)):
+            detection = {
+                "track_id": f"proposal-{index}",
+                "class_name": "object proposal",
+                "object_type": "object proposal",
+                "confidence": 0.5,
+                "quantity": 1,
+                "method": "class-agnostic-edge-proposal",
+                "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+            }
+            crop = _catalog_detection_crop(frame, detection["bbox"])
+            if crop is None:
+                continue
+            candidates.append(
+                {
+                    "camera_name": entry["camera_name"],
+                    "detection": detection,
+                    "frame": frame,
+                    "crop": crop,
+                    "embedding": image_embedding(crop),
+                }
+            )
+    return candidates
+
+
 def _catalog_fresh_yolo_crop_candidates(
     health: dict[str, Any],
     items: list[dict[str, Any]],
@@ -1882,8 +2004,12 @@ def _catalog_fresh_yolo_crop_candidates(
     detector = _catalog_yolo_for_prompts(prompts)
     if detector is None:
         scan["error"] = "YOLO detector could not be loaded."
+        candidates = _catalog_class_agnostic_candidates(frames)
+        scan["proposal_source"] = "class_agnostic_fallback"
+        scan["proposal_count"] = len(candidates)
+        scan["candidate_count"] = len(candidates)
         scan["completed_at"] = _now_iso()
-        return []
+        return candidates
 
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     spatial_cfg = config.get("spatial_analysis", {})
@@ -1914,6 +2040,13 @@ def _catalog_fresh_yolo_crop_candidates(
                         "embedding": image_embedding(crop),
                     }
                 )
+        if not candidates:
+            candidates = _catalog_class_agnostic_candidates(frames)
+            scan["proposal_source"] = "class_agnostic_fallback"
+            scan["proposal_count"] = len(candidates)
+        else:
+            scan["proposal_source"] = "yolo"
+            scan["proposal_count"] = 0
     except Exception as exc:
         scan["error"] = str(exc)
         _audit(
