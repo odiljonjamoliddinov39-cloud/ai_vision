@@ -5,7 +5,13 @@ import cv2
 import numpy as np
 
 from streams.frame_source import StreamFrameCamera
-from streams.manager import StreamManager, StreamSessionConfig, _ManagedStreamSession, _ffmpeg_command
+from streams.manager import (
+    StreamManager,
+    StreamSessionConfig,
+    _ManagedStreamSession,
+    _ffmpeg_command,
+    _jpeg_has_decoder_concealment,
+)
 from streams.shared_buffer import SharedFrameReader, SharedFrameWriter, buffer_path
 
 
@@ -191,10 +197,43 @@ def test_stream_manager_ffmpeg_outputs_scaled_preview_jpegs():
     assert "-q:v" in command
     assert command[command.index("-q:v") + 1] == "4"
     assert "-probesize" in command
-    assert command[command.index("-fflags") + 1] == "+nobuffer+discardcorrupt"
-    assert command[command.index("-flags") + 1] == "low_delay"
+    assert command[command.index("-probesize") + 1] == "1048576"
+    assert command[command.index("-analyzeduration") + 1] == "1000000"
+    assert command[command.index("-fflags") + 1] == "+discardcorrupt"
+    assert "-flags" not in command
     # Decode every frame for smooth motion, not just keyframes.
     assert "-skip_frame" not in command
+
+
+def test_stream_manager_rejects_grey_decoder_concealment_and_keeps_clean_frame(tmp_path):
+    session = _ManagedStreamSession(
+        StreamSessionConfig(
+            channel_id="1",
+            name="Camera 1",
+            source="rtsp://example.test/stream",
+            slot_number=1,
+            snapshot_dir=tmp_path,
+        )
+    )
+    clean = np.zeros((360, 640, 3), dtype=np.uint8)
+    clean[:, :320] = (40, 150, 220)
+    clean[:, 320:] = (30, 180, 60)
+    ok, clean_jpeg = cv2.imencode(".jpg", clean)
+    assert ok
+    concealed = clean.copy()
+    concealed[:, 220:] = (128, 128, 128)
+    ok, concealed_jpeg = cv2.imencode(".jpg", concealed)
+    assert ok
+
+    assert not _jpeg_has_decoder_concealment(clean_jpeg.tobytes())
+    assert _jpeg_has_decoder_concealment(concealed_jpeg.tobytes())
+
+    session._publish_jpeg(clean_jpeg.tobytes())
+    session._publish_jpeg(concealed_jpeg.tobytes())
+
+    assert session.latest_frame_bytes() == clean_jpeg.tobytes()
+    assert session.status_data.dropped_frames == 1
+    assert session.status_data.decode_errors == 1
 
 
 def test_analytics_frame_source_skips_unchanged_stream_frame(tmp_path):

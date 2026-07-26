@@ -441,6 +441,14 @@ class _ManagedStreamSession:
 
     def _publish_jpeg(self, data: bytes) -> None:
         if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
+            self.status_data.dropped_frames += 1
+            return
+        if _jpeg_has_decoder_concealment(data):
+            # A damaged H.264 reference chain can still be transcoded into a
+            # structurally valid JPEG whose missing macroblocks are filled with
+            # flat mid-grey. Never replace the last clean frame with it.
+            self.status_data.dropped_frames += 1
+            self.status_data.decode_errors += 1
             return
 
         self.status_data.status = "online"
@@ -493,9 +501,9 @@ class _RateLimitedWarnings:
 def _ffmpeg_command(source: str, width: int = 1280, jpeg_quality: int = 85, fps: float = 12.0) -> list[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     preview_width = max(240, min(int(width), 1280))
-    # Decode every frame (no -skip_frame nokey) so the preview is smooth
-    # full-motion video instead of a keyframe-only slideshow. -fflags
-    # +discardcorrupt still keeps a broken packet from crashing the pipe.
+    # Decode every frame (no -skip_frame nokey) so the preview is smooth.
+    # Keep a modest input probe/buffer: forcing nobuffer+low_delay can make
+    # FFmpeg emit grey concealment blocks when an H.264 reference is late.
     preview_fps = max(1.0, min(float(fps), 30.0))
     # OpenCV JPEG quality is 0..100, while ffmpeg's mjpeg qscale is roughly
     # 2(best)..31(worst). Keep previews small enough for multi-camera grids.
@@ -505,13 +513,11 @@ def _ffmpeg_command(source: str, width: int = 1280, jpeg_quality: int = 85, fps:
         "-rtsp_transport",
         "tcp",
         "-probesize",
-        "32768",
+        "1048576",
         "-analyzeduration",
-        "0",
+        "1000000",
         "-fflags",
-        "+nobuffer+discardcorrupt",
-        "-flags",
-        "low_delay",
+        "+discardcorrupt",
         "-i",
         source,
         "-vf",
@@ -590,6 +596,23 @@ def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
             return width, height
         index += length
     return None
+
+
+def _jpeg_has_decoder_concealment(data: bytes) -> bool:
+    """Detect the flat neutral-grey blocks FFmpeg uses for missing video data."""
+    try:
+        frame = cv2.imdecode(
+            np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_REDUCED_COLOR_8
+        )
+    except cv2.error:
+        return True
+    if frame is None or frame.size == 0:
+        return True
+    pixels = frame.reshape(-1, 3).astype(np.int16)
+    channel_spread = pixels.max(axis=1) - pixels.min(axis=1)
+    brightness = pixels.mean(axis=1)
+    concealed = (channel_spread <= 4) & (brightness >= 112) & (brightness <= 152)
+    return float(concealed.mean()) >= 0.40
 
 
 _SECRET_URL_RE = re.compile(r"\b(?P<scheme>rtsp|https?)://(?P<username>[^:/\s]+):(?P<password>[^@\s]+)@")
