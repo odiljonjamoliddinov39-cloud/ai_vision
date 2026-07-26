@@ -40,6 +40,7 @@ import yaml
 from cameras.camera import load_cameras
 from streams.frame_source import load_processing_cameras
 from detection.detector import Detector
+from detection.scheduler import LatestFrameInferenceScheduler
 from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
 from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
@@ -144,20 +145,23 @@ def main():
     # --- Tracking (Phase 3) + occupancy (Phase 4) ---
     track_cfg = config.get("tracking", {})
     tracking_enabled = track_cfg.get("enabled", True)
-    object_tracker = None
+    object_trackers = {}
     presence_tracker = None
     tracking_db = None
 
     if tracking_enabled and detector.model is not None:
-        object_tracker = ObjectTracker(
-            model=detector.model,
-            confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
-            device=det_cfg.get("device", "cpu"),
-            classes=track_cfg.get("classes", det_cfg.get("classes")),
-            tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
-            image_size=det_cfg.get("image_size", 640),
-            class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
-        )
+        object_trackers = {
+            cam.name: ObjectTracker(
+                model=detector.model,
+                confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
+                device=det_cfg.get("device", "cpu"),
+                classes=track_cfg.get("classes", det_cfg.get("classes")),
+                tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
+                image_size=det_cfg.get("image_size", 640),
+                class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
+            )
+            for cam in cameras
+        }
         presence_tracker = PresenceTracker(
             grace_period_seconds=track_cfg.get("grace_period_seconds", 5.0)
         )
@@ -243,18 +247,17 @@ def main():
     last_spatial_objects = []
     last_spatial_objects_by_camera = {}
     last_detections_by_camera = {}
+    inference_by_camera = {}
 
     prev_time = time.time()
     frame_number = 0
     dummy_positions = {cam.name: 0 for cam in cameras}
 
-    # Real inference is the expensive part on a CPU-only droplet, not video
-    # capture. `target_fps` throttles how often each camera actually runs the
-    # model (reusing the last detections in between), and max_concurrent_cameras
-    # caps how many cameras run real inference at all - every camera still
-    # streams live video regardless of this cap.
+    # Capture stays independent from inference. Each camera has one replaceable
+    # pending frame, so a slow model drops old work instead of building delay.
     target_detection_fps = float(det_cfg.get("target_fps", 0) or 0)
     min_detection_interval = 1.0 / target_detection_fps if target_detection_fps > 0 else 0.0
+    stale_after_ms = int(det_cfg.get("stale_after_ms", 3000))
     max_concurrent_cameras = int(det_cfg.get("max_concurrent_cameras", 0) or 0)
     inference_camera_names = (
         {cam.name for cam in cameras[:max_concurrent_cameras]}
@@ -262,7 +265,18 @@ def main():
         else {cam.name for cam in cameras}
     )
     last_detection_at = {cam.name: 0.0 for cam in cameras}
-    last_detections: dict[str, list] = {cam.name: [] for cam in cameras}
+    processors = {
+        cam.name: (
+            object_trackers[cam.name].update
+            if cam.name in object_trackers
+            else detector.detect
+        )
+        for cam in cameras
+        if cam.name in inference_camera_names and detector.model is not None
+    }
+    inference_scheduler = (
+        LatestFrameInferenceScheduler(processors) if processors else None
+    )
 
     try:
         while True:
@@ -273,8 +287,6 @@ def main():
 
             any_frame = False
             for cam in cameras:
-                if stream_first and cam.name not in inference_camera_names:
-                    continue
                 frame = cam.read()
                 if frame is None:
                     continue
@@ -282,6 +294,7 @@ def main():
                 last_frame_seen_at = now
                 frames_read += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
+                frame_at = time.time()
 
                 should_infer = (
                     cam.name in inference_camera_names
@@ -291,15 +304,69 @@ def main():
                     )
                 )
 
-                if object_tracker is not None:
+                inference_result = None
+                if inference_scheduler is not None and cam.name in processors:
                     if should_infer:
-                        detections = object_tracker.update(frame)
+                        inference_scheduler.submit(cam.name, frame, frame_at=frame_at)
                         last_detection_at[cam.name] = now
-                        last_detections[cam.name] = detections
-                    else:
-                        detections = last_detections.get(cam.name, [])
+                    inference_result = inference_scheduler.take_result(cam.name)
+
+                if inference_result is not None:
+                    frame = inference_result.frame
+                    detections = inference_result.detections
+                    inference_age_ms = max(
+                        0, round((time.time() - inference_result.inference_at) * 1000)
+                    )
+                    frame_age_ms = max(
+                        0, round((time.time() - inference_result.frame_at) * 1000)
+                    )
+                    result_is_stale = frame_age_ms > stale_after_ms
+                    inference_by_camera[cam.name] = {
+                        **inference_scheduler.metrics(cam.name),
+                        "frame_at": datetime.fromtimestamp(
+                            inference_result.frame_at
+                        ).isoformat(timespec="milliseconds"),
+                        "inference_at": datetime.fromtimestamp(
+                            inference_result.inference_at
+                        ).isoformat(timespec="milliseconds"),
+                        "frame_age_ms": frame_age_ms,
+                        "inference_age_ms": inference_age_ms,
+                        "stale": result_is_stale,
+                        "error": inference_result.error,
+                    }
+                elif detector.model is None:
+                    detections = _demo_tracked_objects(dummy_positions[cam.name])
+                    dummy_positions[cam.name] += 1
                     last_tracked_count = len(detections)
-                    check_ins = presence_tracker.update(cam.name, detections, now)
+                    result_is_stale = False
+                else:
+                    metrics = (
+                        inference_scheduler.metrics(cam.name)
+                        if inference_scheduler is not None and cam.name in processors
+                        else {
+                            "queue_depth": 0,
+                            "dropped_frames": 0,
+                            "inference_fps": 0.0,
+                            "inference_age_ms": None,
+                        }
+                    )
+                    inference_by_camera[cam.name] = {
+                        **metrics,
+                        "frame_at": datetime.fromtimestamp(frame_at).isoformat(
+                            timespec="milliseconds"
+                        ),
+                        "frame_age_ms": 0,
+                        "stale": True,
+                        "error": None,
+                    }
+                    last_detections_by_camera[cam.name] = []
+                    continue
+
+                if cam.name in object_trackers:
+                    last_tracked_count = len(detections)
+                    check_ins = presence_tracker.update(
+                        cam.name, detections, inference_result.inference_at
+                    )
                     for event in check_ins:
                         tracking_db.record_check_in(
                             event.track_id, event.camera_name, event.class_name
@@ -307,17 +374,7 @@ def main():
                         print(
                             f"[{cam.name}] Check-in: #{event.track_id} {event.class_name}"
                         )
-                elif detector.model is None:
-                    detections = _demo_tracked_objects(dummy_positions[cam.name])
-                    dummy_positions[cam.name] += 1
-                    last_tracked_count = len(detections)
-                elif should_infer:
-                    detections = detector.detect(frame)
-                    last_detection_at[cam.name] = now
-                    last_detections[cam.name] = detections
-                    last_tracked_count = 0
                 else:
-                    detections = last_detections.get(cam.name, [])
                     last_tracked_count = 0
 
                 last_detection_count = len(detections)
@@ -344,7 +401,7 @@ def main():
                     draw_fps(frame, fps)
                 draw_counts(frame, detections)
 
-                if warehouse_enabled and warehouse_db is not None:
+                if warehouse_enabled and warehouse_db is not None and not result_is_stale:
                     line = warehouse_cfg.get(
                         "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
                     )
@@ -425,7 +482,7 @@ def main():
                     "last_detection_count": last_detection_count,
                     "last_tracked_count": last_tracked_count,
                     "model_loaded": detector.model is not None,
-                    "tracking_enabled": object_tracker is not None or detector.model is None,
+                    "tracking_enabled": bool(object_trackers) or detector.model is None,
                     "warehouse_counting_enabled": warehouse_enabled,
                     "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
                     if warehouse_enabled
@@ -438,6 +495,7 @@ def main():
                     "last_spatial_objects": last_spatial_objects,
                     "last_spatial_objects_by_camera": last_spatial_objects_by_camera,
                     "last_detections_by_camera": last_detections_by_camera,
+                    "inference_by_camera": inference_by_camera,
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
@@ -453,6 +511,8 @@ def main():
                 break
 
     finally:
+        if inference_scheduler is not None:
+            inference_scheduler.close()
         for cam in cameras:
             cam.release()
         if product_recognizer is not None:

@@ -280,11 +280,11 @@ def test_shared_buffer_reader_follows_replaced_worker(tmp_path):
         second.close(remove=True)
 
 
-def test_detector_stream_first_skips_cameras_outside_ai_queue():
+def test_detector_stream_first_reads_every_camera_without_four_camera_cap():
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
 
-    assert "if stream_first and cam.name not in inference_camera_names:" in source
-    assert "continue" in source
+    assert "if stream_first and cam.name not in inference_camera_names:" not in source
+    assert "LatestFrameInferenceScheduler(processors)" in source
 
 
 def test_detector_direct_camera_mode_requires_explicit_dev_override():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from collections import deque
 from pathlib import Path
 import re
 import shutil
@@ -45,6 +46,12 @@ class StreamSessionStatus:
     width: int | None = None
     height: int | None = None
     fps: float | None = None
+    source_fps: float | None = None
+    output_fps: float | None = None
+    frame_age_ms: int | None = None
+    decode_errors: int = 0
+    dropped_frames: int = 0
+    queue_depth: int = 0
     last_frame_at: str | None = None
     reconnect_count: int = 0
     last_error: str | None = None
@@ -200,6 +207,8 @@ class _ManagedStreamSession:
         self._latest_lock = threading.Lock()
         self._aliases: dict[str, StreamSessionConfig] = {}
         self._shared_writers: dict[int, SharedFrameWriter] = {}
+        self._publish_times = deque(maxlen=90)
+        self._last_frame_monotonic: float | None = None
 
     def same_source(self, config: StreamSessionConfig) -> bool:
         if self._thread is None or not self._thread.is_alive():
@@ -264,6 +273,18 @@ class _ManagedStreamSession:
 
     def status(self, config: StreamSessionConfig | None = None) -> dict[str, Any]:
         status = self.status_data.to_dict()
+        now = time.monotonic()
+        if self._last_frame_monotonic is not None:
+            status["frame_age_ms"] = round(
+                max(0.0, now - self._last_frame_monotonic) * 1000
+            )
+        if len(self._publish_times) >= 2:
+            elapsed = self._publish_times[-1] - self._publish_times[0]
+            status["output_fps"] = (
+                round((len(self._publish_times) - 1) / elapsed, 2)
+                if elapsed > 0
+                else None
+            )
         if config is not None:
             status["channel_id"] = str(config.channel_id)
             status["name"] = config.name
@@ -287,6 +308,7 @@ class _ManagedStreamSession:
                 self.status_data.status = "reconnecting"
                 self.status_data.last_error = _mask_source(str(exc))
                 self.status_data.reconnect_count += 1
+                self.status_data.decode_errors += 1
                 delay = min(backoff, 30.0)
                 backoff = min(backoff * 2.0, 30.0)
                 if self._stop.wait(delay):
@@ -319,6 +341,8 @@ class _ManagedStreamSession:
             if not cap.isOpened():
                 raise ConnectionError(f"could not open stream {_mask_source(self.config.source)}")
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+            self.status_data.source_fps = source_fps if source_fps > 0 else None
             while not self._stop.is_set():
                 ok, frame = cap.read()
                 if not ok:
@@ -407,6 +431,7 @@ class _ManagedStreamSession:
         data = jpg.tobytes()
 
         self.status_data.status = "online"
+        self.status_data.codec = "jpeg"
         self.status_data.width = frame_width
         self.status_data.height = frame_height
         self.status_data.last_frame_at = datetime.now().isoformat(timespec="seconds")
@@ -419,6 +444,7 @@ class _ManagedStreamSession:
             return
 
         self.status_data.status = "online"
+        self.status_data.codec = "mjpeg"
         self.status_data.width = max(240, min(int(self.config.width), 1280))
         self.status_data.height = None
         self.status_data.fps = float(self.config.preview_fps)
@@ -428,6 +454,9 @@ class _ManagedStreamSession:
         self._publish_jpeg_data(data)
 
     def _publish_jpeg_data(self, data: bytes) -> None:
+        published_at = time.monotonic()
+        self._last_frame_monotonic = published_at
+        self._publish_times.append(published_at)
         with self._latest_lock:
             self._latest_jpeg = data
         if self.config.slot_number is not None:
@@ -532,4 +561,3 @@ def _mask_source(source: str) -> str:
         lambda match: f"{match.group('scheme')}://{match.group('username')}:****@",
         str(source),
     )
-
