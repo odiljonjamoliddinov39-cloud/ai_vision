@@ -2270,13 +2270,27 @@ def _catalog_fresh_yolo_crop_candidates(
         "error": None,
     }
     _catalog_yolo_last_scan[scope_id] = scan
+    # Reference matching must never wait for a closed-set/prompt detector.
+    # Build candidates for every live frame first, then optionally enrich them
+    # with detector boxes. On CPU, running YOLO-World sequentially over 26
+    # cameras can take longer than the complete live-recognition countdown and
+    # previously meant the saved reference images were never consulted.
+    candidates = _catalog_class_agnostic_candidates(frames)
+    scan["proposal_source"] = "class_agnostic_reference"
+    scan["proposal_count"] = len(candidates)
+    scan["candidate_count"] = len(candidates)
+
+    run_prompt_detector = str(
+        os.getenv("CATALOG_RUN_PROMPT_DETECTOR", "false")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not run_prompt_detector:
+        scan["prompt_detector_skipped"] = True
+        scan["completed_at"] = _now_iso()
+        return candidates
+
     detector = _catalog_yolo_for_prompts(prompts)
     if detector is None:
-        scan["error"] = "YOLO detector could not be loaded."
-        candidates = _catalog_class_agnostic_candidates(frames)
-        scan["proposal_source"] = "class_agnostic_fallback"
-        scan["proposal_count"] = len(candidates)
-        scan["candidate_count"] = len(candidates)
+        scan["error"] = "Prompt detector could not be loaded; reference proposals were used."
         scan["completed_at"] = _now_iso()
         return candidates
 
@@ -2287,7 +2301,6 @@ def _catalog_fresh_yolo_crop_candidates(
         if spatial_cfg.get("enabled", False)
         else None
     )
-    candidates: list[dict[str, Any]] = []
     try:
         for entry in frames:
             frame = entry["frame"]
@@ -2309,17 +2322,8 @@ def _catalog_fresh_yolo_crop_candidates(
                         "embedding": image_embedding(crop),
                     }
                 )
-            if not detections:
-                fallback = _catalog_class_agnostic_candidates([entry])
-                candidates.extend(fallback)
-                scan["proposal_count"] += len(fallback)
-        scan["proposal_source"] = (
-            "yolo_and_class_agnostic"
-            if scan["detection_count"] and scan["proposal_count"]
-            else "class_agnostic_fallback"
-            if scan["proposal_count"]
-            else "yolo"
-        )
+        if scan["detection_count"]:
+            scan["proposal_source"] = "class_agnostic_reference_and_prompt_detector"
     except Exception as exc:
         scan["error"] = str(exc)
         _audit(
