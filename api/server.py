@@ -1934,6 +1934,44 @@ def _catalog_class_agnostic_boxes(frame) -> list[tuple[int, int, int, int]]:
         selected.append(box)
         if len(selected) >= max_per_camera:
             break
+
+    # Plain cartons and wrapped products can have too few internal edges for a
+    # contour detector. Add a small deterministic set of overlapping regions
+    # so reference matching still receives candidates on low-texture frames.
+    minimum_proposals = max(
+        1, min(int(os.getenv("CATALOG_PROPOSAL_MIN_PER_CAMERA", "8")), 16)
+    )
+    grid_boxes: list[tuple[int, int, int, int]] = []
+    for rows, columns in ((2, 2), (3, 3)):
+        cell_width = width / columns
+        cell_height = height / rows
+        overlap_x = int(cell_width * 0.12)
+        overlap_y = int(cell_height * 0.12)
+        for row in range(rows):
+            for column in range(columns):
+                grid_boxes.append(
+                    (
+                        max(0, int(column * cell_width) - overlap_x),
+                        max(0, int(row * cell_height) - overlap_y),
+                        min(width, int((column + 1) * cell_width) + overlap_x),
+                        min(height, int((row + 1) * cell_height) + overlap_y),
+                    )
+                )
+    grid_boxes.insert(
+        0,
+        (
+            int(width * 0.15),
+            int(height * 0.15),
+            int(width * 0.85),
+            int(height * 0.85),
+        ),
+    )
+    for box in grid_boxes:
+        if len(selected) >= minimum_proposals or len(selected) >= max_per_camera:
+            break
+        if any(_catalog_box_iou(box, existing) >= 0.72 for existing in selected):
+            continue
+        selected.append(box)
     return selected
 
 
@@ -1998,6 +2036,7 @@ def _catalog_fresh_yolo_crop_candidates(
         "prompts": prompts,
         "detection_count": 0,
         "candidate_count": 0,
+        "proposal_count": 0,
         "error": None,
     }
     _catalog_yolo_last_scan[scope_id] = scan
@@ -2040,13 +2079,17 @@ def _catalog_fresh_yolo_crop_candidates(
                         "embedding": image_embedding(crop),
                     }
                 )
-        if not candidates:
-            candidates = _catalog_class_agnostic_candidates(frames)
-            scan["proposal_source"] = "class_agnostic_fallback"
-            scan["proposal_count"] = len(candidates)
-        else:
-            scan["proposal_source"] = "yolo"
-            scan["proposal_count"] = 0
+            if not detections:
+                fallback = _catalog_class_agnostic_candidates([entry])
+                candidates.extend(fallback)
+                scan["proposal_count"] += len(fallback)
+        scan["proposal_source"] = (
+            "yolo_and_class_agnostic"
+            if scan["detection_count"] and scan["proposal_count"]
+            else "class_agnostic_fallback"
+            if scan["proposal_count"]
+            else "yolo"
+        )
     except Exception as exc:
         scan["error"] = str(exc)
         _audit(
@@ -2088,6 +2131,12 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
     # density, not a learned re-identification network. Requiring 0.90 made
     # the same package fail after normal changes in angle, scale and lighting.
     crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.70"))
+    proposal_threshold = float(
+        os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.62")
+    )
+    if scan is not None:
+        scan["crop_similarity_threshold"] = crop_threshold
+        scan["proposal_similarity_threshold"] = proposal_threshold
 
     matches: list[dict[str, Any]] = []
     for item in items:
@@ -2167,7 +2216,15 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                     default=0.0,
                 )
                 best_crop_score = max(best_crop_score, score)
-                if score >= crop_threshold:
+                candidate_method = str(
+                    (candidate.get("detection") or {}).get("method") or ""
+                )
+                accepted_threshold = (
+                    proposal_threshold
+                    if candidate_method == "class-agnostic-edge-proposal"
+                    else crop_threshold
+                )
+                if score >= accepted_threshold:
                     crop_matches.append((score, candidate))
             if scan is not None:
                 scan["catalog_scores"][str(item["name"])] = round(best_crop_score, 4)
