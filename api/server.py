@@ -1935,10 +1935,19 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
         fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
         by_camera = {fallback_name: health.get("last_spatial_objects") or []}
     crop_candidates = _catalog_crop_candidates(health)
+    cached_candidate_count = len(crop_candidates)
     crop_candidates.extend(_catalog_fresh_yolo_crop_candidates(health, items))
+    scan = _catalog_yolo_last_scan.get(scope_id)
+    if scan is not None:
+        scan["cached_candidate_count"] = cached_candidate_count
+        scan["total_candidate_count"] = len(crop_candidates)
+        scan.setdefault("catalog_scores", {})
     frame_embeddings = _catalog_frame_embeddings(health)
     visual_threshold = float(os.getenv("CATALOG_VISUAL_SIMILARITY_THRESHOLD", "0.94"))
-    crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.90"))
+    # The local reference embedding is a compact color histogram + edge
+    # density, not a learned re-identification network. Requiring 0.90 made
+    # the same package fail after normal changes in angle, scale and lighting.
+    crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.70"))
 
     matches: list[dict[str, Any]] = []
     for item in items:
@@ -2008,6 +2017,7 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                 continue
 
             crop_matches: list[tuple[float, dict[str, Any]]] = []
+            best_crop_score = 0.0
             for candidate in crop_candidates:
                 score = max(
                     (
@@ -2016,8 +2026,11 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                     ),
                     default=0.0,
                 )
+                best_crop_score = max(best_crop_score, score)
                 if score >= crop_threshold:
                     crop_matches.append((score, candidate))
+            if scan is not None:
+                scan["catalog_scores"][str(item["name"])] = round(best_crop_score, 4)
 
             if crop_matches:
                 confidence = max(score for score, _ in crop_matches)

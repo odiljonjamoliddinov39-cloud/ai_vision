@@ -111,3 +111,13 @@ def test_catalog_yolo_reads_each_persistent_stream_manager_frame():
     assert "def _catalog_live_frame_image(" in source
     assert "_get_stream_manager().latest_frame_bytes(" in source
     assert "frame = _catalog_live_frame_image(" in source
+
+
+def test_catalog_matching_accepts_realistic_moved_crop_similarity():
+    backend = (server.ROOT / "api" / "server.py").read_text(encoding="utf-8")
+    frontend = (server.ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'CATALOG_CROP_SIMILARITY_THRESHOLD", "0.70"' in backend
+    assert 'scan["cached_candidate_count"]' in backend
+    assert 'scan["catalog_scores"]' in backend
+    assert "Best catalog similarity" in frontend
