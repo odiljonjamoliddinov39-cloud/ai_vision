@@ -6,6 +6,7 @@ import numpy as np
 
 from streams.frame_source import StreamFrameCamera
 from streams.manager import StreamManager, StreamSessionConfig, _ManagedStreamSession, _ffmpeg_command
+from streams.shared_buffer import SharedFrameReader, SharedFrameWriter, buffer_path
 
 
 def test_stream_manager_publishes_live_frame_without_ai(tmp_path):
@@ -21,17 +22,21 @@ def test_stream_manager_publishes_live_frame_without_ai(tmp_path):
     )
 
     assert status["status"] == "starting"
-    path = tmp_path / "latest_stream_slot_1.jpg"
+    path = buffer_path(tmp_path, 1)
     deadline = time.time() + 3
     while time.time() < deadline and not path.exists():
         time.sleep(0.05)
 
     try:
         assert path.exists()
-        data = path.read_bytes()
+        reader = SharedFrameReader(tmp_path, 1)
+        snapshot = reader.read()
+        assert snapshot is not None
+        _, data = snapshot
         assert data.startswith(b"\xff\xd8")
         assert data.endswith(b"\xff\xd9")
         assert manager.status()["streams"][0]["status"] == "online"
+        reader.close()
     finally:
         manager.stop_all()
 
@@ -134,7 +139,7 @@ def test_stream_manager_reuses_one_upstream_for_duplicate_camera_source(monkeypa
         assert status["upstream_count"] == 1
         assert starts == ["1"]
         assert manager.latest_frame_bytes(channel_id="2") == manager.latest_frame_bytes(channel_id="1")
-        assert (tmp_path / "latest_stream_slot_2.jpg").exists()
+        assert buffer_path(tmp_path, 2).exists()
     finally:
         manager.stop_all()
 
@@ -195,13 +200,84 @@ def test_stream_manager_ffmpeg_outputs_scaled_preview_jpegs():
 def test_analytics_frame_source_skips_unchanged_stream_frame(tmp_path):
     ok, jpg = cv2.imencode(".jpg", np.zeros((80, 120, 3), dtype="uint8"))
     assert ok
-    (tmp_path / "latest_stream_slot_1.jpg").write_bytes(jpg.tobytes())
+    writer = SharedFrameWriter(tmp_path, 1)
+    writer.publish(jpg.tobytes())
     camera = StreamFrameCamera("Demo", slot_number=1, source="rtsp://example.invalid/stream", snapshot_dir=tmp_path)
 
-    first = camera.read()
+    try:
+        first = camera.read()
+        assert isinstance(first, np.ndarray)
+        assert camera.read() is None
+    finally:
+        camera.release()
+        writer.close(remove=True)
 
-    assert isinstance(first, np.ndarray)
-    assert camera.read() is None
+
+def test_multiple_consumers_share_one_worker_and_decoder(monkeypatch, tmp_path):
+    ok, encoded = cv2.imencode(".jpg", np.zeros((20, 30, 3), dtype=np.uint8))
+    assert ok
+    jpeg = encoded.tobytes()
+    decoder_starts = []
+
+    def fake_run(self):
+        decoder_starts.append(self.config.channel_id)
+        while not self._stop.is_set():
+            self._publish_jpeg(jpeg)
+            self._stop.wait(0.02)
+
+    monkeypatch.setattr(_ManagedStreamSession, "_run", fake_run)
+    manager = StreamManager(snapshot_dir=tmp_path)
+    config = StreamSessionConfig(
+        channel_id="1",
+        name="Primary",
+        source="rtsp://example.test/stream",
+        slot_number=1,
+        snapshot_dir=tmp_path,
+    )
+    try:
+        manager.start(config)
+        manager.start(config)
+        camera = StreamFrameCamera(
+            "Primary", slot_number=1, source=config.source, snapshot_dir=tmp_path
+        )
+        deadline = time.time() + 2
+        frame = None
+        while time.time() < deadline and frame is None:
+            assert manager.latest_frame_bytes(channel_id="1") in (None, jpeg)
+            frame = camera.read()
+        assert isinstance(frame, np.ndarray)
+        assert decoder_starts == ["1"]
+        assert manager.status()["upstream_count"] == 1
+        camera.release()
+    finally:
+        manager.stop_all()
+
+
+def test_shared_buffer_rejects_partial_frame(tmp_path):
+    writer = SharedFrameWriter(tmp_path, 3)
+    reader = SharedFrameReader(tmp_path, 3)
+    try:
+        writer._write_header(1, 100, 0)
+        assert reader.read() is None
+    finally:
+        reader.close()
+        writer.close(remove=True)
+
+
+def test_shared_buffer_reader_follows_replaced_worker(tmp_path):
+    first = SharedFrameWriter(tmp_path, 4)
+    reader = SharedFrameReader(tmp_path, 4)
+    first.publish(b"\xff\xd8first\xff\xd9")
+    assert reader.read() is not None
+    first.close()
+
+    second = SharedFrameWriter(tmp_path, 4)
+    try:
+        sequence = second.publish(b"\xff\xd8second\xff\xd9")
+        assert reader.read() == (sequence, b"\xff\xd8second\xff\xd9")
+    finally:
+        reader.close()
+        second.close(remove=True)
 
 
 def test_detector_stream_first_skips_cameras_outside_ai_queue():

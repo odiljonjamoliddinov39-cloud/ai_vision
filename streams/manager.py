@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-import os
 import re
 import shutil
 import subprocess
@@ -20,6 +19,8 @@ from typing import Any
 
 import cv2
 import numpy as np
+
+from streams.shared_buffer import SharedFrameWriter
 
 
 @dataclass(frozen=True)
@@ -198,6 +199,7 @@ class _ManagedStreamSession:
         self._latest_jpeg: bytes | None = None
         self._latest_lock = threading.Lock()
         self._aliases: dict[str, StreamSessionConfig] = {}
+        self._shared_writers: dict[int, SharedFrameWriter] = {}
 
     def same_source(self, config: StreamSessionConfig) -> bool:
         if self._thread is None or not self._thread.is_alive():
@@ -210,11 +212,15 @@ class _ManagedStreamSession:
     def add_alias(self, config: StreamSessionConfig) -> None:
         self._aliases[str(config.channel_id)] = config
         data = self.latest_frame_bytes()
-        if data is not None:
-            self._write_frame_files(config.name, config.slot_number, data)
+        if data is not None and config.slot_number is not None:
+            self._writer(config).publish(data)
 
     def remove_alias(self, channel_id: str) -> None:
-        self._aliases.pop(str(channel_id), None)
+        config = self._aliases.pop(str(channel_id), None)
+        if config is not None and config.slot_number is not None:
+            writer = self._shared_writers.pop(int(config.slot_number), None)
+            if writer is not None:
+                writer.close()
 
     def matches(self, slot_number: int | None = None, name: str | None = None) -> bool:
         names_and_slots = [(self.config.name, self.config.slot_number)]
@@ -238,6 +244,9 @@ class _ManagedStreamSession:
         self._terminate_process()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=2.0)
+        for writer in list(self._shared_writers.values()):
+            writer.close()
+        self._shared_writers.clear()
         self.status_data.status = "offline"
 
     def status_for_channel(self, channel_id: str) -> dict[str, Any]:
@@ -421,23 +430,19 @@ class _ManagedStreamSession:
     def _publish_jpeg_data(self, data: bytes) -> None:
         with self._latest_lock:
             self._latest_jpeg = data
-        self._write_frame_files(self.config.name, self.config.slot_number, data)
+        if self.config.slot_number is not None:
+            self._writer(self.config).publish(data)
         for alias in list(self._aliases.values()):
-            self._write_frame_files(alias.name, alias.slot_number, data)
+            if alias.slot_number is not None:
+                self._writer(alias).publish(data)
 
-    def _write_frame_files(self, name: str, slot_number: int | None, data: bytes) -> None:
-        safe_name = _safe_name(name)
-        self._write_atomic(self.config.snapshot_dir / f"latest_stream_{safe_name}.jpg", data)
-        if slot_number is not None:
-            self._write_atomic(self.config.snapshot_dir / f"latest_stream_slot_{slot_number}.jpg", data)
-            self._write_atomic(self.config.snapshot_dir / f"latest_slot_{slot_number}.jpg", data)
-
-    @staticmethod
-    def _write_atomic(path: Path, data: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        tmp.write_bytes(data)
-        tmp.replace(path)
+    def _writer(self, config: StreamSessionConfig) -> SharedFrameWriter:
+        slot_number = int(config.slot_number)
+        writer = self._shared_writers.get(slot_number)
+        if writer is None:
+            writer = SharedFrameWriter(config.snapshot_dir, slot_number)
+            self._shared_writers[slot_number] = writer
+        return writer
 
 
 class _RateLimitedWarnings:
@@ -528,6 +533,3 @@ def _mask_source(source: str) -> str:
         str(source),
     )
 
-
-def _safe_name(value: str) -> str:
-    return "".join(ch if ch.isalnum() else "_" for ch in str(value)).strip("_") or "camera"

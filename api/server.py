@@ -4455,25 +4455,14 @@ async def stream_logs():
 
 @app.get("/api/live_mjpeg")
 async def live_mjpeg(slot: int | None = None, camera: str | None = None):
-    """Return a multipart/x-mixed-replace MJPEG stream by repeatedly
-    reading the latest frame written by the detector. Use ?slot=1, ?slot=2,
-    etc. to view individual active camera screens.
-    """
+    """Stream frames from the persistent Stream Manager's shared buffer."""
 
     boundary = "frame"
-    latest_paths = _live_feed_paths(slot=slot, camera=camera)
 
     async def frame_generator():
         last_sent: bytes | None = None
         while True:
             data = _get_stream_manager().latest_frame_bytes(slot_number=slot, name=camera)
-            if data is None:
-                latest = next((path for path in latest_paths if path.exists()), None)
-                if latest is not None:
-                    try:
-                        data = latest.read_bytes()
-                    except Exception:
-                        data = None
             # Only push a part when the frame actually changed, so the MJPEG
             # stream tracks the Stream Manager's real frame rate instead of
             # re-transmitting the same JPEG on every poll.
@@ -4518,24 +4507,7 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
             },
         )
 
-    latest = next((path for path in _live_feed_paths(slot=slot, camera=camera) if path.exists()), None)
-    if latest is None:
-        raise HTTPException(status_code=404, detail="No live frame is available yet.")
-
-    for _ in range(5):
-        data = latest.read_bytes()
-        if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
-            return Response(
-                content=data,
-                media_type="image/jpeg",
-                headers={
-                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                    "Pragma": "no-cache",
-                },
-            )
-        await asyncio.sleep(0.03)
-
-    raise HTTPException(status_code=503, detail="Latest live frame is being written; retry.")
+    raise HTTPException(status_code=404, detail="No live frame is available yet.")
 
 
 def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:

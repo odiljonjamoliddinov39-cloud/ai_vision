@@ -81,8 +81,8 @@ def main():
     # --- Frame source (V2 stream-first architecture) ---
     #
     # The API server starts the Stream Manager and sets AI_VISION_STREAM_FIRST=1.
-    # YOLO consumes already-published frames from snapshots instead of opening
-    # RTSP/NVR connections directly. Direct camera loading is reserved for an
+    # YOLO consumes the Stream Manager's cross-process frame buffers instead of
+    # opening RTSP/NVR connections directly. Direct camera loading is reserved for an
     # explicit local developer override and is not used by the backend path.
     snap_cfg = config.get("snapshots", {})
     snapshots_dir = snap_cfg.get("save_dir", "snapshots")
