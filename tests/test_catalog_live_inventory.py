@@ -3,6 +3,30 @@ import json
 from api import server
 
 
+def test_saved_item_prompts_are_added_to_yolo_vocabulary(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "CATALOG_PROMPTS_PATH", tmp_path / "catalog_prompts.json")
+    server._catalog_save_item_prompts(
+        "warehouse-a",
+        "checked-in-1",
+        ["long bakery carton", "Baget package"],
+    )
+
+    prompts = server._catalog_detection_prompts(
+        [
+            {
+                "id": "checked-in-1",
+                "scope_id": "warehouse-a",
+                "name": "Baget Box",
+            }
+        ],
+        "warehouse-a",
+    )
+
+    assert "Baget Box" in prompts
+    assert "long bakery carton" in prompts
+    assert "Baget package" in prompts
+
+
 def test_live_inventory_reports_unidentified_objects_by_camera(tmp_path, monkeypatch):
     class FakeCatalogDB:
         def list_items(self, _scope_id, active_only=False):
@@ -58,3 +82,5 @@ def test_dashboard_uses_persistent_live_recognition_session():
     assert "status.remaining_seconds" in source
     assert "entry.crop_url" in source
     assert "Scanning live feeds" in source
+    assert 'data-acc-form="catalog-prompts"' in source
+    assert "YOLO detection prompts" in source

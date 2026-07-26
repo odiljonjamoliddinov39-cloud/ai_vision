@@ -2408,6 +2408,13 @@ async function renderCatalogEnrollment(container) {
             <div class="catalog-thumbs">
               ${item.images.map((image) => `<img src="${API_BASE}${image.url}" alt="${escapeHtml(item.name)} reference" />`).join("")}
             </div>
+            <form data-acc-form="catalog-prompts" data-item-id="${escapeAttr(item.id)}" style="display:flex;gap:8px;align-items:end;margin-top:12px">
+              <label style="flex:1">
+                <span style="display:block;font-size:12px;font-weight:700;margin-bottom:5px">YOLO detection prompts</span>
+                <input name="prompts" value="${escapeAttr((item.detection_prompts || []).join(", "))}" placeholder="baget box, long carton, bakery package" autocomplete="off" style="width:100%" />
+              </label>
+              <button type="submit">Save prompts</button>
+            </form>
             <span class="cc-chip cc-chip-small on">${escapeHtml(t("ai.catalog_enabled"))}</span>
           </article>
         `
@@ -2993,6 +3000,31 @@ async function handleAccountSubmit(event) {
   event.preventDefault();
   const { company } = accountState;
   companyConfig(company);
+
+  if (form.dataset.accForm === "catalog-prompts") {
+    const itemId = form.dataset.itemId;
+    const prompts = form.elements.prompts.value
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = "Saving…";
+    try {
+      await catalogRequest(catalogApiPath(`/api/catalog/items/${encodeURIComponent(itemId)}/prompts`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompts }),
+      });
+      toast("YOLO prompts saved. They will be used in the next recognition run.");
+      renderAccountModule();
+    } catch (error) {
+      toast(error.message);
+      submit.disabled = false;
+      submit.textContent = "Save prompts";
+    }
+    return;
+  }
 
   if (form.dataset.accForm === "feed-group") {
     const groupId = form.dataset.feedGroupId;

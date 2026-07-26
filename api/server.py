@@ -86,6 +86,7 @@ DEVICE_DB_PATH = ROOT / "database" / "devices.db"
 SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
 CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
+CATALOG_PROMPTS_PATH = ROOT / "logs" / "catalog_prompts.json"
 ACCOUNTS_DB_PATH = ROOT / "database" / "accounts.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
@@ -799,6 +800,10 @@ class InventoryAction(BaseModel):
     note: str | None = None
 
 
+class CatalogPromptUpdate(BaseModel):
+    prompts: list[str] = Field(default_factory=list, max_length=20)
+
+
 class CameraCreate(BaseModel):
     name: str = Field(min_length=1)
     stream_url: str = Field(min_length=1)
@@ -1293,6 +1298,48 @@ def _catalog_safe_name(value: str) -> str:
     return cleaned[:100] or "reference.jpg"
 
 
+def _catalog_prompt_store() -> dict[str, Any]:
+    data = _read_json(CATALOG_PROMPTS_PATH) or {}
+    scopes = data.get("scopes")
+    return {"scopes": scopes if isinstance(scopes, dict) else {}}
+
+
+def _catalog_clean_prompts(values: list[str]) -> list[str]:
+    prompts: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        prompt = " ".join(str(raw).split()).strip()[:80]
+        normalized = _catalog_normalize_name(prompt)
+        if prompt and normalized and normalized not in seen:
+            seen.add(normalized)
+            prompts.append(prompt)
+    return prompts[:20]
+
+
+def _catalog_item_prompts(scope_id: str, item_id: str) -> list[str]:
+    scope_prompts = _catalog_prompt_store()["scopes"].get(scope_id) or {}
+    values = scope_prompts.get(str(item_id)) if isinstance(scope_prompts, dict) else []
+    return _catalog_clean_prompts(values if isinstance(values, list) else [])
+
+
+def _catalog_save_item_prompts(
+    scope_id: str, item_id: str, prompts: list[str]
+) -> list[str]:
+    data = _catalog_prompt_store()
+    scopes = data["scopes"]
+    scope_prompts = scopes.setdefault(scope_id, {})
+    cleaned = _catalog_clean_prompts(prompts)
+    if cleaned:
+        scope_prompts[str(item_id)] = cleaned
+    else:
+        scope_prompts.pop(str(item_id), None)
+    CATALOG_PROMPTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CATALOG_PROMPTS_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temporary.replace(CATALOG_PROMPTS_PATH)
+    return cleaned
+
+
 def _catalog_datetime(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -1478,8 +1525,12 @@ def _catalog_detection_payload(detection) -> dict[str, Any]:
     return payload
 
 
-def _catalog_detection_prompts(items: list[dict[str, Any]]) -> list[str]:
+def _catalog_detection_prompts(
+    items: list[dict[str, Any]], scope_id: str
+) -> list[str]:
     prompts = [str(item["name"]) for item in items]
+    for item in items:
+        prompts.extend(_catalog_item_prompts(scope_id, str(item["id"])))
     prompts.extend(["cardboard box", "box", "carton box", "stack of boxes", "package"])
     seen: set[str] = set()
     unique = []
@@ -1491,24 +1542,39 @@ def _catalog_detection_prompts(items: list[dict[str, Any]]) -> list[str]:
     return unique
 
 
-def _catalog_detection_matches_item_prompt(detection: dict[str, Any], item_name: str) -> bool:
-    target = _catalog_normalize_name(item_name)
+def _catalog_detection_matches_item_prompt(
+    detection: dict[str, Any],
+    item_name: str,
+    aliases: list[str] | None = None,
+) -> bool:
+    targets = [
+        _catalog_normalize_name(value)
+        for value in [item_name, *(aliases or [])]
+        if _catalog_normalize_name(value)
+    ]
     labels = [
         _catalog_normalize_name(str(detection.get("inventory_name") or "")),
         _catalog_normalize_name(str(detection.get("class_name") or "")),
         _catalog_normalize_name(str(detection.get("object_type") or "")),
     ]
     labels = [label for label in labels if label]
-    if any(label == target or label in target or target in label for label in labels):
+    if any(
+        label == target or label in target or target in label
+        for target in targets
+        for label in labels
+    ):
         return True
 
-    if "box" in target:
+    if any("box" in target for target in targets):
         return any(
             any(term in label for term in ("box", "carton", "package", "cardboard"))
             for label in labels
         )
 
-    if any(term in target for term in ("sack", "bag")):
+    if any(
+        any(term in target for term in ("sack", "bag"))
+        for target in targets
+    ):
         return any(any(term in label for term in ("sack", "bag")) for label in labels)
 
     return False
@@ -1778,7 +1844,7 @@ def _catalog_fresh_yolo_crop_candidates(
     if not frames:
         return []
 
-    prompts = _catalog_detection_prompts(items)
+    prompts = _catalog_detection_prompts(items, str(items[0].get("scope_id") or "default"))
     detector = _catalog_yolo_for_prompts(prompts)
     if detector is None:
         return []
@@ -1837,13 +1903,15 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
     matches: list[dict[str, Any]] = []
     for item in items:
         target = _catalog_normalize_name(item["name"])
+        aliases = _catalog_item_prompts(scope_id, str(item["id"]))
+        targets = {target, *(_catalog_normalize_name(alias) for alias in aliases)}
         references = db.list_images(str(item["id"]), include_embeddings=True)
         matched_entries: list[tuple[str, dict[str, Any]]] = []
         for camera_name, objects in by_camera.items():
             matched_entries.extend(
                 (_catalog_camera_label(camera_name), obj)
                 for obj in objects or []
-                if _catalog_normalize_name(obj.get("inventory_name")) == target
+                if _catalog_normalize_name(obj.get("inventory_name")) in targets
             )
 
         camera_counts: dict[str, int] = {}
@@ -1858,7 +1926,9 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                 prompt_matches = [
                     candidate
                     for candidate in crop_candidates
-                    if _catalog_detection_matches_item_prompt(candidate["detection"], str(item["name"]))
+                    if _catalog_detection_matches_item_prompt(
+                        candidate["detection"], str(item["name"]), aliases
+                    )
                 ]
                 if prompt_matches:
                     min_confidence = float(
@@ -1983,7 +2053,11 @@ def _catalog_unidentified_current_frame(
     for camera_name, objects in by_camera.items():
         for obj in objects or []:
             if any(
-                _catalog_detection_matches_item_prompt(obj, str(item["name"]))
+                _catalog_detection_matches_item_prompt(
+                    obj,
+                    str(item["name"]),
+                    _catalog_item_prompts(scope_id, str(item["id"])),
+                )
                 for item in items
             ):
                 continue
@@ -4134,11 +4208,33 @@ async def upload_inventory_image(item_id: str = Form(...), file: UploadFile = Fi
 def catalog_items(scope_id: str) -> dict[str, Any]:
     scope = _catalog_scope(scope_id)
     db = _get_catalog_db()
+    items = db.list_items(scope)
+    for item in items:
+        item["detection_prompts"] = _catalog_item_prompts(scope, str(item["id"]))
     return {
-        "items": db.list_items(scope),
+        "items": items,
         "schedule": _catalog_schedule(scope),
         "latest_run": db.latest_run(scope),
     }
+
+
+@app.put("/api/catalog/items/{item_id}/prompts")
+def update_catalog_item_prompts(
+    item_id: str, scope_id: str, update: CatalogPromptUpdate
+) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    item = _get_catalog_db().get_item(item_id)
+    if not item or item["scope_id"] != scope:
+        raise HTTPException(status_code=404, detail="Catalog item not found.")
+    prompts = _catalog_save_item_prompts(scope, item_id, update.prompts)
+    global _catalog_yolo_detector, _catalog_yolo_detector_key
+    _catalog_yolo_detector = None
+    _catalog_yolo_detector_key = None
+    _audit(
+        "catalog_prompts_updated",
+        {"scope_id": scope, "item_id": item_id, "prompts": prompts},
+    )
+    return {"item_id": item_id, "prompts": prompts}
 
 
 @app.post("/api/catalog/items")
