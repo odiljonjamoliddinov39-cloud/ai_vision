@@ -74,6 +74,18 @@ warehouse_counting:
     y1: 300
     x2: 900
     y2: 300
+warehouse_engine:
+  enabled: true
+  engine_db_path: database/warehouse_engine.db
+  minimum_confidence: 0.8
+  identity_recovery_seconds: 30
+  lost_timeout_seconds: 10
+  stopped_pixels: 8
+  zones:
+  - name: Receiving
+    polygon: [[0, 0], [1280, 0], [1280, 360], [0, 360]]
+  - name: Storage
+    polygon: [[0, 360], [1280, 360], [1280, 720], [0, 720]]
 recognition:
   enabled: true
   provider: gemini

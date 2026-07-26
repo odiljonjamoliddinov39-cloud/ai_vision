@@ -47,10 +47,10 @@ from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
 from database.warehouse_db import WarehouseDB
-from tracking.line_counter import AppearanceCounter, LineCounter
 from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
+from warehouse_engine import WarehouseEngine
 
 
 def load_config(path: str) -> dict:
@@ -171,29 +171,53 @@ def main():
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
         )
 
-    # --- Warehouse stock counting MVP ---
+    # --- Warehouse Intelligence Engine ---
     warehouse_cfg = config.get("warehouse_counting", {})
-    warehouse_enabled = warehouse_cfg.get("enabled", False)
+    engine_cfg = {**warehouse_cfg, **config.get("warehouse_engine", {})}
+    warehouse_enabled = engine_cfg.get("enabled", warehouse_cfg.get("enabled", False))
     warehouse_db = None
-    warehouse_counters = {}
-    reviewed_unknown_ids: set[tuple[str, int]] = set()
+    warehouse_engine = None
     if warehouse_enabled:
         warehouse_db = WarehouseDB(db_path=warehouse_cfg.get("db_path", "database/warehouse.db"))
-        count_mode = warehouse_cfg.get("mode", "appearance")
-        line = warehouse_cfg.get(
-            "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
-        )
-        warehouse_counters = {
-            cam.name: (
-                LineCounter(line=line, camera_id=cam.name)
-                if count_mode == "line"
-                else AppearanceCounter(camera_id=cam.name)
+
+        def accepted_movement_sink(event, detection):
+            warehouse_db.record_movement(
+                product_name=event.product_name,
+                direction="IN" if event.inventory_delta > 0 else "OUT",
+                camera_id=event.camera_id,
+                tracking_id=getattr(detection, "track_id", None),
+                confidence=event.confidence,
+                quantity=abs(event.inventory_delta),
+                object_type=getattr(detection, "object_type", None),
+                dimensions_m=(
+                    getattr(detection, "width_m", None),
+                    getattr(detection, "height_m", None),
+                    getattr(detection, "depth_m", None),
+                )
+                if all(
+                    getattr(detection, field, None) is not None
+                    for field in ("width_m", "height_m", "depth_m")
+                )
+                else None,
+                distance_m=getattr(detection, "distance_m", None),
+                quantity_grid=getattr(detection, "quantity_grid", (1, 1, 1)),
+                measurement_method=getattr(detection, "method", None),
             )
-            for cam in cameras
-        }
+        warehouse_engine = WarehouseEngine(
+            {
+                **engine_cfg,
+                "db_path": engine_cfg.get("engine_db_path", "database/warehouse_engine.db"),
+                "minimum_confidence": engine_cfg.get(
+                    "minimum_confidence",
+                    warehouse_cfg.get("confidence_threshold", 0.8),
+                ),
+            },
+            movement_sink=accepted_movement_sink,
+        )
         print(
-            f"Warehouse counting enabled ({count_mode} mode). "
-            f"Stock DB: {warehouse_db.db_path}"
+            "Warehouse Intelligence Engine enabled. "
+            f"Engine DB: {warehouse_engine.database.path}; "
+            f"compatibility stock DB: {warehouse_db.db_path}"
         )
 
     # --- Product recognition knowledge engine ---
@@ -401,23 +425,24 @@ def main():
                     draw_fps(frame, fps)
                 draw_counts(frame, detections)
 
-                if warehouse_enabled and warehouse_db is not None and not result_is_stale:
-                    line = warehouse_cfg.get(
+                if warehouse_engine is not None and not result_is_stale:
+                    line = engine_cfg.get(
                         "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
                     )
-                    count_mode = warehouse_cfg.get("mode", "appearance")
-                    if count_mode == "line":
+                    if line:
                         draw_counting_line(frame, line)
-                    _process_warehouse_counting(
-                        camera_name=cam.name,
+                    engine_events = warehouse_engine.process(
+                        camera_id=cam.name,
                         detections=detections,
-                        warehouse_counter=warehouse_counters[cam.name],
-                        warehouse_db=warehouse_db,
-                        confidence_threshold=warehouse_cfg.get("confidence_threshold", 0.5),
-                        reviewed_unknown_ids=reviewed_unknown_ids,
-                        count_unknown=warehouse_cfg.get("count_low_confidence_as_unknown", True),
-                        count_mode=count_mode,
+                        timestamp=inference_result.inference_at,
                     )
+                    for engine_event in engine_events:
+                        if engine_event.inventory_delta:
+                            print(
+                                f"[{cam.name}] {engine_event.event_type}: "
+                                f"{engine_event.object_id} {engine_event.product_name} "
+                                f"delta={engine_event.inventory_delta}"
+                            )
 
                 if snapshot_saver is not None:
                     saved = snapshot_saver.maybe_save(cam.name, frame, detections)
@@ -623,58 +648,6 @@ def _write_atomic_bytes(path: Path, data: bytes) -> None:
 
 def _safe_live_feed_name(value: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in str(value)).strip("_") or "camera"
-
-
-def _process_warehouse_counting(
-    camera_name: str,
-    detections,
-    warehouse_counter,
-    warehouse_db: WarehouseDB,
-    confidence_threshold: float,
-    reviewed_unknown_ids: set[tuple[str, int]],
-    count_unknown: bool,
-    count_mode: str,
-) -> None:
-    tracked = [det for det in detections if hasattr(det, "track_id")]
-    if not tracked:
-        return
-
-    for det in tracked:
-        review_key = (camera_name, det.track_id)
-        if (
-            count_unknown
-            and det.confidence < confidence_threshold
-            and review_key not in reviewed_unknown_ids
-        ):
-            reviewed_unknown_ids.add(review_key)
-            warehouse_db.record_unknown_item(
-                tracking_id=det.track_id,
-                confidence=det.confidence,
-                screenshot_path=None,
-                camera_id=camera_name,
-            )
-
-    countable = [det for det in tracked if det.confidence >= confidence_threshold]
-    for event in warehouse_counter.update(countable):
-        stock = warehouse_db.record_movement(
-            product_name=event.product_name,
-            direction=event.direction,
-            camera_id=event.camera_id,
-            tracking_id=event.tracking_id,
-            confidence=event.confidence,
-            quantity=event.quantity,
-            object_type=event.object_type,
-            dimensions_m=event.dimensions_m,
-            distance_m=event.distance_m,
-            quantity_grid=event.quantity_grid,
-            measurement_method=event.measurement_method,
-        )
-        action = "recognized" if count_mode == "appearance" else f"crossed {event.direction}"
-        print(
-            f"[{event.camera_id}] {event.quantity}x {event.product_name} "
-            f"ID={event.tracking_id} "
-            f"{action} | stock {event.product_name} = {stock}"
-        )
 
 
 if __name__ == "__main__":

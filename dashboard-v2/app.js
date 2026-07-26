@@ -2476,9 +2476,50 @@ async function refreshCatalogResultsTable(container, results = []) {
   table.innerHTML = catalogResultsTableHtml(results);
 }
 
+function warehouseEngineOverviewHtml(engine) {
+  const zoneRows = Object.entries(engine.zone_statistics || {})
+    .map(([zone, count]) => `<span class="camera-count-pill"><strong>${escapeHtml(zone)}</strong>${Number(count).toLocaleString()}</span>`)
+    .join("");
+  const events = (engine.events || []).slice(0, 20)
+    .map((event) => `
+      <tr>
+        <td>${escapeHtml(formatCatalogTime(event.timestamp))}</td>
+        <td><strong>${escapeHtml(String(event.event_type || "").replaceAll("_", " "))}</strong></td>
+        <td>${escapeHtml(event.object_id || "")}</td>
+        <td>${escapeHtml(event.camera_id || "")}</td>
+        <td>${escapeHtml(event.zone || "Unassigned")}</td>
+        <td class="count-cell">${Number(event.inventory_delta || 0).toLocaleString()}</td>
+      </tr>`)
+    .join("");
+  return `
+    <section class="detected-list" style="margin-top:20px">
+      <header class="detected-list-head">
+        <div><h3>Warehouse Intelligence Engine</h3><p>Inventory is driven by persistent identity, movement, zones, and rules—not raw YOLO frames.</p></div>
+      </header>
+      <div class="result-analytics-summary">
+        <article><span>Detected objects</span><strong>${Number(engine.detected_objects || 0).toLocaleString()}</strong></article>
+        <article><span>Tracked objects</span><strong>${Number(engine.tracked_objects || 0).toLocaleString()}</strong></article>
+        <article><span>Inventory objects</span><strong>${Number(engine.inventory_objects || 0).toLocaleString()}</strong></article>
+        <article><span>Active events</span><strong>${Number(engine.active_events || 0).toLocaleString()}</strong></article>
+      </div>
+      <div class="camera-count-list" style="margin:14px 0">${zoneRows || '<span class="muted">No active zones yet</span>'}</div>
+      <form data-warehouse-task-builder style="display:flex;gap:10px;align-items:end;margin:18px 0">
+        <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:6px">AI Task Builder</span><input name="prompt" required value="Count all baget boxes entering warehouse." style="width:100%" /></label>
+        <button type="submit" class="export-button">Build task</button>
+      </form>
+      <pre data-warehouse-task-output style="display:none;white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:8px"></pre>
+      <h4>Movement timeline</h4>
+      ${events ? `<div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Time</th><th>Event</th><th>Object ID</th><th>Camera</th><th>Zone</th><th>Inventory Δ</th></tr></thead><tbody>${events}</tbody></table></div>` : '<p class="empty">No engine events yet.</p>'}
+    </section>
+  `;
+}
+
 async function renderCatalogResults(container) {
   try {
-    const payload = await catalogRequest(catalogApiPath("/api/catalog/results"));
+    const [payload, engine] = await Promise.all([
+      catalogRequest(catalogApiPath("/api/catalog/results")),
+      catalogRequest("/api/warehouse-engine/overview?limit=100"),
+    ]);
     if (!container.isConnected || accountModule !== "analytics") return;
     container.innerHTML = `
       <section class="detected-list">
@@ -2496,9 +2537,25 @@ async function renderCatalogResults(container) {
         <div data-catalog-camera-breakdown>${catalogCameraTotalsTableHtml(payload.results)}</div>
         <p class="catalog-next-run">${escapeHtml(t("analytics.next_run", { time: formatCatalogTime(payload.schedule.next_run_at) }))}</p>
       </section>
+      ${warehouseEngineOverviewHtml(engine)}
     `;
     const button = container.querySelector("[data-run-live-recognition]");
     button?.addEventListener("click", () => startLiveCatalogRecognition(container, button));
+    container.querySelector("[data-warehouse-task-builder]")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const output = container.querySelector("[data-warehouse-task-output]");
+      try {
+        const task = await catalogRequest("/api/warehouse-engine/tasks/parse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: event.currentTarget.elements.prompt.value }),
+        });
+        output.style.display = "block";
+        output.textContent = JSON.stringify(task.task, null, 2);
+      } catch (error) {
+        toast(error.message);
+      }
+    });
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }

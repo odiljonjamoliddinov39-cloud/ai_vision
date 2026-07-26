@@ -70,6 +70,8 @@ from database.warehouse_db import WarehouseDB  # noqa: E402
 from detection.detector import Detector  # noqa: E402
 from detection.spatial import SpatialAnalyzer  # noqa: E402
 from streams import StreamManager, StreamSessionConfig  # noqa: E402
+from warehouse_engine.database import EngineDatabase  # noqa: E402
+from warehouse_engine.rules import parse_task_prompt  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -87,6 +89,7 @@ SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
 CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
 CATALOG_PROMPTS_PATH = ROOT / "logs" / "catalog_prompts.json"
+WAREHOUSE_ENGINE_DB_PATH = ROOT / "database" / "warehouse_engine.db"
 ACCOUNTS_DB_PATH = ROOT / "database" / "accounts.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
@@ -803,6 +806,10 @@ class InventoryAction(BaseModel):
 
 class CatalogPromptUpdate(BaseModel):
     prompts: list[str] = Field(default_factory=list, max_length=20)
+
+
+class WarehouseTaskRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=500)
 
 
 class CameraCreate(BaseModel):
@@ -2356,6 +2363,43 @@ def warehouse_stock() -> dict[str, Any]:
 def warehouse_movements(limit: int = 50) -> dict[str, Any]:
     db = _get_warehouse_db()
     return {"movements": db.recent_movements(limit=max(1, min(limit, 500)))}
+
+
+@app.get("/api/warehouse-engine/overview")
+def warehouse_engine_overview(limit: int = 100) -> dict[str, Any]:
+    db = EngineDatabase(str(WAREHOUSE_ENGINE_DB_PATH))
+    objects = db.objects(limit=max(1, min(limit, 500)))
+    events = db.events(limit=max(1, min(limit, 500)))
+    active = [row for row in objects if row.get("current_status") == "active"]
+    zones: dict[str, int] = {}
+    for row in active:
+        zone = str(row.get("current_zone") or "Unassigned")
+        zones[zone] = zones.get(zone, 0) + 1
+    return {
+        "detected_objects": len(objects),
+        "tracked_objects": len(active),
+        "inventory_objects": len(
+            [row for row in active if row.get("product_name")]
+        ),
+        "active_events": len(events),
+        "zone_statistics": zones,
+        "objects": objects,
+        "events": events,
+    }
+
+
+@app.get("/api/warehouse-engine/events")
+def warehouse_engine_events(limit: int = 200) -> dict[str, Any]:
+    return {
+        "events": EngineDatabase(str(WAREHOUSE_ENGINE_DB_PATH)).events(
+            limit=max(1, min(limit, 1000))
+        )
+    }
+
+
+@app.post("/api/warehouse-engine/tasks/parse")
+def warehouse_engine_parse_task(request: WarehouseTaskRequest) -> dict[str, Any]:
+    return {"prompt": request.prompt, "task": parse_task_prompt(request.prompt)}
 
 
 def _poll_process() -> None:
