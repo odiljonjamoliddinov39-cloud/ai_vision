@@ -2499,11 +2499,21 @@ async function startLiveCatalogRecognition(container, button) {
   button.disabled = true;
   button.textContent = t("actions.recognizing");
   try {
-    const payload = await catalogRequest(catalogApiPath("/api/catalog/recognition/run"), { method: "POST" });
-    await refreshCatalogResultsTable(container, payload.results || []);
-    button.disabled = false;
-    button.textContent = t("actions.run_recognition");
-    toast(t("toast.recognition_complete"));
+    let status = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live"), { method: "POST" });
+    while (status.running) {
+      if (!container.isConnected || accountModule !== "analytics") return;
+      await refreshCatalogResultsTable(container, status.results || []);
+      button.textContent = `${t("actions.recognizing")} ${Number(status.remaining_seconds || 0).toLocaleString()}s`;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      status = await catalogRequest(catalogApiPath("/api/catalog/recognition/run-live/status"));
+    }
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/results"));
+    if (container.isConnected && accountModule === "analytics") {
+      await refreshCatalogResultsTable(container, payload.results || []);
+      button.disabled = false;
+      button.textContent = t("actions.run_recognition");
+      toast(t("toast.recognition_complete"));
+    }
   } catch (error) {
     button.disabled = false;
     button.textContent = t("actions.run_recognition");

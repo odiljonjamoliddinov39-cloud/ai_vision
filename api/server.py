@@ -1956,6 +1956,60 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
     return matches
 
 
+def _catalog_unidentified_current_frame(
+    scope_id: str, include_visuals: bool = False
+) -> list[dict[str, Any]]:
+    """Count detector objects that do not match anything enrolled in AI Check-in.
+
+    Recognition results historically discarded these objects. A live counting
+    session must retain them, grouped by camera, so the reported total can be
+    reconciled with the objects visible in each feed.
+    """
+    db = _get_catalog_db()
+    items = db.list_items(scope_id, active_only=True)
+    if not items:
+        return []
+
+    health = _catalog_health_snapshot()
+    cameras = health.get("cameras") or []
+    by_camera = health.get("last_spatial_objects_by_camera") or {}
+    if not by_camera:
+        by_camera = health.get("last_detections_by_camera") or {}
+    if not by_camera and health.get("last_spatial_objects"):
+        fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
+        by_camera = {fallback_name: health.get("last_spatial_objects") or []}
+
+    unknown_entries: list[tuple[str, dict[str, Any]]] = []
+    for camera_name, objects in by_camera.items():
+        for obj in objects or []:
+            if any(
+                _catalog_detection_matches_item_prompt(obj, str(item["name"]))
+                for item in items
+            ):
+                continue
+            unknown_entries.append((_catalog_camera_label(camera_name), obj))
+
+    quantity, camera_counts = _catalog_count_objects_by_camera(unknown_entries)
+    if quantity <= 0:
+        return []
+
+    match: dict[str, Any] = {
+        # Use an enrolled item FK so existing result databases remain compatible;
+        # _state_key keeps this aggregate separate from that enrolled item.
+        "item_id": str(items[0]["id"]),
+        "item_name": "Unidentified",
+        "quantity": quantity,
+        "confidence": 0.0,
+        "dimensions_m": None,
+        "measurement_method": "unidentified-detector-object",
+        "camera_counts": _catalog_camera_counts_payload(camera_counts),
+        "_state_key": "__unidentified__",
+    }
+    if include_visuals:
+        match["_visual_evidence"] = _catalog_spatial_visuals(health, unknown_entries)
+    return [match]
+
+
 def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
     """Create one immutable catalog-only count snapshot for a scope."""
     db = _get_catalog_db()
@@ -2008,17 +2062,26 @@ async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> Non
         while datetime.now(timezone.utc) < ends_at:
             try:
                 matches = await asyncio.to_thread(_catalog_match_current_frame, scope_id, True)
+                matches.extend(
+                    await asyncio.to_thread(
+                        _catalog_unidentified_current_frame, scope_id, True
+                    )
+                )
             except Exception as exc:  # keep sampling - one bad sample shouldn't end the run
                 state["error"] = str(exc)
             else:
                 for match in matches:
                     if match["quantity"] <= 0:
                         continue
-                    existing = state["items"].get(match["item_id"])
+                    state_key = str(match.get("_state_key") or match["item_id"])
+                    existing = state["items"].get(state_key)
                     if existing is None:
-                        state["items"][match["item_id"]] = match
+                        state["items"][state_key] = match
                     else:
-                        state["items"][match["item_id"]] = _catalog_merge_match_samples([[existing], [match]])[0]
+                        merged = _catalog_merge_match_samples([[existing], [match]])[0]
+                        if match.get("_state_key"):
+                            merged["_state_key"] = match["_state_key"]
+                        state["items"][state_key] = merged
             remaining = (ends_at - datetime.now(timezone.utc)).total_seconds()
             if remaining <= 0:
                 break
@@ -4200,7 +4263,7 @@ async def start_live_catalog_recognition(scope_id: str) -> dict[str, Any]:
     scope = _catalog_scope(scope_id)
     existing = _live_catalog_runs.get(scope)
     if existing and existing["status"] == "running":
-        raise HTTPException(status_code=409, detail="A live recognition run is already active for this scope.")
+        return _live_catalog_status_payload(scope)
 
     started_at = datetime.now(timezone.utc)
     ends_at = started_at + timedelta(seconds=CATALOG_LIVE_RUN_DURATION_SECONDS)
