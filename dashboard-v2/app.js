@@ -2518,7 +2518,11 @@ async function startLiveCatalogRecognition(container, button) {
       } else {
         const table = container.querySelector("[data-catalog-table]");
         if (table) {
-          table.innerHTML = `<p class="empty">Scanning live feeds… matched items, quantities, cameras, and crops will appear here during this countdown.</p>`;
+          const scan = status.yolo_scan;
+          const detail = scan
+            ? ` YOLO scanned ${Number(scan.camera_count || 0).toLocaleString()} camera feeds and produced ${Number(scan.detection_count || 0).toLocaleString()} detections.${scan.error ? ` Error: ${scan.error}` : ""}`
+            : "";
+          table.innerHTML = `<p class="empty">Scanning all live feeds… matched items, quantities, cameras, and crops will appear here during this countdown.${escapeHtml(detail)}</p>`;
         }
       }
       button.textContent = `${t("actions.recognizing")} ${Number(status.remaining_seconds || 0).toLocaleString()}s`;

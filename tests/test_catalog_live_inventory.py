@@ -84,3 +84,12 @@ def test_dashboard_uses_persistent_live_recognition_session():
     assert "Scanning live feeds" in source
     assert 'data-acc-form="catalog-prompts"' in source
     assert "YOLO detection prompts" in source
+    assert "YOLO scanned" in source
+
+
+def test_catalog_yolo_scans_all_loaded_camera_frames_by_default():
+    source = (server.ROOT / "api" / "server.py").read_text(encoding="utf-8")
+
+    assert 'CATALOG_RECOGNITION_MAX_FRAMES", "100"' in source
+    assert '"camera_count": len(frames)' in source
+    assert '"detection_count": 0' in source

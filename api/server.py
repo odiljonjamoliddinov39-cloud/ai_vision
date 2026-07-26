@@ -118,6 +118,7 @@ _access_control_db: AccessControlDB | None = None
 _catalog_db: CatalogDB | None = None
 _catalog_yolo_detector: Detector | None = None
 _catalog_yolo_detector_key: tuple[Any, ...] | None = None
+_catalog_yolo_last_scan: dict[str, dict[str, Any]] = {}
 _accounts_db: AccountsDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
@@ -1839,14 +1840,31 @@ def _catalog_fresh_yolo_crop_candidates(
     except ImportError:
         return []
 
-    max_frames = int(os.getenv("CATALOG_RECOGNITION_MAX_FRAMES", "8"))
+    # Catalog recognition must cover every loaded feed. The previous default
+    # of eight silently skipped later channels (including channels 9, 10 and
+    # 19) even though the persistent detector was counting objects there.
+    max_frames = max(1, int(os.getenv("CATALOG_RECOGNITION_MAX_FRAMES", "100")))
     frames = _catalog_live_frames(health, max_frames=max_frames)
     if not frames:
         return []
 
-    prompts = _catalog_detection_prompts(items, str(items[0].get("scope_id") or "default"))
+    scope_id = str(items[0].get("scope_id") or "default")
+    prompts = _catalog_detection_prompts(items, scope_id)
+    scan = {
+        "started_at": _now_iso(),
+        "completed_at": None,
+        "camera_count": len(frames),
+        "cameras": [entry["camera_name"] for entry in frames],
+        "prompts": prompts,
+        "detection_count": 0,
+        "candidate_count": 0,
+        "error": None,
+    }
+    _catalog_yolo_last_scan[scope_id] = scan
     detector = _catalog_yolo_for_prompts(prompts)
     if detector is None:
+        scan["error"] = "YOLO detector could not be loaded."
+        scan["completed_at"] = _now_iso()
         return []
 
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
@@ -1857,25 +1875,36 @@ def _catalog_fresh_yolo_crop_candidates(
         else None
     )
     candidates: list[dict[str, Any]] = []
-    for entry in frames:
-        frame = entry["frame"]
-        detections = detector.detect(frame)
-        if spatial_analyzer is not None:
-            spatial_analyzer.enrich(frame, detections)
-        for detection in detections:
-            payload = _catalog_detection_payload(detection)
-            crop = _catalog_detection_crop(frame, payload["bbox"])
-            if crop is None:
-                continue
-            candidates.append(
-                {
-                    "camera_name": entry["camera_name"],
-                    "detection": payload,
-                    "frame": frame,
-                    "crop": crop,
-                    "embedding": image_embedding(crop),
-                }
-            )
+    try:
+        for entry in frames:
+            frame = entry["frame"]
+            detections = detector.detect(frame)
+            scan["detection_count"] += len(detections)
+            if spatial_analyzer is not None:
+                spatial_analyzer.enrich(frame, detections)
+            for detection in detections:
+                payload = _catalog_detection_payload(detection)
+                crop = _catalog_detection_crop(frame, payload["bbox"])
+                if crop is None:
+                    continue
+                candidates.append(
+                    {
+                        "camera_name": entry["camera_name"],
+                        "detection": payload,
+                        "frame": frame,
+                        "crop": crop,
+                        "embedding": image_embedding(crop),
+                    }
+                )
+    except Exception as exc:
+        scan["error"] = str(exc)
+        _audit(
+            "catalog_yolo_scan_failed",
+            {"scope_id": scope_id, "error": str(exc)},
+        )
+    finally:
+        scan["candidate_count"] = len(candidates)
+        scan["completed_at"] = _now_iso()
     return candidates
 
 
@@ -2126,6 +2155,7 @@ def _live_catalog_status_payload(scope_id: str) -> dict[str, Any]:
         "remaining_seconds": remaining,
         "results": results,
         "run_id": state.get("run_id"),
+        "yolo_scan": _catalog_yolo_last_scan.get(scope_id),
     }
 
 
