@@ -52,6 +52,8 @@ class ObjectTracker:
         tracker_config: str = "bytetrack.yaml",
         image_size: int = 640,
         class_agnostic_nms: bool = False,
+        iou_threshold: float = 0.55,
+        max_detections: int = 300,
         match_iou_threshold: float = 0.25,
         max_missed_updates: int = 30,
     ):
@@ -69,6 +71,8 @@ class ObjectTracker:
         self.tracker_config = tracker_config
         self.image_size = image_size
         self.class_agnostic_nms = class_agnostic_nms
+        self.iou_threshold = float(iou_threshold)
+        self.max_detections = int(max_detections)
         self.match_iou_threshold = float(match_iou_threshold)
         self.max_missed_updates = int(max_missed_updates)
         self._tracks: dict[int, _TrackState] = {}
@@ -88,6 +92,8 @@ class ObjectTracker:
                 device=self.device,
                 imgsz=self.image_size,
                 agnostic_nms=self.class_agnostic_nms,
+                iou=self.iou_threshold,
+                max_det=self.max_detections,
                 verbose=False,
             )
         else:  # compatibility for lightweight model doubles and older runtimes

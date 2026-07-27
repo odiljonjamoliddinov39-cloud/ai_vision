@@ -123,11 +123,21 @@ def main():
         class_prompts=det_cfg.get("class_prompts"),
         image_size=det_cfg.get("image_size", 640),
         class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
+        iou_threshold=det_cfg.get("iou_threshold", 0.55),
+        max_detections=det_cfg.get("max_detections", 300),
+        compile_model=det_cfg.get("compile", False),
+        fallback_model_path=det_cfg.get("fallback_model_path"),
     )
     if detector.model is None:
         print("Using deterministic dummy detector. Starting demo run...")
     else:
-        print("Model loaded. Starting live detection... (press 'q' to quit)")
+        model_health = detector.health()
+        print(
+            "Ultralytics model loaded: "
+            f"{model_health['active_model']} on {model_health['device']}"
+            + (" (fallback)" if model_health["fallback_used"] else "")
+        )
+        print("Starting live detection... (press 'q' to quit)")
 
     spatial_cfg = config.get("spatial_analysis", {})
     spatial_analyzer = (
@@ -154,11 +164,13 @@ def main():
             cam.name: ObjectTracker(
                 model=detector.model,
                 confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
-                device=det_cfg.get("device", "cpu"),
+                device=detector.device,
                 classes=track_cfg.get("classes", det_cfg.get("classes")),
                 tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
                 image_size=det_cfg.get("image_size", 640),
                 class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
+                iou_threshold=det_cfg.get("iou_threshold", 0.55),
+                max_detections=det_cfg.get("max_detections", 300),
             )
             for cam in cameras
         }
@@ -521,6 +533,7 @@ def main():
                     "last_detection_count": last_detection_count,
                     "last_tracked_count": last_tracked_count,
                     "model_loaded": detector.model is not None,
+                    "detector": detector.health(),
                     "tracking_enabled": bool(object_trackers) or detector.model is None,
                     "warehouse_counting_enabled": warehouse_enabled,
                     "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")

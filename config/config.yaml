@@ -6,11 +6,14 @@ cameras:
   source: rtsp://87.192.242.82:554/
   slot_number: 2
 detection:
-  model_path: yolov8s-world.pt
-  confidence_threshold: 0.2
-  image_size: 512
+  model_path: yoloe-26s-seg.pt
+  fallback_model_path: yolov8s-worldv2.pt
+  confidence_threshold: 0.18
+  iou_threshold: 0.55
+  max_detections: 300
+  image_size: 640
   class_agnostic_nms: true
-  device: cpu
+  device: auto
   target_fps: 2.0
   stale_after_ms: 3000
   max_concurrent_cameras: 0

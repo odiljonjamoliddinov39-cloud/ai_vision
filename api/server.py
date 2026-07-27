@@ -745,7 +745,10 @@ class StartRequest(BaseModel):
 
 class ConfigPatch(BaseModel):
     model_path: str | None = Field(default=None, min_length=1)
+    fallback_model_path: str | None = Field(default=None, min_length=1)
     confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    iou_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_detections: int | None = Field(default=None, ge=1, le=3000)
     image_size: int | None = Field(default=None, ge=320, le=1920)
     device: str | None = None
     classes: list[str] | None = None
@@ -3619,8 +3622,14 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
     values = patch.model_dump(exclude_unset=True)
     if "model_path" in values:
         detection["model_path"] = values["model_path"]
+    if "fallback_model_path" in values:
+        detection["fallback_model_path"] = values["fallback_model_path"]
     if "confidence_threshold" in values:
         detection["confidence_threshold"] = values["confidence_threshold"]
+    if "iou_threshold" in values:
+        detection["iou_threshold"] = values["iou_threshold"]
+    if "max_detections" in values:
+        detection["max_detections"] = values["max_detections"]
     if "image_size" in values:
         detection["image_size"] = values["image_size"]
     if "device" in values:
