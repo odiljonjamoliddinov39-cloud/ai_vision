@@ -617,8 +617,6 @@ def _ffmpeg_command(
         "1000000",
         "-fflags",
         "+discardcorrupt",
-        "-rw_timeout",
-        "10000000",
         "-i",
         source,
     ]
