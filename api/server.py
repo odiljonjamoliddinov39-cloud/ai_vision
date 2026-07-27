@@ -4253,6 +4253,58 @@ def v2_stream_health() -> dict[str, Any]:
     return _get_stream_manager().status()
 
 
+@app.get("/api/v2/channels/{channel_id}/stream/routes")
+def v2_channel_stream_routes(channel_id: int) -> dict[str, Any]:
+    """Return internal AI plus browser WebRTC/HLS routes for one camera."""
+    manager = _get_stream_manager()
+    route = manager.route_info(str(channel_id))
+    status = manager.status(str(channel_id))
+    media_path = manager.media_client.path_status(route["dashboard_path"])
+    return {
+        "channel_id": str(channel_id),
+        "transport": status.get("transport", "direct"),
+        "routes": route,
+        "health": status,
+        "clients": len(media_path.get("readers") or []),
+        "media_path": media_path,
+    }
+
+
+@app.post("/api/v2/channels/{channel_id}/stream/restart")
+def v2_restart_stream(channel_id: int) -> dict[str, Any]:
+    status = _get_stream_manager().restart(str(channel_id))
+    if status.get("status") == "offline":
+        raise HTTPException(status_code=404, detail="Stream is not active.")
+    return {"restarted": True, "stream": status}
+
+
+@app.get("/api/v2/channels/{channel_id}/stream/snapshot")
+def v2_channel_stream_snapshot(channel_id: int) -> Response:
+    data = _get_stream_manager().latest_frame_bytes(channel_id=str(channel_id))
+    if data is None:
+        raise HTTPException(status_code=503, detail="No fresh camera frame is available.")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store", "X-AI-Frame-Source": "stream-manager"},
+    )
+
+
+@app.get("/api/v2/channels/{channel_id}/recording/status")
+def v2_channel_recording_status(channel_id: int) -> dict[str, Any]:
+    manager = _get_stream_manager()
+    route = manager.route_info(str(channel_id))
+    source_path = manager.media_client.path_status(route["source_path"])
+    return {
+        "channel_id": str(channel_id),
+        "enabled": bool(manager.media_client.enabled),
+        "recording": bool(source_path.get("record")),
+        "path": route["source_path"],
+        "storage_root": "/recordings",
+        "media_path": source_path,
+    }
+
+
 @app.get("/api/v2/channels/{channel_id}/stream/health")
 def v2_channel_stream_health(channel_id: int) -> dict[str, Any]:
     return _get_stream_manager().status(str(channel_id))

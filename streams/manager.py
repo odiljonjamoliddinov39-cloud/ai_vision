@@ -7,10 +7,11 @@ consume the same published frames instead of reconnecting to the camera/NVR.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from collections import deque
 from pathlib import Path
+import os
 import re
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ import cv2
 import numpy as np
 
 from streams.shared_buffer import SharedFrameWriter
+from streams.mediamtx import MediaMTXClient, MediaRoute
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,8 @@ class StreamSessionConfig:
     width: int = 1280
     jpeg_quality: int = 85
     preview_fps: float = 12.0
+    origin_source: str | None = None
+    media_route: MediaRoute | None = None
 
 
 @dataclass
@@ -62,14 +66,20 @@ class StreamSessionStatus:
 
 
 class StreamManager:
-    def __init__(self, snapshot_dir: str | Path = "snapshots"):
+    def __init__(
+        self,
+        snapshot_dir: str | Path = "snapshots",
+        media_client: MediaMTXClient | None = None,
+    ):
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self.media_client = media_client or MediaMTXClient.from_environment()
         self._sessions: dict[str, _ManagedStreamSession] = {}
         self._aliases: dict[str, _ManagedStreamSession] = {}
         self._lock = threading.Lock()
 
     def start(self, config: StreamSessionConfig) -> dict[str, Any]:
+        config = self._route_config(config)
         with self._lock:
             channel_id = str(config.channel_id)
             existing = self._sessions.get(channel_id) or self._aliases.get(channel_id)
@@ -110,6 +120,11 @@ class StreamManager:
         if session is None:
             return False
         session.stop()
+        if self.media_client.enabled:
+            try:
+                self.media_client.remove_source(channel_id)
+            except Exception:
+                pass
         return True
 
     def stop_all(self) -> None:
@@ -130,7 +145,27 @@ class StreamManager:
             for session in self._sessions.values():
                 streams.append(session.status())
                 streams.extend(session.alias_statuses())
-            return {"streams": streams, "upstream_count": len(self._sessions)}
+            return {
+                "streams": streams,
+                "upstream_count": len(self._sessions),
+                "media_server": self.media_client.health(),
+            }
+
+    def route_info(self, channel_id: str) -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions.get(str(channel_id)) or self._aliases.get(str(channel_id))
+        if session is not None and session.config.media_route is not None:
+            return session.config.media_route.to_dict()
+        return self.media_client.route(str(channel_id)).to_dict()
+
+    def restart(self, channel_id: str) -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions.get(str(channel_id)) or self._aliases.get(str(channel_id))
+            if session is None:
+                return {"channel_id": str(channel_id), "status": "offline"}
+            config = session.config
+        self.stop(str(channel_id))
+        return self.start(config)
 
     def latest_frame_bytes(
         self,
@@ -185,6 +220,23 @@ class StreamManager:
                 return session
         return None
 
+    def _route_config(self, config: StreamSessionConfig) -> StreamSessionConfig:
+        source = str(config.origin_source or config.source).strip()
+        if not self.media_client.enabled or not source.lower().startswith("rtsp://"):
+            return config
+        try:
+            route = self.media_client.ensure_source(str(config.channel_id), source)
+        except Exception:
+            if self.media_client.required:
+                raise
+            return config
+        return replace(
+            config,
+            source=route.source_rtsp_url,
+            origin_source=source,
+            media_route=route,
+        )
+
     def _remove_alias(self, channel_id: str) -> None:
         alias = self._aliases.pop(channel_id, None)
         if alias is not None:
@@ -208,15 +260,19 @@ class _ManagedStreamSession:
         self._aliases: dict[str, StreamSessionConfig] = {}
         self._shared_writers: dict[int, SharedFrameWriter] = {}
         self._publish_times = deque(maxlen=90)
+        self._published_sizes = deque(maxlen=90)
         self._last_frame_monotonic: float | None = None
 
     def same_source(self, config: StreamSessionConfig) -> bool:
         if self._thread is None or not self._thread.is_alive():
             return False
         if str(self.config.channel_id) == str(config.channel_id):
-            return self.config.source == config.source
-        source = str(self.config.source).strip()
-        return bool(source and source.lower() != "dummy" and source == str(config.source).strip())
+            return (self.config.origin_source or self.config.source) == (
+                config.origin_source or config.source
+            )
+        source = str(self.config.origin_source or self.config.source).strip()
+        candidate = str(config.origin_source or config.source).strip()
+        return bool(source and source.lower() != "dummy" and source == candidate)
 
     def add_alias(self, config: StreamSessionConfig) -> None:
         self._aliases[str(config.channel_id)] = config
@@ -278,6 +334,14 @@ class _ManagedStreamSession:
             status["frame_age_ms"] = round(
                 max(0.0, now - self._last_frame_monotonic) * 1000
             )
+            frozen_after_ms = max(
+                1000, int(float(os.getenv("STREAM_FROZEN_AFTER_SECONDS", "8")) * 1000)
+            )
+            if (
+                status.get("status") == "online"
+                and status["frame_age_ms"] > frozen_after_ms
+            ):
+                status["status"] = "frozen"
         if len(self._publish_times) >= 2:
             elapsed = self._publish_times[-1] - self._publish_times[0]
             status["output_fps"] = (
@@ -285,11 +349,21 @@ class _ManagedStreamSession:
                 if elapsed > 0
                 else None
             )
+            status["bitrate_kbps"] = (
+                round(sum(self._published_sizes) * 8 / elapsed / 1000, 1)
+                if elapsed > 0
+                else None
+            )
+        status["latency_ms"] = status.get("frame_age_ms")
         if config is not None:
             status["channel_id"] = str(config.channel_id)
             status["name"] = config.name
             status["slot_number"] = config.slot_number
         status["shared_source"] = bool(self._aliases)
+        route = (config or self.config).media_route
+        status["transport"] = "mediamtx" if route is not None else "direct"
+        if route is not None:
+            status["routes"] = route.to_dict()
         return status
 
     def _run(self) -> None:
@@ -361,6 +435,7 @@ class _ManagedStreamSession:
                 width=self.config.width,
                 jpeg_quality=self.config.jpeg_quality,
                 fps=self.config.preview_fps,
+                media_route=self.config.media_route,
             ),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -478,6 +553,7 @@ class _ManagedStreamSession:
         published_at = time.monotonic()
         self._last_frame_monotonic = published_at
         self._publish_times.append(published_at)
+        self._published_sizes.append(len(data))
         with self._latest_lock:
             self._latest_jpeg = data
         if self.config.slot_number is not None:
@@ -510,7 +586,13 @@ class _RateLimitedWarnings:
         return True
 
 
-def _ffmpeg_command(source: str, width: int = 1280, jpeg_quality: int = 85, fps: float = 12.0) -> list[str]:
+def _ffmpeg_command(
+    source: str,
+    width: int = 1280,
+    jpeg_quality: int = 85,
+    fps: float = 12.0,
+    media_route: MediaRoute | None = None,
+) -> list[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     preview_width = max(240, min(int(width), 1280))
     # Decode every frame (no -skip_frame nokey) so the preview is smooth.
@@ -520,7 +602,7 @@ def _ffmpeg_command(source: str, width: int = 1280, jpeg_quality: int = 85, fps:
     # OpenCV JPEG quality is 0..100, while ffmpeg's mjpeg qscale is roughly
     # 2(best)..31(worst). Keep previews small enough for multi-camera grids.
     qscale = max(3, min(18, round((100 - max(20, min(int(jpeg_quality), 92))) / 4)))
-    return [
+    base = [
         ffmpeg,
         "-rtsp_transport",
         "tcp",
@@ -530,8 +612,76 @@ def _ffmpeg_command(source: str, width: int = 1280, jpeg_quality: int = 85, fps:
         "1000000",
         "-fflags",
         "+discardcorrupt",
+        "-rw_timeout",
+        "10000000",
         "-i",
         source,
+    ]
+    if media_route is not None:
+        ai_width = max(320, min(int(os.getenv("AI_STREAM_WIDTH", "960")), 1280))
+        ai_fps = max(1.0, min(float(os.getenv("AI_STREAM_FPS", "6")), 30.0))
+        dashboard_width = max(
+            640, min(int(os.getenv("DASHBOARD_STREAM_WIDTH", "1920")), 1920)
+        )
+        dashboard_fps = max(
+            5.0, min(float(os.getenv("DASHBOARD_STREAM_FPS", "20")), 30.0)
+        )
+        return base + [
+            "-filter_complex",
+            (
+                "[0:v]split=3[ai0][dash0][preview0];"
+                f"[ai0]fps={ai_fps:g},scale={ai_width}:-2[ai];"
+                f"[dash0]fps={dashboard_fps:g},scale={dashboard_width}:-2[dash];"
+                f"[preview0]fps={preview_fps:g},scale={preview_width}:-2[preview]"
+            ),
+            "-map",
+            "[ai]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-g",
+            str(max(1, round(ai_fps * 2))),
+            "-an",
+            "-f",
+            "rtsp",
+            "-rtsp_transport",
+            "tcp",
+            media_route.ai_rtsp_url,
+            "-map",
+            "[dash]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-g",
+            str(max(1, round(dashboard_fps * 2))),
+            "-an",
+            "-f",
+            "rtsp",
+            "-rtsp_transport",
+            "tcp",
+            media_route.dashboard_rtsp_url,
+            "-map",
+            "[preview]",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "-q:v",
+            str(qscale),
+            "-an",
+            "-threads",
+            "1",
+            "-loglevel",
+            "error",
+            "pipe:1",
+        ]
+    return base + [
         "-vf",
         f"fps={preview_fps:g},scale={preview_width}:-2",
         "-f",

@@ -1,4 +1,19 @@
 services:
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    restart: unless-stopped
+    command: ["/mediamtx", "/mediamtx.yml"]
+    volumes:
+      - ./infrastructure/mediamtx.yml:/mediamtx.yml:ro
+      - ./recordings:/recordings
+    ports:
+      - "${MEDIAMTX_RTSP_PORT:-8554}:8554"
+      - "${MEDIAMTX_HLS_PORT:-8888}:8888"
+      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"
+      - "${MEDIAMTX_WEBRTC_UDP_PORT:-8189}:8189/udp"
+    expose:
+      - "9997"
+
   backend:
     build:
       context: .
@@ -15,6 +30,20 @@ services:
       DETECTION_WATCHDOG_ENABLED: "true"
       CATALOG_RECOGNITION_SCHEDULER_ENABLED: "true"
       CATALOG_RECOGNITION_INTERVAL_HOURS: "12"
+      AI_VISION_ENTERPRISE_STREAMING: "${AI_VISION_ENTERPRISE_STREAMING:-true}"
+      MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-true}"
+      MEDIAMTX_API_URL: "http://mediamtx:9997"
+      MEDIAMTX_RTSP_URL: "rtsp://mediamtx:8554"
+      MEDIAMTX_WEBRTC_URL: "http://mediamtx:8889"
+      MEDIAMTX_HLS_URL: "http://mediamtx:8888"
+      MEDIAMTX_PUBLIC_WEBRTC_URL: "${MEDIAMTX_PUBLIC_WEBRTC_URL:-http://localhost:8889}"
+      MEDIAMTX_PUBLIC_HLS_URL: "${MEDIAMTX_PUBLIC_HLS_URL:-http://localhost:8888}"
+      AI_STREAM_WIDTH: "${AI_STREAM_WIDTH:-960}"
+      AI_STREAM_FPS: "${AI_STREAM_FPS:-6}"
+      DASHBOARD_STREAM_WIDTH: "${DASHBOARD_STREAM_WIDTH:-1920}"
+      DASHBOARD_STREAM_FPS: "${DASHBOARD_STREAM_FPS:-20}"
+    depends_on:
+      - mediamtx
     ports:
       - "${AI_VISION_PORT:-8080}:8080"
     volumes:
@@ -23,6 +52,7 @@ services:
       - ./snapshots:/app/snapshots
       - ./database:/app/database
       - ./config:/app/config
+      - ./recordings:/recordings
 
   # Optional: enable with `docker compose --profile worker up -d --build ai-worker`
   # only if you want a separate detector process instead of backend autostart.
@@ -36,6 +66,11 @@ services:
       - worker
     env_file:
       - .env
+    environment:
+      AI_VISION_ENTERPRISE_STREAMING: "${AI_VISION_ENTERPRISE_STREAMING:-true}"
+      MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-true}"
+      MEDIAMTX_API_URL: "http://mediamtx:9997"
+      MEDIAMTX_RTSP_URL: "rtsp://mediamtx:8554"
     command: ["python", "main.py", "--config", "config/config.yaml", "--no-display"]
     volumes:
       - ./models:/app/models
@@ -43,4 +78,4 @@ services:
       - ./snapshots:/app/snapshots
       - ./database:/app/database
       - ./config:/app/config
-
+      - ./recordings:/recordings

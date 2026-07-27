@@ -1,0 +1,28 @@
+logLevel: info
+api: yes
+apiAddress: :9997
+
+rtsp: yes
+rtspAddress: :8554
+protocols: [tcp]
+
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsVariant: lowLatency
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+
+pathDefaults:
+  source: publisher
+  sourceOnDemand: no
+  record: no
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 1h
+  recordDeleteAfter: 30d
+
+paths:
+  all_others:
