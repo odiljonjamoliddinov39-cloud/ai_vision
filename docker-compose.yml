@@ -31,7 +31,7 @@ services:
       CATALOG_RECOGNITION_SCHEDULER_ENABLED: "true"
       CATALOG_RECOGNITION_INTERVAL_HOURS: "12"
       AI_VISION_ENTERPRISE_STREAMING: "${AI_VISION_ENTERPRISE_STREAMING:-true}"
-      MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-true}"
+      MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-false}"
       MEDIAMTX_API_URL: "http://mediamtx:9997"
       MEDIAMTX_RTSP_URL: "rtsp://mediamtx:8554"
       MEDIAMTX_WEBRTC_URL: "http://mediamtx:8889"
@@ -68,7 +68,7 @@ services:
       - .env
     environment:
       AI_VISION_ENTERPRISE_STREAMING: "${AI_VISION_ENTERPRISE_STREAMING:-true}"
-      MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-true}"
+      MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-false}"
       MEDIAMTX_API_URL: "http://mediamtx:9997"
       MEDIAMTX_RTSP_URL: "rtsp://mediamtx:8554"
     command: ["python", "main.py", "--config", "config/config.yaml", "--no-display"]

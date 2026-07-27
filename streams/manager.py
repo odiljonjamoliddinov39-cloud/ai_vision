@@ -227,7 +227,12 @@ class StreamManager:
         try:
             route = self.media_client.ensure_source(str(config.channel_id), source)
         except Exception:
-            if self.media_client.required:
+            # A platform can deploy the backend service from docker-compose
+            # without provisioning its sibling MediaMTX service. Never strand
+            # every camera in that partial rollout: strict startup is an
+            # explicit opt-in used only after the sidecar health check passes.
+            strict_startup = os.getenv("MEDIAMTX_STRICT_STARTUP", "false").strip().lower()
+            if self.media_client.required and strict_startup in {"1", "true", "yes", "on"}:
                 raise
             return config
         return replace(

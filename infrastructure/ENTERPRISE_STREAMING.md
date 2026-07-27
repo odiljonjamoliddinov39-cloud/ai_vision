@@ -36,6 +36,9 @@ docker compose up -d --build
 The compose deployment enables enterprise streaming by default. Set
 `AI_VISION_ENTERPRISE_STREAMING=false` to roll back to the previous transport
 without changing any camera, AI, tracking, or warehouse configuration.
+Until the MediaMTX health check is confirmed, routing fails open to the existing
+transport. Set `MEDIAMTX_STRICT_STARTUP=true` only after the sidecar and its
+internal DNS name are verified.
 
 ## Control API
 
