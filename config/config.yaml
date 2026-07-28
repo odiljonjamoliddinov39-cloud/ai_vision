@@ -6,15 +6,22 @@ cameras:
   source: rtsp://87.192.242.82:554/
   slot_number: 2
 detection:
-  model_path: yolov8s-world.pt
-  confidence_threshold: 0.08
-  image_size: 512
+  model_path: yoloe-26s-seg.pt
+  fallback_model_path: yolov8s-worldv2.pt
+  confidence_threshold: 0.18
+  iou_threshold: 0.55
+  max_detections: 300
+  image_size: 640
   class_agnostic_nms: true
-  device: cpu
-  target_fps: 0.5
-  max_concurrent_cameras: 4
+  device: auto
+  target_fps: 2.0
+  stale_after_ms: 3000
+  max_concurrent_cameras: 0
   classes: null
   class_prompts:
+  - baget box
+  - baguette box
+  - stack of baget boxes
   - stack of cardboard boxes
   - cardboard box
   - stack of sacks
@@ -33,6 +40,10 @@ spatial_analysis:
   estimate_depth_layers: false
   max_units_per_detection: 200
   unit_dimensions:
+    baget box:
+      width_m: 0.45
+      height_m: 0.35
+      depth_m: 0.35
     cardboard box:
       width_m: 0.45
       height_m: 0.35
@@ -47,8 +58,8 @@ display:
   box_thickness: 2
   font_scale: 0.6
   live_feed_enabled: true
-  live_frame_width: 320
-  live_frame_jpeg_quality: 28
+  live_frame_width: 1280
+  live_frame_jpeg_quality: 85
 tracking:
   enabled: true
   tracker_config: config/warehouse_bytetrack.yaml
@@ -57,22 +68,34 @@ tracking:
   db_path: database/tracking.db
 warehouse_counting:
   enabled: true
-  mode: appearance
+  mode: line
   db_path: database/warehouse.db
-  confidence_threshold: 0.08
-  count_low_confidence_as_unknown: true
+  confidence_threshold: 0.55
+  count_low_confidence_as_unknown: false
   counting_line:
     x1: 100
     y1: 300
     x2: 900
     y2: 300
+warehouse_engine:
+  enabled: true
+  engine_db_path: database/warehouse_engine.db
+  minimum_confidence: 0.8
+  identity_recovery_seconds: 30
+  lost_timeout_seconds: 10
+  stopped_pixels: 8
+  zones:
+  - name: Receiving
+    polygon: [[0, 0], [1280, 0], [1280, 360], [0, 360]]
+  - name: Storage
+    polygon: [[0, 360], [1280, 360], [1280, 720], [0, 720]]
 recognition:
   enabled: true
   provider: gemini
   model: gemini-3.1-flash-lite
   db_path: database/products.db
   confidence_threshold: 0.9
-  similarity_threshold: 0.92
+  similarity_threshold: 0.62
   cache_enabled: true
   cache_expiration: 1800
   timeout: 30

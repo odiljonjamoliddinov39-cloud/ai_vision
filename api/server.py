@@ -14,7 +14,7 @@ import os
 import re
 import secrets
 import signal
-import socket
+import struct
 import subprocess
 import sys
 import time
@@ -22,9 +22,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.error import HTTPError as UrlHTTPError
 
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import asyncio
@@ -61,6 +72,8 @@ from database.warehouse_db import WarehouseDB  # noqa: E402
 from detection.detector import Detector  # noqa: E402
 from detection.spatial import SpatialAnalyzer  # noqa: E402
 from streams import StreamManager, StreamSessionConfig  # noqa: E402
+from warehouse_engine.database import EngineDatabase  # noqa: E402
+from warehouse_engine.rules import parse_task_prompt  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -77,12 +90,15 @@ DEVICE_DB_PATH = ROOT / "database" / "devices.db"
 SECURITY_AUDIT_DB_PATH = ROOT / "database" / "security_audit.db"
 ACCESS_CONTROL_DB_PATH = ROOT / "database" / "access_control.db"
 CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
+CATALOG_PROMPTS_PATH = ROOT / "logs" / "catalog_prompts.json"
+PRODUCT_FINGERPRINTS_PATH = ROOT / "logs" / "product_fingerprints.json"
+WAREHOUSE_ENGINE_DB_PATH = ROOT / "database" / "warehouse_engine.db"
 ACCOUNTS_DB_PATH = ROOT / "database" / "accounts.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
 DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
-MAX_CAMERA_SLOTS = 50
+MAX_CAMERA_SLOTS = 100
 DEFAULT_ALLOWED_ORIGINS = [
     "https://ai-vision-dashboard-phi.vercel.app",
     "http://localhost:8000",
@@ -108,6 +124,7 @@ _access_control_db: AccessControlDB | None = None
 _catalog_db: CatalogDB | None = None
 _catalog_yolo_detector: Detector | None = None
 _catalog_yolo_detector_key: tuple[Any, ...] | None = None
+_catalog_yolo_last_scan: dict[str, dict[str, Any]] = {}
 _accounts_db: AccountsDB | None = None
 _rate_limits: dict[tuple[str, str, int], int] = {}
 _watchdog_task: asyncio.Task | None = None
@@ -122,7 +139,9 @@ _watchdog_last_start_attempt = 0.0
 # simply gone, which is fine for an ephemeral progress indicator.
 _live_catalog_runs: dict[str, dict[str, Any]] = {}
 _live_catalog_tasks: dict[str, asyncio.Task] = {}
-CATALOG_LIVE_RUN_DURATION_SECONDS = 240
+_product_learning_sessions: dict[str, dict[str, Any]] = {}
+_product_learning_tasks: dict[str, asyncio.Task] = {}
+CATALOG_LIVE_RUN_DURATION_SECONDS = 60
 CATALOG_LIVE_RUN_SAMPLE_INTERVAL_SECONDS = 8
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
@@ -333,6 +352,30 @@ def _ensure_streams_from_active_cameras() -> dict[str, Any]:
     return _get_stream_manager().ensure_from_cameras(active)
 
 
+def _reconcile_active_streams(reason: str) -> dict[str, Any]:
+    """Keep MediaMTX paths alive independently of the detector lifecycle."""
+    try:
+        result = _ensure_streams_from_active_cameras()
+        _audit(
+            "stream_registration_reconciled",
+            {
+                "reason": reason,
+                "stream_count": len(result.get("streams") or []),
+                "media_server": _get_stream_manager().media_client.health(),
+            },
+            actor="stream-manager",
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        error = _redact_sensitive_text(str(exc))
+        _audit(
+            "stream_registration_failed",
+            {"reason": reason, "error": error},
+            actor="stream-manager",
+        )
+        return {"streams": [], "error": error}
+
+
 def _start_stream_for_camera(camera: dict[str, Any]) -> dict[str, Any]:
     return _get_stream_manager().start(
         StreamSessionConfig(
@@ -531,6 +574,13 @@ def _is_public_path(path: str) -> bool:
     return (
         path == "/"
         or path == "/api/status"
+        or path
+        in {
+            "/api/v2/auth/login",
+            "/api/v2/auth/setup-password",
+            "/api/v2/auth/login/passkey/options",
+            "/api/v2/auth/login/passkey",
+        }
         or path.startswith("/assets/")
         or path in {"/favicon.ico", "/robots.txt"}
     )
@@ -539,6 +589,12 @@ def _is_public_path(path: str) -> bool:
 def _valid_api_key(request: Request) -> bool:
     expected = _admin_api_key()
     if not expected:
+        return True
+    # A valid V2 user session is an authenticated API caller. Requiring the
+    # server-wide admin key in addition to the user's Bearer token would make
+    # native/mobile login unusable and would expose a shared infrastructure
+    # secret to every installed client.
+    if _v2_session_user(request):
         return True
     provided = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
     return secrets.compare_digest(provided, expected)
@@ -728,7 +784,10 @@ class StartRequest(BaseModel):
 
 class ConfigPatch(BaseModel):
     model_path: str | None = Field(default=None, min_length=1)
+    fallback_model_path: str | None = Field(default=None, min_length=1)
     confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    iou_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_detections: int | None = Field(default=None, ge=1, le=3000)
     image_size: int | None = Field(default=None, ge=320, le=1920)
     device: str | None = None
     classes: list[str] | None = None
@@ -788,6 +847,26 @@ class InventoryAction(BaseModel):
     item_id: str
     quantity: int = Field(default=1, ge=1)
     note: str | None = None
+
+
+class CatalogPromptUpdate(BaseModel):
+    prompts: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ProductLearningStart(BaseModel):
+    duration_seconds: int = Field(default=12, ge=10, le=20)
+    camera_name: str = Field(min_length=1, max_length=200)
+
+
+class ProductLearningSave(BaseModel):
+    session_id: str = Field(min_length=8, max_length=120)
+    product_name: str = Field(min_length=1, max_length=60)
+    view_indices: list[int] = Field(min_length=2, max_length=8)
+    existing_item_id: str | None = Field(default=None, max_length=120)
+
+
+class WarehouseTaskRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=500)
 
 
 class CameraCreate(BaseModel):
@@ -1016,25 +1095,6 @@ def _camera_stream_endpoint(stream_url: str) -> tuple[dict[str, Any] | None, str
     return {"scheme": scheme, "host": parsed.hostname, "port": port}, None
 
 
-def _check_camera_endpoint(endpoint: dict[str, Any], timeout_seconds: float = 2.0) -> str | None:
-    host = endpoint["host"]
-    port = endpoint["port"]
-    scheme = endpoint["scheme"].upper()
-    try:
-        with socket.create_connection((host, port), timeout=timeout_seconds):
-            return None
-    except TimeoutError:
-        reason = "connection timed out"
-    except OSError as exc:
-        reason = exc.strerror or str(exc)
-
-    return (
-        f"Cannot reach {scheme} endpoint {host}:{port} ({reason}). "
-        "The camera is reachable only when this stream port is open; enable the camera stream service "
-        "or use the correct stream URL/port."
-    )
-
-
 def _normalize_controller_host(host: str) -> str:
     value = host.strip()
     if "://" in value:
@@ -1125,6 +1185,46 @@ def _next_available_slot(cameras: list[dict[str, Any]]) -> int:
     return slot_number
 
 
+def _activate_stream_managed_camera(
+    db: CameraDB,
+    camera_id: int,
+    next_slot: int,
+    used_slots: set[int],
+    *,
+    reuse_existing_slot: bool = True,
+) -> tuple[dict[str, Any] | None, int | None, int]:
+    current = db.get_camera(camera_id, include_secret=True)
+    if (
+        reuse_existing_slot
+        and current
+        and current.get("is_active")
+        and current.get("slot_number") is not None
+    ):
+        assigned_slot = int(current["slot_number"])
+        used_slots.add(assigned_slot)
+        return current, assigned_slot, next_slot
+
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
+    if next_slot > MAX_CAMERA_SLOTS:
+        return None, None, next_slot
+
+    active = db.assign_slot(camera_id, next_slot)
+    used_slots.add(next_slot)
+    assigned_slot = next_slot
+    return active, assigned_slot, next_slot + 1
+
+
+def _delete_duplicate_stream_url_cameras(db: CameraDB, stream_url: str, keep_id: int) -> None:
+    for stale in db.list_cameras(include_secret=True):
+        stale_id = int(stale["id"])
+        if stale_id == keep_id or stale.get("stream_url") != stream_url:
+            continue
+        if stale.get("is_active"):
+            _get_stream_manager().stop(str(stale_id))
+        db.delete_camera(stale_id)
+
+
 def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str, Any]:
     endpoint, validation_error = _camera_stream_endpoint(stream_url)
     if validation_error:
@@ -1133,139 +1233,48 @@ def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str,
     if stream_url.strip().lower() == "dummy":
         return {"status": "connected", "message": "Demo camera source is available."}
 
-    if endpoint is not None:
-        endpoint_error = _check_camera_endpoint(endpoint)
-        if endpoint_error:
-            return {
-                "status": "failed",
-                "message": endpoint_error,
-                "details": {
-                    "host": endpoint["host"],
-                    "port": endpoint["port"],
-                    "scheme": endpoint["scheme"],
-                    "endpoint_reachable": False,
-                },
-            }
-
-    code = r"""
-import json
-import os
-import subprocess
-import shutil
-import sys
-import cv2
-
-raw = sys.argv[1].strip()
-source = int(raw) if raw.isdigit() else raw
-inner_timeout = max(1, int(sys.argv[2]) - 1)
-
-def try_open(cap_args):
-    cap = cv2.VideoCapture(*cap_args)
-    opened = bool(cap.isOpened())
-    ok = False
-    if opened:
-        ok, _ = cap.read()
-    if not (opened and ok):
-        cap.release()
-    return cap, opened, ok
-
-def try_ffmpeg(url, timeout_seconds):
-    # Mirrors cameras/camera.py's Camera._open_ffmpeg(), including
-    # -skip_frame nokey (RTSP-over-TCP sessions commonly start mid-GOP,
-    # which HEVC decoders tolerate far worse than H.264 - confirmed live
-    # against a real Hikvision NVR streaming H.265 - so only decoding
-    # self-contained keyframes sidesteps that instead of erroring out).
-    # This pre-flight check has to use the exact same method the real
-    # detector process does, or a camera that would actually work could
-    # still get wrongly rejected here before it's ever tried for real.
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
-    command = [
-        ffmpeg, "-rtsp_transport", "tcp", "-skip_frame", "nokey", "-fflags", "+discardcorrupt", "-i", url,
-        "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
-        "-an", "-threads", "1", "-loglevel", "error", "-frames:v", "1", "-",
-    ]
-    try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except FileNotFoundError:
-        return False, False
-    try:
-        data, _ = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        try:
-            process.communicate(timeout=2.0)
-        except Exception:
-            pass
-        return True, False, "waiting_for_frame"
-    has_jpeg = b"\xff\xd8" in data and b"\xff\xd9" in data
-    return has_jpeg, has_jpeg, None
-
-try:
-    note = None
-    if isinstance(source, int) and os.name == "nt":
-        cap = None
-        opened = False
-        ok = False
-        for cap_args in [(source, cv2.CAP_DSHOW), (source,)]:
-            cap, opened, ok = try_open(cap_args)
-            if opened and ok:
-                break
-        cap.release()
-    elif isinstance(source, str) and source.lower().startswith("rtsp://"):
-        opened, ok, note = try_ffmpeg(source, inner_timeout)
-    else:
-        cap, opened, ok = try_open((source,))
-        cap.release()
-    print(json.dumps({"ok": bool(opened and ok), "opened": opened, "frame_read": bool(ok), "note": note}))
-except Exception as exc:
-    print(json.dumps({"ok": False, "error": str(exc)}))
-"""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code, stream_url, str(timeout_seconds)],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
+    probe_id = f"probe-{int(time.time() * 1000)}"
+    manager = _get_stream_manager()
+    manager.start(
+        StreamSessionConfig(
+            channel_id=probe_id,
+            name="Camera probe",
+            source=stream_url,
+            snapshot_dir=SNAPSHOT_DIR,
         )
-    except subprocess.TimeoutExpired:
-        response = {"status": "failed", "message": "OpenCV timed out while waiting for a video frame."}
-        if endpoint is not None:
-            response["details"] = {
-                "host": endpoint["host"],
-                "port": endpoint["port"],
-                "scheme": endpoint["scheme"],
-                "endpoint_reachable": True,
-            }
-        return response
-
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
+    )
+    deadline = time.time() + max(1, int(timeout_seconds))
+    status: dict[str, Any] = {"status": "starting"}
     try:
-        payload = json.loads(stdout.splitlines()[-1]) if stdout else {}
-    except (IndexError, json.JSONDecodeError):
-        payload = {}
+        while time.time() < deadline:
+            status = manager.status(probe_id)
+            frame = manager.latest_frame_bytes(channel_id=probe_id)
+            if status.get("status") == "online" and frame:
+                response = {
+                    "status": "connected",
+                    "message": "Stream Manager opened the camera stream and returned a frame.",
+                }
+                if endpoint is not None:
+                    response["details"] = {
+                        "host": endpoint["host"],
+                        "port": endpoint["port"],
+                        "scheme": endpoint["scheme"],
+                        "stream_manager": True,
+                        "frame_read": True,
+                    }
+                return response
+            if status.get("last_error") and status.get("status") == "reconnecting":
+                break
+            time.sleep(0.1)
+    finally:
+        manager.stop(probe_id)
 
-    if payload.get("ok"):
-        response = {"status": "connected", "message": "Camera stream opened and returned a frame."}
-        if endpoint is not None:
-            response["details"] = {
-                "host": endpoint["host"],
-                "port": endpoint["port"],
-                "scheme": endpoint["scheme"],
-                "endpoint_reachable": True,
-                "opencv_opened": True,
-                "frame_read": True,
-            }
-        return response
-
-    if payload.get("opened") and payload.get("note") == "waiting_for_frame":
+    last_error = status.get("last_error")
+    if last_error:
         response = {
-            "status": "connected",
-            "message": (
-                "Camera endpoint is reachable and FFmpeg stayed connected, but no keyframe "
-                "arrived before the short test timeout. Stream Manager will keep waiting "
-                "and reconnecting until live frames arrive."
+            "status": "failed",
+            "message": _redact_sensitive_text(
+                f"Stream Manager could not read the camera stream: {last_error}"
             ),
         }
         if endpoint is not None:
@@ -1273,23 +1282,25 @@ except Exception as exc:
                 "host": endpoint["host"],
                 "port": endpoint["port"],
                 "scheme": endpoint["scheme"],
-                "endpoint_reachable": True,
-                "opencv_opened": True,
+                "stream_manager": True,
                 "frame_read": False,
-                "waiting_for_frame": True,
             }
         return response
 
-    message = payload.get("error") or stderr or "Camera stream could not be opened or returned no frame."
-    response = {"status": "failed", "message": message}
+    response = {
+        "status": "connected",
+        "message": (
+            "Stream Manager is connected or warming up; it will keep waiting "
+            "for the first video keyframe."
+        ),
+    }
     if endpoint is not None:
         response["details"] = {
             "host": endpoint["host"],
             "port": endpoint["port"],
             "scheme": endpoint["scheme"],
-            "endpoint_reachable": True,
-            "opencv_opened": bool(payload.get("opened")),
-            "frame_read": bool(payload.get("frame_read")),
+            "stream_manager": True,
+            "waiting_for_frame": True,
         }
     return response
 
@@ -1352,6 +1363,48 @@ def _catalog_safe_name(value: str) -> str:
     return cleaned[:100] or "reference.jpg"
 
 
+def _catalog_prompt_store() -> dict[str, Any]:
+    data = _read_json(CATALOG_PROMPTS_PATH) or {}
+    scopes = data.get("scopes")
+    return {"scopes": scopes if isinstance(scopes, dict) else {}}
+
+
+def _catalog_clean_prompts(values: list[str]) -> list[str]:
+    prompts: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        prompt = " ".join(str(raw).split()).strip()[:80]
+        normalized = _catalog_normalize_name(prompt)
+        if prompt and normalized and normalized not in seen:
+            seen.add(normalized)
+            prompts.append(prompt)
+    return prompts[:20]
+
+
+def _catalog_item_prompts(scope_id: str, item_id: str) -> list[str]:
+    scope_prompts = _catalog_prompt_store()["scopes"].get(scope_id) or {}
+    values = scope_prompts.get(str(item_id)) if isinstance(scope_prompts, dict) else []
+    return _catalog_clean_prompts(values if isinstance(values, list) else [])
+
+
+def _catalog_save_item_prompts(
+    scope_id: str, item_id: str, prompts: list[str]
+) -> list[str]:
+    data = _catalog_prompt_store()
+    scopes = data["scopes"]
+    scope_prompts = scopes.setdefault(scope_id, {})
+    cleaned = _catalog_clean_prompts(prompts)
+    if cleaned:
+        scope_prompts[str(item_id)] = cleaned
+    else:
+        scope_prompts.pop(str(item_id), None)
+    CATALOG_PROMPTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CATALOG_PROMPTS_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temporary.replace(CATALOG_PROMPTS_PATH)
+    return cleaned
+
+
 def _catalog_datetime(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -1406,11 +1459,39 @@ def _catalog_frame_embeddings(health: dict[str, Any]) -> dict[str, list[float]]:
         name = str(camera.get("name") or f"slot-{slot}")
         if not slot:
             continue
-        path = _live_feed_path(slot=int(slot))
-        frame = cv2.imread(str(path)) if path.exists() else None
+        frame = _catalog_live_frame_image(slot=int(slot), camera=name)
         if frame is not None:
             embeddings[name] = image_embedding(frame)
     return embeddings
+
+
+def _catalog_live_frame_image(slot: int | None = None, camera: str | None = None):
+    """Decode the current frame owned by Stream Manager for one camera."""
+    try:
+        import cv2
+        import numpy as np
+
+        data = _get_stream_manager().latest_frame_bytes(
+            slot_number=slot, name=camera
+        )
+        if data:
+            frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                return frame
+    except Exception:
+        pass
+
+    try:
+        import cv2
+    except ImportError:
+        return None
+    for path in _live_feed_paths(slot=slot, camera=camera):
+        if not path.exists():
+            continue
+        frame = cv2.imread(str(path))
+        if frame is not None:
+            return frame
+    return None
 
 
 def _catalog_health_snapshot() -> dict[str, Any]:
@@ -1453,11 +1534,9 @@ def _catalog_crop_candidates(health: dict[str, Any]) -> list[dict[str, Any]]:
     by_camera = health.get("last_detections_by_camera") or {}
     for camera_name, detections in by_camera.items():
         slot = slots_by_camera.get(str(camera_name))
-        frame = None
-        for path in _live_feed_paths(slot=int(slot) if slot else None, camera=str(camera_name)):
-            frame = cv2.imread(str(path)) if path.exists() else None
-            if frame is not None:
-                break
+        frame = _catalog_live_frame_image(
+            slot=int(slot) if slot else None, camera=str(camera_name)
+        )
         if frame is None:
             continue
 
@@ -1469,6 +1548,8 @@ def _catalog_crop_candidates(health: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "camera_name": str(camera_name),
                     "detection": detection,
+                    "frame": frame,
+                    "crop": crop,
                     "embedding": image_embedding(crop),
                 }
             )
@@ -1505,18 +1586,11 @@ def _catalog_live_frames(health: dict[str, Any], max_frames: int | None = None) 
             break
         slot = camera.get("slot_number")
         camera_name = str(camera.get("name") or f"slot-{slot}")
-        for path in _live_feed_paths(slot=int(slot) if slot else None, camera=camera_name):
-            if not path.exists():
-                continue
-            try:
-                import cv2
-
-                frame = cv2.imread(str(path))
-            except ImportError:
-                return frames
-            if frame is not None:
-                frames.append({"camera_name": camera_name, "slot": slot, "frame": frame})
-                break
+        frame = _catalog_live_frame_image(
+            slot=int(slot) if slot else None, camera=camera_name
+        )
+        if frame is not None:
+            frames.append({"camera_name": camera_name, "slot": slot, "frame": frame})
     return frames
 
 
@@ -1535,8 +1609,12 @@ def _catalog_detection_payload(detection) -> dict[str, Any]:
     return payload
 
 
-def _catalog_detection_prompts(items: list[dict[str, Any]]) -> list[str]:
+def _catalog_detection_prompts(
+    items: list[dict[str, Any]], scope_id: str
+) -> list[str]:
     prompts = [str(item["name"]) for item in items]
+    for item in items:
+        prompts.extend(_catalog_item_prompts(scope_id, str(item["id"])))
     prompts.extend(["cardboard box", "box", "carton box", "stack of boxes", "package"])
     seen: set[str] = set()
     unique = []
@@ -1548,24 +1626,39 @@ def _catalog_detection_prompts(items: list[dict[str, Any]]) -> list[str]:
     return unique
 
 
-def _catalog_detection_matches_item_prompt(detection: dict[str, Any], item_name: str) -> bool:
-    target = _catalog_normalize_name(item_name)
+def _catalog_detection_matches_item_prompt(
+    detection: dict[str, Any],
+    item_name: str,
+    aliases: list[str] | None = None,
+) -> bool:
+    targets = [
+        _catalog_normalize_name(value)
+        for value in [item_name, *(aliases or [])]
+        if _catalog_normalize_name(value)
+    ]
     labels = [
         _catalog_normalize_name(str(detection.get("inventory_name") or "")),
         _catalog_normalize_name(str(detection.get("class_name") or "")),
         _catalog_normalize_name(str(detection.get("object_type") or "")),
     ]
     labels = [label for label in labels if label]
-    if any(label == target or label in target or target in label for label in labels):
+    if any(
+        label == target or label in target or target in label
+        for target in targets
+        for label in labels
+    ):
         return True
 
-    if "box" in target:
+    if any("box" in target for target in targets):
         return any(
             any(term in label for term in ("box", "carton", "package", "cardboard"))
             for label in labels
         )
 
-    if any(term in target for term in ("sack", "bag")):
+    if any(
+        any(term in target for term in ("sack", "bag"))
+        for target in targets
+    ):
         return any(any(term in label for term in ("sack", "bag")) for label in labels)
 
     return False
@@ -1579,6 +1672,205 @@ def _catalog_detection_confidence(detection: dict[str, Any], fallback: float = 0
     return confidence if confidence > 0 else fallback
 
 
+def _catalog_camera_label(value: Any) -> str:
+    return str(value or "Camera").strip() or "Camera"
+
+
+def _catalog_visual_slug(value: Any) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("._-")
+    return slug[:80] or "visual"
+
+
+def _catalog_read_camera_frame(health: dict[str, Any], camera_name: str):
+    camera_label = _catalog_camera_label(camera_name)
+    slots_by_camera = {
+        _catalog_camera_label(camera.get("name") or f"slot-{camera.get('slot_number')}"): camera.get("slot_number")
+        for camera in health.get("cameras") or []
+    }
+    slot = slots_by_camera.get(camera_label)
+    return _catalog_live_frame_image(
+        slot=int(slot) if slot else None, camera=camera_label
+    )
+
+
+def _catalog_spatial_visuals(
+    health: dict[str, Any],
+    entries: list[tuple[str, dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    visuals: dict[str, dict[str, Any]] = {}
+    frames: dict[str, Any] = {}
+    for camera_name, detection in entries:
+        label = _catalog_camera_label(camera_name)
+        if label not in frames:
+            frames[label] = _catalog_read_camera_frame(health, label)
+        frame = frames[label]
+        crop = _catalog_detection_crop(frame, detection.get("bbox") or {}) if frame is not None else None
+        visuals.setdefault(label, {"frame": frame, "crop": crop, "detection": detection})
+    return visuals
+
+
+def _catalog_candidate_visuals(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    visuals: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        label = _catalog_camera_label(candidate.get("camera_name"))
+        visuals.setdefault(
+            label,
+            {
+                "frame": candidate.get("frame"),
+                "crop": candidate.get("crop"),
+                "detection": candidate.get("detection") or {},
+            },
+        )
+    return visuals
+
+
+def _catalog_save_visual_image(
+    scope_id: str,
+    run_id: str,
+    filename: str,
+    image: Any,
+) -> str | None:
+    if image is None or getattr(image, "size", 0) == 0:
+        return None
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    scope_slug = _catalog_visual_slug(scope_id)
+    run_slug = _catalog_visual_slug(run_id)
+    directory = SNAPSHOT_DIR / "catalog-recognition" / scope_slug / run_slug
+    directory.mkdir(parents=True, exist_ok=True)
+    file_slug = _catalog_visual_slug(filename)
+    path = directory / f"{file_slug}.jpg"
+    if not cv2.imwrite(str(path), image):
+        return None
+    return f"/snapshots/catalog-recognition/{quote(scope_slug)}/{quote(run_slug)}/{quote(path.name)}"
+
+
+def _catalog_persist_match_visuals(scope_id: str, run_id: str, match: dict[str, Any]) -> dict[str, Any]:
+    evidence = match.get("_visual_evidence") or {}
+    persisted = {key: value for key, value in match.items() if not key.startswith("_")}
+    if not evidence:
+        return persisted
+
+    camera_counts = []
+    item_slug = _catalog_visual_slug(persisted.get("item_name"))
+    for entry in persisted.get("camera_counts") or []:
+        enriched = dict(entry)
+        enriched.setdefault("detected_at", _now_iso())
+        camera_name = _catalog_camera_label(enriched.get("camera_name"))
+        visual = evidence.get(camera_name)
+        if visual:
+            prefix = f"{item_slug}_{_catalog_visual_slug(camera_name)}"
+            frame_url = _catalog_save_visual_image(scope_id, run_id, f"{prefix}_frame", visual.get("frame"))
+            crop_url = _catalog_save_visual_image(scope_id, run_id, f"{prefix}_object", visual.get("crop"))
+            detection = visual.get("detection") or {}
+            if frame_url:
+                enriched["frame_url"] = frame_url
+            if crop_url:
+                enriched["crop_url"] = crop_url
+            if detection.get("bbox"):
+                enriched["bbox"] = detection.get("bbox")
+            if detection.get("class_name") or detection.get("object_type"):
+                enriched["class_name"] = detection.get("class_name") or detection.get("object_type")
+        camera_counts.append(enriched)
+    persisted["camera_counts"] = camera_counts
+    return persisted
+
+
+def _catalog_camera_counts_payload(counts: dict[str, int]) -> list[dict[str, Any]]:
+    return [
+        {"camera_name": camera_name, "quantity": int(quantity)}
+        for camera_name, quantity in sorted(counts.items())
+        if int(quantity) > 0
+    ]
+
+
+def _catalog_count_objects_by_camera(
+    entries: list[tuple[str, dict[str, Any]]],
+) -> tuple[int, dict[str, int]]:
+    counts: dict[str, int] = {}
+    total = 0
+    for camera_name, obj in entries:
+        quantity = max(1, int(obj.get("quantity") or 1))
+        label = _catalog_camera_label(camera_name)
+        counts[label] = counts.get(label, 0) + quantity
+        total += quantity
+    return total, counts
+
+
+def _catalog_recognition_sample_count() -> int:
+    try:
+        count = int(os.getenv("CATALOG_RECOGNITION_SAMPLES", "3"))
+    except ValueError:
+        count = 3
+    return max(1, min(count, 8))
+
+
+def _catalog_recognition_sample_interval_seconds() -> float:
+    try:
+        interval = float(os.getenv("CATALOG_RECOGNITION_SAMPLE_INTERVAL_SECONDS", "0.2"))
+    except ValueError:
+        interval = 0.2
+    return max(0.0, min(interval, 2.0))
+
+
+def _catalog_match_rank(match: dict[str, Any]) -> tuple[int, float]:
+    quantity = max(0, int(match.get("quantity") or 0))
+    confidence = max(0.0, min(1.0, float(match.get("confidence") or 0.0)))
+    return quantity, confidence
+
+
+def _catalog_merge_match_samples(samples: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    camera_counts_by_item: dict[str, dict[str, int]] = {}
+    evidence_by_item: dict[str, dict[str, dict[str, Any]]] = {}
+
+    for sample in samples:
+        for match in sample:
+            item_id = str(match.get("item_id") or "")
+            if not item_id:
+                continue
+            current = merged.get(item_id)
+            if current is None or _catalog_match_rank(match) > _catalog_match_rank(current):
+                merged[item_id] = {key: value for key, value in match.items() if not key.startswith("_")}
+            item_counts = camera_counts_by_item.setdefault(item_id, {})
+            item_evidence = evidence_by_item.setdefault(item_id, {})
+            visual_evidence = match.get("_visual_evidence") or {}
+            for entry in match.get("camera_counts") or []:
+                quantity = max(0, int(entry.get("quantity") or 0))
+                if quantity <= 0:
+                    continue
+                camera_name = _catalog_camera_label(entry.get("camera_name"))
+                if quantity > item_counts.get(camera_name, 0):
+                    item_counts[camera_name] = quantity
+                    if visual_evidence.get(camera_name):
+                        item_evidence[camera_name] = visual_evidence[camera_name]
+
+    results: list[dict[str, Any]] = []
+    for item_id, match in merged.items():
+        item_counts = camera_counts_by_item.get(item_id, {})
+        if item_counts:
+            match["quantity"] = sum(item_counts.values())
+            match["camera_counts"] = _catalog_camera_counts_payload(item_counts)
+        if evidence_by_item.get(item_id):
+            match["_visual_evidence"] = evidence_by_item[item_id]
+        results.append(match)
+    return sorted(results, key=lambda result: (-int(result.get("quantity") or 0), str(result.get("item_name") or "")))
+
+
+def _catalog_sample_current_frame(scope_id: str, include_visuals: bool = False) -> list[dict[str, Any]]:
+    sample_count = _catalog_recognition_sample_count()
+    interval = _catalog_recognition_sample_interval_seconds()
+    samples: list[list[dict[str, Any]]] = []
+    for index in range(sample_count):
+        samples.append(_catalog_match_current_frame(scope_id, include_visuals=include_visuals))
+        if interval > 0 and index < sample_count - 1:
+            time.sleep(interval)
+    return _catalog_merge_match_samples(samples)
+
+
 def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
     global _catalog_yolo_detector, _catalog_yolo_detector_key
     if not prompts:
@@ -1589,9 +1881,9 @@ def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
     key = (
         det_cfg.get("model_path", "yolov8s-world.pt"),
         tuple(prompts),
-        float(os.getenv("CATALOG_YOLO_CONFIDENCE_THRESHOLD", "0.03")),
+        float(os.getenv("CATALOG_YOLO_CONFIDENCE_THRESHOLD", "0.01")),
         det_cfg.get("device", "cpu"),
-        int(os.getenv("CATALOG_YOLO_IMAGE_SIZE", "640")),
+        int(os.getenv("CATALOG_YOLO_IMAGE_SIZE", "1280")),
     )
     if _catalog_yolo_detector is not None and _catalog_yolo_detector_key == key:
         return _catalog_yolo_detector
@@ -1614,6 +1906,381 @@ def _catalog_yolo_for_prompts(prompts: list[str]) -> Detector | None:
         return None
 
 
+def _catalog_box_iou(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> float:
+    x1 = max(left[0], right[0])
+    y1 = max(left[1], right[1])
+    x2 = min(left[2], right[2])
+    y2 = min(left[3], right[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    if intersection <= 0:
+        return 0.0
+    left_area = max(1, (left[2] - left[0]) * (left[3] - left[1]))
+    right_area = max(1, (right[2] - right[0]) * (right[3] - right[1]))
+    return intersection / max(1, left_area + right_area - intersection)
+
+
+def _catalog_class_agnostic_boxes(frame) -> list[tuple[int, int, int, int]]:
+    """Return object-like regions without requiring a trained class label.
+
+    This intentionally uses inexpensive edge/contour proposals so it can run as
+    a fallback over many warehouse feeds. Product identity is decided later by
+    reference matching; these boxes only answer "where might an object be?".
+    """
+    try:
+        import cv2
+    except ImportError:
+        return []
+
+    height, width = frame.shape[:2]
+    if height < 32 or width < 32:
+        return []
+    max_dimension = max(height, width)
+    scale = min(1.0, 960.0 / max_dimension)
+    working = (
+        cv2.resize(frame, (max(1, int(width * scale)), max(1, int(height * scale))))
+        if scale < 1.0
+        else frame
+    )
+    gray = cv2.cvtColor(working, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(gray, 35, 110)
+    edges = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)),
+        iterations=2,
+    )
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    work_height, work_width = gray.shape[:2]
+    frame_area = float(work_height * work_width)
+    proposals: list[tuple[float, tuple[int, int, int, int]]] = []
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        area = float(box_width * box_height)
+        area_ratio = area / frame_area
+        aspect = box_width / max(1.0, float(box_height))
+        fill = float(cv2.contourArea(contour)) / max(1.0, area)
+        if (
+            area_ratio < 0.0015
+            or area_ratio > 0.65
+            or box_width < 24
+            or box_height < 24
+            or aspect < 0.15
+            or aspect > 6.5
+            or fill < 0.08
+        ):
+            continue
+        inverse_scale = 1.0 / scale
+        pad_x = max(4, int(box_width * 0.04))
+        pad_y = max(4, int(box_height * 0.04))
+        box = (
+            max(0, int((x - pad_x) * inverse_scale)),
+            max(0, int((y - pad_y) * inverse_scale)),
+            min(width, int((x + box_width + pad_x) * inverse_scale)),
+            min(height, int((y + box_height + pad_y) * inverse_scale)),
+        )
+        proposals.append((area_ratio * (0.5 + fill), box))
+
+    selected: list[tuple[int, int, int, int]] = []
+    max_per_camera = max(
+        1, min(int(os.getenv("CATALOG_PROPOSAL_MAX_PER_CAMERA", "24")), 60)
+    )
+    for _, box in sorted(proposals, key=lambda value: value[0], reverse=True):
+        if any(_catalog_box_iou(box, existing) >= 0.40 for existing in selected):
+            continue
+        selected.append(box)
+        if len(selected) >= max_per_camera:
+            break
+
+    # Plain cartons and wrapped products can have too few internal edges for a
+    # contour detector. Add a small deterministic set of overlapping regions
+    # so reference matching still receives candidates on low-texture frames.
+    minimum_proposals = max(
+        1, min(int(os.getenv("CATALOG_PROPOSAL_MIN_PER_CAMERA", "8")), 16)
+    )
+    grid_boxes: list[tuple[int, int, int, int]] = []
+    for rows, columns in ((2, 2), (3, 3)):
+        cell_width = width / columns
+        cell_height = height / rows
+        overlap_x = int(cell_width * 0.12)
+        overlap_y = int(cell_height * 0.12)
+        for row in range(rows):
+            for column in range(columns):
+                grid_boxes.append(
+                    (
+                        max(0, int(column * cell_width) - overlap_x),
+                        max(0, int(row * cell_height) - overlap_y),
+                        min(width, int((column + 1) * cell_width) + overlap_x),
+                        min(height, int((row + 1) * cell_height) + overlap_y),
+                    )
+                )
+    grid_boxes.insert(
+        0,
+        (
+            int(width * 0.15),
+            int(height * 0.15),
+            int(width * 0.85),
+            int(height * 0.85),
+        ),
+    )
+    for box in grid_boxes:
+        if len(selected) >= minimum_proposals or len(selected) >= max_per_camera:
+            break
+        if any(_catalog_box_iou(box, existing) >= 0.72 for existing in selected):
+            continue
+        selected.append(box)
+    return selected
+
+
+def _catalog_class_agnostic_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        from recognition.embedding import image_embedding
+    except ImportError:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for entry in frames:
+        frame = entry["frame"]
+        for index, (x1, y1, x2, y2) in enumerate(_catalog_class_agnostic_boxes(frame)):
+            detection = {
+                "track_id": f"proposal-{index}",
+                "class_name": "object proposal",
+                "object_type": "object proposal",
+                "confidence": 0.5,
+                "quantity": 1,
+                "method": "class-agnostic-edge-proposal",
+                "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+            }
+            crop = _catalog_detection_crop(frame, detection["bbox"])
+            if crop is None:
+                continue
+            candidates.append(
+                {
+                    "camera_name": entry["camera_name"],
+                    "detection": detection,
+                    "frame": frame,
+                    "crop": crop,
+                    "embedding": image_embedding(crop),
+                }
+            )
+    return candidates
+
+
+def _product_learning_public(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in session.items()
+        if not key.startswith("_")
+    }
+
+
+def _product_learning_preview(session_id: str, index: int, crop: Any) -> str | None:
+    try:
+        import cv2
+    except ImportError:
+        return None
+    directory = SNAPSHOT_DIR / "product-learning" / _catalog_visual_slug(session_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"view_{index:02d}.jpg"
+    if not cv2.imwrite(str(path), crop):
+        return None
+    return f"/snapshots/product-learning/{quote(_catalog_visual_slug(session_id))}/{quote(path.name)}"
+
+
+def _run_product_learning_session(session_id: str) -> None:
+    """Collect stable, diverse views of the object presented after Learn starts."""
+    try:
+        import cv2
+        from knowledge.similarity import cosine_similarity
+        from recognition.embedding import image_embedding
+
+        session = _product_learning_sessions[session_id]
+        duration = int(session["duration_seconds"])
+        baseline: dict[str, Any] = {}
+        ranked: list[dict[str, Any]] = []
+        started = time.monotonic()
+        sample_index = 0
+        while time.monotonic() - started < duration:
+            health = _catalog_health_snapshot()
+            frames = _catalog_live_frames(health, max_frames=100)
+            selected_camera = _catalog_camera_label(session["camera_name"])
+            frames = [
+                entry
+                for entry in frames
+                if _catalog_camera_label(entry.get("camera_name")) == selected_camera
+            ]
+            session["camera_count"] = max(int(session.get("camera_count") or 0), len(frames))
+            session["frames_seen"] = int(session.get("frames_seen") or 0) + len(frames)
+            session["remaining_seconds"] = max(
+                0, int(duration - (time.monotonic() - started))
+            )
+            for entry in frames:
+                frame = entry["frame"]
+                camera_name = _catalog_camera_label(entry["camera_name"])
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray = cv2.resize(gray, (320, 180))
+                previous = baseline.get(camera_name)
+                if previous is None:
+                    baseline[camera_name] = gray
+                    continue
+                motion_map = cv2.absdiff(previous, gray)
+                baseline[camera_name] = gray
+                height, width = frame.shape[:2]
+                scored: list[tuple[float, tuple[int, int, int, int], Any]] = []
+                for box in _catalog_class_agnostic_boxes(frame):
+                    x1, y1, x2, y2 = box
+                    crop = _catalog_detection_crop(
+                        frame, {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                    )
+                    if crop is None:
+                        continue
+                    mx1 = max(0, min(319, int(x1 * 320 / width)))
+                    my1 = max(0, min(179, int(y1 * 180 / height)))
+                    mx2 = max(mx1 + 1, min(320, int(x2 * 320 / width)))
+                    my2 = max(my1 + 1, min(180, int(y2 * 180 / height)))
+                    motion = float(motion_map[my1:my2, mx1:mx2].mean()) / 255.0
+                    area_ratio = ((x2 - x1) * (y2 - y1)) / max(1.0, width * height)
+                    sharpness = min(
+                        1.0,
+                        float(cv2.Laplacian(crop, cv2.CV_64F).var()) / 600.0,
+                    )
+                    center_x = (x1 + x2) / (2.0 * width)
+                    center_y = (y1 + y2) / (2.0 * height)
+                    centrality = max(
+                        0.0, 1.0 - (((center_x - 0.5) ** 2 + (center_y - 0.5) ** 2) ** 0.5)
+                    )
+                    score = motion * 5.0 + min(area_ratio, 0.35) + sharpness * 0.15 + centrality * 0.10
+                    scored.append((score, box, crop))
+                for score, box, crop in sorted(scored, key=lambda row: row[0], reverse=True)[:2]:
+                    ranked.append(
+                        {
+                            "score": score,
+                            "camera_name": camera_name,
+                            "bbox": box,
+                            "crop": crop,
+                            "sample_index": sample_index,
+                        }
+                    )
+                    session["proposal_count"] = int(session.get("proposal_count") or 0) + 1
+            sample_index += 1
+            time.sleep(1.0)
+
+        session["status"] = "processing"
+        session["remaining_seconds"] = 0
+        embedded: list[dict[str, Any]] = []
+        for candidate in sorted(ranked, key=lambda row: row["score"], reverse=True)[:80]:
+            candidate["embedding"] = image_embedding(candidate["crop"])
+            embedded.append(candidate)
+        if not embedded:
+            raise RuntimeError("No usable object candidates were found in the live camera frames.")
+
+        seed = embedded[0]
+        same_object = [
+            candidate
+            for candidate in embedded
+            if cosine_similarity(candidate["embedding"], seed["embedding"]) >= 0.50
+        ]
+        selected: list[dict[str, Any]] = []
+        seen_samples: set[tuple[str, int]] = set()
+        for candidate in same_object:
+            sample_key = (candidate["camera_name"], int(candidate["sample_index"]))
+            if sample_key in seen_samples:
+                continue
+            if selected and max(
+                cosine_similarity(candidate["embedding"], view["embedding"])
+                for view in selected
+            ) > 0.992:
+                continue
+            selected.append(candidate)
+            seen_samples.add(sample_key)
+            if len(selected) >= 8:
+                break
+        for candidate in same_object:
+            if len(selected) >= 4:
+                break
+            if all(candidate is not existing for existing in selected):
+                selected.append(candidate)
+        if len(selected) < 2:
+            raise RuntimeError(
+                "The object was not visible in enough distinct frames. Move or rotate it and try again."
+            )
+
+        catalog = _get_catalog_db()
+        existing_matches = []
+        for item in catalog.list_items(str(session["scope_id"]), active_only=True):
+            references = catalog.list_images(str(item["id"]), include_embeddings=True)
+            per_view_scores = [
+                max(
+                    (
+                        cosine_similarity(
+                            view["embedding"], reference.get("embedding") or []
+                        )
+                        for reference in references
+                    ),
+                    default=0.0,
+                )
+                for view in selected
+            ]
+            required_score = float(
+                os.getenv("CATALOG_EXISTING_PRODUCT_SIMILARITY_THRESHOLD", "0.82")
+            )
+            matching_indices = [
+                index
+                for index, score in enumerate(per_view_scores)
+                if score >= required_score
+            ]
+            strongest = sorted(per_view_scores, reverse=True)[:2]
+            score = sum(strongest) / len(strongest) if strongest else 0.0
+            existing_matches.append(
+                {
+                    "item_id": str(item["id"]),
+                    "name": str(item["name"]),
+                    "confidence": round(float(score), 4),
+                    "matching_view_indices": matching_indices,
+                    "matching_view_count": len(matching_indices),
+                }
+            )
+        existing_matches.sort(key=lambda match: match["confidence"], reverse=True)
+        session["existing_matches"] = existing_matches[:3]
+        threshold = float(
+            os.getenv("CATALOG_EXISTING_PRODUCT_SIMILARITY_THRESHOLD", "0.82")
+        )
+        session["existing_match"] = (
+            existing_matches[0]
+            if existing_matches
+            and existing_matches[0]["confidence"] >= threshold
+            and existing_matches[0]["matching_view_count"] >= 2
+            else None
+        )
+
+        previews = []
+        for index, view in enumerate(selected, start=1):
+            url = _product_learning_preview(session_id, index, view["crop"])
+            if url:
+                previews.append(
+                    {
+                        "index": index - 1,
+                        "url": url,
+                        "camera_name": view["camera_name"],
+                        "score": round(float(view["score"]), 4),
+                    }
+                )
+        session["_views"] = selected
+        session["views"] = previews
+        session["view_count"] = len(selected)
+        session["remaining_seconds"] = 0
+        session["status"] = "ready"
+        session["completed_at"] = _now_iso()
+    except Exception as exc:  # noqa: BLE001 - learning failures are returned to the operator
+        session = _product_learning_sessions.get(session_id)
+        if session is not None:
+            session["status"] = "failed"
+            session["remaining_seconds"] = 0
+            session["error"] = str(exc)
+            session["completed_at"] = _now_iso()
+        _audit("product_learning_failed", {"session_id": session_id, "error": str(exc)})
+
+
 def _catalog_fresh_yolo_crop_candidates(
     health: dict[str, Any],
     items: list[dict[str, Any]],
@@ -1623,15 +2290,51 @@ def _catalog_fresh_yolo_crop_candidates(
     except ImportError:
         return []
 
-    max_frames = int(os.getenv("CATALOG_RECOGNITION_MAX_FRAMES", "8"))
+    # Catalog recognition must cover every loaded feed. The previous default
+    # of eight silently skipped later channels (including channels 9, 10 and
+    # 19) even though the persistent detector was counting objects there.
+    max_frames = max(1, int(os.getenv("CATALOG_RECOGNITION_MAX_FRAMES", "100")))
     frames = _catalog_live_frames(health, max_frames=max_frames)
     if not frames:
         return []
 
-    prompts = _catalog_detection_prompts(items)
+    scope_id = str(items[0].get("scope_id") or "default")
+    prompts = _catalog_detection_prompts(items, scope_id)
+    scan = {
+        "started_at": _now_iso(),
+        "completed_at": None,
+        "camera_count": len(frames),
+        "cameras": [entry["camera_name"] for entry in frames],
+        "prompts": prompts,
+        "detection_count": 0,
+        "candidate_count": 0,
+        "proposal_count": 0,
+        "error": None,
+    }
+    _catalog_yolo_last_scan[scope_id] = scan
+    # Reference matching must never wait for a closed-set/prompt detector.
+    # Build candidates for every live frame first, then optionally enrich them
+    # with detector boxes. On CPU, running YOLO-World sequentially over 26
+    # cameras can take longer than the complete live-recognition countdown and
+    # previously meant the saved reference images were never consulted.
+    candidates = _catalog_class_agnostic_candidates(frames)
+    scan["proposal_source"] = "class_agnostic_reference"
+    scan["proposal_count"] = len(candidates)
+    scan["candidate_count"] = len(candidates)
+
+    run_prompt_detector = str(
+        os.getenv("CATALOG_RUN_PROMPT_DETECTOR", "false")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not run_prompt_detector:
+        scan["prompt_detector_skipped"] = True
+        scan["completed_at"] = _now_iso()
+        return candidates
+
     detector = _catalog_yolo_for_prompts(prompts)
     if detector is None:
-        return []
+        scan["error"] = "Prompt detector could not be loaded; reference proposals were used."
+        scan["completed_at"] = _now_iso()
+        return candidates
 
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     spatial_cfg = config.get("spatial_analysis", {})
@@ -1640,28 +2343,42 @@ def _catalog_fresh_yolo_crop_candidates(
         if spatial_cfg.get("enabled", False)
         else None
     )
-    candidates: list[dict[str, Any]] = []
-    for entry in frames:
-        frame = entry["frame"]
-        detections = detector.detect(frame)
-        if spatial_analyzer is not None:
-            spatial_analyzer.enrich(frame, detections)
-        for detection in detections:
-            payload = _catalog_detection_payload(detection)
-            crop = _catalog_detection_crop(frame, payload["bbox"])
-            if crop is None:
-                continue
-            candidates.append(
-                {
-                    "camera_name": entry["camera_name"],
-                    "detection": payload,
-                    "embedding": image_embedding(crop),
-                }
-            )
+    try:
+        for entry in frames:
+            frame = entry["frame"]
+            detections = detector.detect(frame)
+            scan["detection_count"] += len(detections)
+            if spatial_analyzer is not None:
+                spatial_analyzer.enrich(frame, detections)
+            for detection in detections:
+                payload = _catalog_detection_payload(detection)
+                crop = _catalog_detection_crop(frame, payload["bbox"])
+                if crop is None:
+                    continue
+                candidates.append(
+                    {
+                        "camera_name": entry["camera_name"],
+                        "detection": payload,
+                        "frame": frame,
+                        "crop": crop,
+                        "embedding": image_embedding(crop),
+                    }
+                )
+        if scan["detection_count"]:
+            scan["proposal_source"] = "class_agnostic_reference_and_prompt_detector"
+    except Exception as exc:
+        scan["error"] = str(exc)
+        _audit(
+            "catalog_yolo_scan_failed",
+            {"scope_id": scope_id, "error": str(exc)},
+        )
+    finally:
+        scan["candidate_count"] = len(candidates)
+        scan["completed_at"] = _now_iso()
     return candidates
 
 
-def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
+def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -> list[dict[str, Any]]:
     """One instantaneous pass: match catalog items (only items enrolled via
     AI Check-in) against whatever the detector's current spatial-object
     snapshot shows. Pure - reads live state but writes nothing, so both a
@@ -1677,34 +2394,55 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
         fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
         by_camera = {fallback_name: health.get("last_spatial_objects") or []}
     crop_candidates = _catalog_crop_candidates(health)
+    cached_candidate_count = len(crop_candidates)
     crop_candidates.extend(_catalog_fresh_yolo_crop_candidates(health, items))
+    scan = _catalog_yolo_last_scan.get(scope_id)
+    if scan is not None:
+        scan["cached_candidate_count"] = cached_candidate_count
+        scan["total_candidate_count"] = len(crop_candidates)
+        scan.setdefault("catalog_scores", {})
     frame_embeddings = _catalog_frame_embeddings(health)
     visual_threshold = float(os.getenv("CATALOG_VISUAL_SIMILARITY_THRESHOLD", "0.94"))
-    crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.90"))
+    # The local reference embedding is a compact color histogram + edge
+    # density, not a learned re-identification network. Requiring 0.90 made
+    # the same package fail after normal changes in angle, scale and lighting.
+    crop_threshold = float(os.getenv("CATALOG_CROP_SIMILARITY_THRESHOLD", "0.70"))
+    proposal_threshold = float(
+        os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.88")
+    )
+    if scan is not None:
+        scan["crop_similarity_threshold"] = crop_threshold
+        scan["proposal_similarity_threshold"] = proposal_threshold
 
     matches: list[dict[str, Any]] = []
     for item in items:
         target = _catalog_normalize_name(item["name"])
+        aliases = _catalog_item_prompts(scope_id, str(item["id"]))
+        targets = {target, *(_catalog_normalize_name(alias) for alias in aliases)}
         references = db.list_images(str(item["id"]), include_embeddings=True)
-        matched_objects: list[dict[str, Any]] = []
-        for objects in by_camera.values():
-            matched_objects.extend(
-                obj
+        matched_entries: list[tuple[str, dict[str, Any]]] = []
+        for camera_name, objects in by_camera.items():
+            matched_entries.extend(
+                (_catalog_camera_label(camera_name), obj)
                 for obj in objects or []
-                if _catalog_normalize_name(obj.get("inventory_name")) == target
+                if _catalog_normalize_name(obj.get("inventory_name")) in targets
             )
 
-        confidence = 1.0 if matched_objects else 0.0
-        quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in matched_objects)
-        measurement = matched_objects[0] if matched_objects else None
+        camera_counts: dict[str, int] = {}
+        quantity, camera_counts = _catalog_count_objects_by_camera(matched_entries)
+        confidence = 1.0 if quantity > 0 else 0.0
+        measurement = matched_entries[0][1] if matched_entries else None
         method = str(measurement.get("method") or "catalog-name-and-3d") if measurement else None
+        visual_evidence = _catalog_spatial_visuals(health, matched_entries) if include_visuals and matched_entries else {}
 
-        if not matched_objects:
+        if not matched_entries:
             if len(items) == 1:
                 prompt_matches = [
-                    candidate["detection"]
+                    candidate
                     for candidate in crop_candidates
-                    if _catalog_detection_matches_item_prompt(candidate["detection"], str(item["name"]))
+                    if _catalog_detection_matches_item_prompt(
+                        candidate["detection"], str(item["name"]), aliases
+                    )
                 ]
                 if prompt_matches:
                     min_confidence = float(
@@ -1712,29 +2450,39 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                     )
                     confidence = max(
                         min_confidence,
-                        max(_catalog_detection_confidence(detection) for detection in prompt_matches),
+                        max(
+                            _catalog_detection_confidence(candidate["detection"])
+                            for candidate in prompt_matches
+                        ),
                     )
-                    quantity = sum(
-                        max(1, int(detection.get("quantity") or 1))
-                        for detection in prompt_matches
+                    quantity, camera_counts = _catalog_count_objects_by_camera(
+                        [
+                            (_catalog_camera_label(candidate.get("camera_name")), candidate["detection"])
+                            for candidate in prompt_matches
+                        ]
                     )
-                    measurement = prompt_matches[0]
+                    measurement = prompt_matches[0]["detection"]
                     method = str(measurement.get("method") or "catalog-single-item-yolo-and-3d")
+                    if include_visuals:
+                        visual_evidence = _catalog_candidate_visuals(prompt_matches)
 
             if quantity > 0:
-                matches.append(
-                    {
-                        "item_id": str(item["id"]),
-                        "item_name": str(item["name"]),
-                        "quantity": quantity,
-                        "confidence": confidence,
-                        "dimensions_m": _catalog_dimensions(measurement),
-                        "measurement_method": method,
-                    }
-                )
+                match = {
+                    "item_id": str(item["id"]),
+                    "item_name": str(item["name"]),
+                    "quantity": quantity,
+                    "confidence": confidence,
+                    "dimensions_m": _catalog_dimensions(measurement),
+                    "measurement_method": method,
+                    "camera_counts": _catalog_camera_counts_payload(camera_counts),
+                }
+                if visual_evidence:
+                    match["_visual_evidence"] = visual_evidence
+                matches.append(match)
                 continue
 
             crop_matches: list[tuple[float, dict[str, Any]]] = []
+            best_crop_score = 0.0
             for candidate in crop_candidates:
                 score = max(
                     (
@@ -1743,19 +2491,34 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                     ),
                     default=0.0,
                 )
-                if score >= crop_threshold:
-                    crop_matches.append((score, candidate["detection"]))
+                best_crop_score = max(best_crop_score, score)
+                candidate_method = str(
+                    (candidate.get("detection") or {}).get("method") or ""
+                )
+                accepted_threshold = (
+                    proposal_threshold
+                    if candidate_method == "class-agnostic-edge-proposal"
+                    else crop_threshold
+                )
+                if score >= accepted_threshold:
+                    crop_matches.append((score, candidate))
+            if scan is not None:
+                scan["catalog_scores"][str(item["name"])] = round(best_crop_score, 4)
 
             if crop_matches:
                 confidence = max(score for score, _ in crop_matches)
-                quantity = sum(
-                    max(1, int(detection.get("quantity") or 1))
-                    for _, detection in crop_matches
+                quantity, camera_counts = _catalog_count_objects_by_camera(
+                    [
+                        (_catalog_camera_label(candidate.get("camera_name")), candidate["detection"])
+                        for _, candidate in crop_matches
+                    ]
                 )
-                measurement = crop_matches[0][1]
+                measurement = crop_matches[0][1]["detection"]
                 method = str(measurement.get("method") or "catalog-crop-reference-and-3d")
+                if include_visuals:
+                    visual_evidence = _catalog_candidate_visuals([candidate for _, candidate in crop_matches])
 
-        if not matched_objects and quantity <= 0:
+        if not matched_entries and quantity <= 0:
             best: tuple[float, str] | None = None
             for camera_name, frame_embedding in frame_embeddings.items():
                 score = max(
@@ -1768,20 +2531,83 @@ def _catalog_match_current_frame(scope_id: str) -> list[dict[str, Any]]:
                 confidence = best[0]
                 camera_objects = by_camera.get(best[1]) or []
                 quantity = sum(max(1, int(obj.get("quantity") or 1)) for obj in camera_objects) or 1
+                camera_counts = {_catalog_camera_label(best[1]): quantity}
                 measurement = camera_objects[0] if camera_objects else None
                 method = "catalog-reference-and-3d"
+                if include_visuals:
+                    visual_evidence = _catalog_spatial_visuals(health, [(best[1], measurement or {})])
 
-        matches.append(
-            {
-                "item_id": str(item["id"]),
-                "item_name": str(item["name"]),
-                "quantity": quantity,
-                "confidence": confidence,
-                "dimensions_m": _catalog_dimensions(measurement),
-                "measurement_method": method,
-            }
-        )
+        match = {
+            "item_id": str(item["id"]),
+            "item_name": str(item["name"]),
+            "quantity": quantity,
+            "confidence": confidence,
+            "dimensions_m": _catalog_dimensions(measurement),
+            "measurement_method": method,
+            "camera_counts": _catalog_camera_counts_payload(camera_counts),
+        }
+        if visual_evidence:
+            match["_visual_evidence"] = visual_evidence
+        matches.append(match)
     return matches
+
+
+def _catalog_unidentified_current_frame(
+    scope_id: str, include_visuals: bool = False
+) -> list[dict[str, Any]]:
+    """Count detector objects that do not match anything enrolled in AI Check-in.
+
+    Recognition results historically discarded these objects. A live counting
+    session must retain them, grouped by camera, so the reported total can be
+    reconciled with the objects visible in each feed.
+    """
+    db = _get_catalog_db()
+    items = db.list_items(scope_id, active_only=True)
+    if not items:
+        return []
+
+    health = _catalog_health_snapshot()
+    cameras = health.get("cameras") or []
+    by_camera = health.get("last_spatial_objects_by_camera") or {}
+    if not by_camera:
+        by_camera = health.get("last_detections_by_camera") or {}
+    if not by_camera and health.get("last_spatial_objects"):
+        fallback_name = str((cameras[-1] if cameras else {}).get("name") or "camera")
+        by_camera = {fallback_name: health.get("last_spatial_objects") or []}
+
+    unknown_entries: list[tuple[str, dict[str, Any]]] = []
+    for camera_name, objects in by_camera.items():
+        for obj in objects or []:
+            if any(
+                _catalog_detection_matches_item_prompt(
+                    obj,
+                    str(item["name"]),
+                    _catalog_item_prompts(scope_id, str(item["id"])),
+                )
+                for item in items
+            ):
+                continue
+            unknown_entries.append((_catalog_camera_label(camera_name), obj))
+
+    quantity, camera_counts = _catalog_count_objects_by_camera(unknown_entries)
+    if quantity <= 0:
+        return []
+
+    match: dict[str, Any] = {
+        # Use an enrolled item FK so existing result databases remain compatible;
+        # _state_key keeps this aggregate separate from that enrolled item.
+        "item_id": str(items[0]["id"]),
+        "item_name": "Unidentified",
+        "quantity": quantity,
+        "confidence": 0.0,
+        "dimensions_m": None,
+        "measurement_method": "unidentified-detector-object",
+        "camera_counts": _catalog_camera_counts_payload(camera_counts),
+        "_state_key": "__unidentified__",
+    }
+    if include_visuals:
+        match["_visual_evidence"] = _catalog_spatial_visuals(health, unknown_entries)
+    return [match]
 
 
 def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
@@ -1792,8 +2618,8 @@ def _run_catalog_recognition(scope_id: str) -> dict[str, Any]:
     interval = _catalog_interval_hours()
     run_id = db.start_run(scope_id, interval, len(cameras))
     try:
-        for match in _catalog_match_current_frame(scope_id):
-            db.add_result(run_id=run_id, **match)
+        for match in _catalog_sample_current_frame(scope_id, include_visuals=True):
+            db.add_result(run_id=run_id, **_catalog_persist_match_visuals(scope_id, run_id, match))
         db.complete_run(run_id)
     except Exception:
         db.complete_run(run_id, status="failed")
@@ -1826,25 +2652,56 @@ def _live_catalog_status_payload(scope_id: str) -> dict[str, Any]:
         "remaining_seconds": remaining,
         "results": results,
         "run_id": state.get("run_id"),
+        "yolo_scan": _catalog_yolo_last_scan.get(scope_id),
     }
 
 
 async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> None:
     global _catalog_run_lock
     state = _live_catalog_runs[scope_id]
+    live_visual_run_id = f"live-{_catalog_visual_slug(state['started_at'])}"
     try:
         while datetime.now(timezone.utc) < ends_at:
             try:
-                matches = await asyncio.to_thread(_catalog_match_current_frame, scope_id)
+                matches = await asyncio.to_thread(_catalog_match_current_frame, scope_id, True)
+                matches.extend(
+                    await asyncio.to_thread(
+                        _catalog_unidentified_current_frame, scope_id, True
+                    )
+                )
             except Exception as exc:  # keep sampling - one bad sample shouldn't end the run
                 state["error"] = str(exc)
             else:
                 for match in matches:
                     if match["quantity"] <= 0:
                         continue
-                    existing = state["items"].get(match["item_id"])
-                    if existing is None or match["confidence"] > existing["confidence"]:
-                        state["items"][match["item_id"]] = match
+                    state_key = str(match.get("_state_key") or match["item_id"])
+                    persisted = _catalog_persist_match_visuals(
+                        scope_id, live_visual_run_id, match
+                    )
+                    if match.get("_state_key"):
+                        persisted["_state_key"] = match["_state_key"]
+                    existing = state["items"].get(state_key)
+                    if existing is None:
+                        state["items"][state_key] = persisted
+                    else:
+                        merged = _catalog_merge_match_samples([[existing], [persisted]])[0]
+                        media_by_camera = {}
+                        for result in (existing, persisted):
+                            for entry in result.get("camera_counts") or []:
+                                if entry.get("frame_url") or entry.get("crop_url"):
+                                    media_by_camera[_catalog_camera_label(entry.get("camera_name"))] = entry
+                        for entry in merged.get("camera_counts") or []:
+                            media = media_by_camera.get(
+                                _catalog_camera_label(entry.get("camera_name"))
+                            )
+                            if media:
+                                for key in ("frame_url", "crop_url", "bbox", "class_name"):
+                                    if media.get(key) is not None:
+                                        entry[key] = media[key]
+                        if persisted.get("_state_key"):
+                            merged["_state_key"] = persisted["_state_key"]
+                        state["items"][state_key] = merged
             remaining = (ends_at - datetime.now(timezone.utc)).total_seconds()
             if remaining <= 0:
                 break
@@ -1854,12 +2711,12 @@ async def _run_live_catalog_recognition(scope_id: str, ends_at: datetime) -> Non
             _catalog_run_lock = asyncio.Lock()
         async with _catalog_run_lock:
             db = _get_catalog_db()
-            health = _read_json(DETECTION_HEALTH_PATH) or {}
+            health = _catalog_health_snapshot()
             run_id = db.start_run(
                 scope_id, _catalog_interval_hours(), len(health.get("cameras") or [])
             )
             for match in state["items"].values():
-                db.add_result(run_id=run_id, **match)
+                db.add_result(run_id=run_id, **_catalog_persist_match_visuals(scope_id, run_id, match))
             db.complete_run(run_id)
         state["status"] = "completed"
         state["run_id"] = run_id
@@ -1972,6 +2829,43 @@ def warehouse_stock() -> dict[str, Any]:
 def warehouse_movements(limit: int = 50) -> dict[str, Any]:
     db = _get_warehouse_db()
     return {"movements": db.recent_movements(limit=max(1, min(limit, 500)))}
+
+
+@app.get("/api/warehouse-engine/overview")
+def warehouse_engine_overview(limit: int = 100) -> dict[str, Any]:
+    db = EngineDatabase(str(WAREHOUSE_ENGINE_DB_PATH))
+    objects = db.objects(limit=max(1, min(limit, 500)))
+    events = db.events(limit=max(1, min(limit, 500)))
+    active = [row for row in objects if row.get("current_status") == "active"]
+    zones: dict[str, int] = {}
+    for row in active:
+        zone = str(row.get("current_zone") or "Unassigned")
+        zones[zone] = zones.get(zone, 0) + 1
+    return {
+        "detected_objects": len(objects),
+        "tracked_objects": len(active),
+        "inventory_objects": len(
+            [row for row in active if row.get("product_name")]
+        ),
+        "active_events": len(events),
+        "zone_statistics": zones,
+        "objects": objects,
+        "events": events,
+    }
+
+
+@app.get("/api/warehouse-engine/events")
+def warehouse_engine_events(limit: int = 200) -> dict[str, Any]:
+    return {
+        "events": EngineDatabase(str(WAREHOUSE_ENGINE_DB_PATH)).events(
+            limit=max(1, min(limit, 1000))
+        )
+    }
+
+
+@app.post("/api/warehouse-engine/tasks/parse")
+def warehouse_engine_parse_task(request: WarehouseTaskRequest) -> dict[str, Any]:
+    return {"prompt": request.prompt, "task": parse_task_prompt(request.prompt)}
 
 
 def _poll_process() -> None:
@@ -2238,6 +3132,7 @@ def _ensure_detection_running(reason: str = "watchdog") -> None:
 async def _detection_watchdog() -> None:
     await asyncio.sleep(int(os.getenv("DETECTION_AUTOSTART_DELAY_SECONDS", "8")))
     while _env_bool("DETECTION_WATCHDOG_ENABLED", True):
+        await asyncio.to_thread(_reconcile_active_streams, "watchdog")
         await asyncio.to_thread(_ensure_detection_running, "watchdog")
         await asyncio.sleep(int(os.getenv("DETECTION_WATCHDOG_INTERVAL_SECONDS", "30")))
 
@@ -2259,6 +3154,10 @@ async def _catalog_recognition_scheduler() -> None:
 @app.on_event("startup")
 async def start_detection_watchdog() -> None:
     global _catalog_recognition_task, _watchdog_task
+    # Stream registration must not depend on starting or restarting YOLO. An
+    # existing detector PID used to make the watchdog return early, leaving a
+    # freshly restarted MediaMTX instance with zero paths forever.
+    await asyncio.to_thread(_reconcile_active_streams, "backend_startup")
     if _watchdog_task is None or _watchdog_task.done():
         _watchdog_task = asyncio.create_task(_detection_watchdog())
     if _catalog_recognition_task is None or _catalog_recognition_task.done():
@@ -2767,8 +3666,14 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
     values = patch.model_dump(exclude_unset=True)
     if "model_path" in values:
         detection["model_path"] = values["model_path"]
+    if "fallback_model_path" in values:
+        detection["fallback_model_path"] = values["fallback_model_path"]
     if "confidence_threshold" in values:
         detection["confidence_threshold"] = values["confidence_threshold"]
+    if "iou_threshold" in values:
+        detection["iou_threshold"] = values["iou_threshold"]
+    if "max_detections" in values:
+        detection["max_detections"] = values["max_detections"]
     if "image_size" in values:
         detection["image_size"] = values["image_size"]
     if "device" in values:
@@ -2882,10 +3787,6 @@ def _register_controller_channels(
         raise HTTPException(status_code=400, detail=private_host_message)
 
     controller_error = None
-    if controller.test_controller:
-        controller_error = _check_camera_endpoint(endpoint)
-        if controller_error:
-            controller_error = _redact_sensitive_text(controller_error)
 
     saved_cameras = []
     test_results = []
@@ -2900,23 +3801,31 @@ def _register_controller_channels(
     # free slots right now still saves and tests every channel - it just
     # leaves the channels beyond the free-slot budget registered but
     # inactive instead of rejecting the whole request.
+    controller_stream_urls = [
+        _controller_stream_url(controller, controller.channel_start + index)
+        for index in range(controller.channel_count)
+    ]
+    controller_stream_url_set = set(controller_stream_urls)
+    all_cameras = db.list_cameras(include_secret=True)
     used_slots = {
         int(camera["slot_number"])
-        for camera in db.list_active_cameras(include_secret=False)
+        for camera in all_cameras
         if camera.get("slot_number") is not None
+        and camera.get("stream_url") not in controller_stream_url_set
     }
     next_slot = max(controller.start_slot, 1)
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
 
-    for index in range(controller.channel_count):
+    for index, stream_url in enumerate(controller_stream_urls):
         channel = controller.channel_start + index
-        stream_url = _controller_stream_url(controller, channel)
 
         if controller.test_streams and controller_reachable:
             test_result = _test_camera_stream(stream_url)
         elif controller_reachable:
             test_result = {
                 "status": "connected",
-                "message": f"Controller endpoint {endpoint['host']}:{endpoint['port']} is reachable.",
+                "message": "Controller channels registered; Stream Manager owns connection validation.",
             }
         else:
             test_result = {
@@ -2924,24 +3833,26 @@ def _register_controller_channels(
                 "message": controller_error or "Controller endpoint is not reachable.",
             }
 
-        saved = db.add_camera(
+        saved = db.upsert_camera_by_stream_url(
             name=_controller_camera_name(controller, channel, next_slot),
             stream_url=stream_url,
             status=test_result["status"],
         )
+        _delete_duplicate_stream_url_cameras(db, stream_url, int(saved["id"]))
 
         active = None
         assigned_slot = None
         stream_status = None
         message = test_result["message"]
         if controller.make_active and test_result["status"] == "connected":
-            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
-                next_slot += 1
-            if next_slot <= MAX_CAMERA_SLOTS:
-                active = db.assign_slot(saved["id"], next_slot)
-                used_slots.add(next_slot)
-                assigned_slot = next_slot
-                next_slot += 1
+            active, assigned_slot, next_slot = _activate_stream_managed_camera(
+                db,
+                int(saved["id"]),
+                next_slot,
+                used_slots,
+                reuse_existing_slot=False,
+            )
+            if active is not None:
                 stream_status = _start_stream_for_camera(active)
             else:
                 message = (
@@ -3031,7 +3942,22 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
         raise HTTPException(status_code=404, detail="Device not found.")
 
     port = request.port or STREAM_DEFAULT_PORTS.get(request.protocol.lower(), 554)
-    credentials = StreamCredentials(request.username or "", request.password or "")
+    username = request.username or ""
+    password = request.password or ""
+    if not username:
+        # Reuse credentials already stored server-side for this NVR host. This
+        # allows a rediscovered recorder to expand its channel count without
+        # sending secrets back to the browser or asking the operator again.
+        for camera in _get_camera_db().list_cameras(include_secret=True):
+            try:
+                parsed = urlsplit(str(camera.get("stream_url") or ""))
+            except ValueError:
+                continue
+            if parsed.hostname == str(device["host"]) and parsed.username:
+                username = parsed.username
+                password = parsed.password or ""
+                break
+    credentials = StreamCredentials(username, password)
     enumeration = enumerate_streams(
         host=str(device["host"]),
         port=port,
@@ -3052,32 +3978,44 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
         )
 
     camera_db = _get_camera_db()
+    stream_url_set = {stream.stream_url for stream in enumeration.channels}
+    all_cameras = camera_db.list_cameras(include_secret=True)
     used_slots = {
         int(camera["slot_number"])
-        for camera in camera_db.list_active_cameras(include_secret=False)
+        for camera in all_cameras
         if camera.get("slot_number") is not None
+        and camera.get("stream_url") not in stream_url_set
     }
     next_slot = 1
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
     channels = []
     stream_statuses = []
     for stream in enumeration.channels:
-        camera = camera_db.add_camera(
+        test_result = (
+            _test_camera_stream(stream.stream_url)
+            if request.test_streams
+            else {"status": "connected", "message": "Stream registered without a pre-flight test."}
+        )
+        camera = camera_db.upsert_camera_by_stream_url(
             name=f"{device['name']} {stream.name}",
             stream_url=stream.stream_url,
-            status="connected" if not request.test_streams else _test_camera_stream(stream.stream_url)["status"],
+            status=test_result["status"],
         )
+        _delete_duplicate_stream_url_cameras(camera_db, stream.stream_url, int(camera["id"]))
+
         assigned_slot = None
         active = None
-        if request.make_active:
-            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
-                next_slot += 1
-            if next_slot <= MAX_CAMERA_SLOTS:
-                active = camera_db.assign_slot(camera["id"], next_slot)
-                assigned_slot = next_slot
-                used_slots.add(next_slot)
-                next_slot += 1
+        if request.make_active and test_result["status"] == "connected":
+            active, assigned_slot, next_slot = _activate_stream_managed_camera(
+                camera_db,
+                int(camera["id"]),
+                next_slot,
+                used_slots,
+                reuse_existing_slot=False,
+            )
 
-        channel = db.add_channel(
+        channel = db.upsert_channel(
             device_id=device_id,
             external_channel_id=str(stream.channel),
             name=f"{device['name']} {stream.name}",
@@ -3087,18 +4025,41 @@ def v2_authenticate_device(device_id: int, request: V2DeviceAuthenticateRequest)
             slot_number=assigned_slot,
         )
         if active is not None:
-            status = _start_stream_for_camera(active)
+            try:
+                status = _start_stream_for_camera(active)
+            except Exception as exc:
+                # Registration is a database operation; a camera that is
+                # temporarily offline or already reconnecting must not abort
+                # the remaining NVR channels or produce a raw CORS-masked 500.
+                status = {
+                    "channel_id": str(active["id"]),
+                    "slot_number": active.get("slot_number"),
+                    "status": "reconnecting",
+                    "last_error": _redact_sensitive_text(str(exc)),
+                }
             db.update_stream_session(channel["id"], status)
             stream_statuses.append(status)
         channels.append(channel)
 
-    _sync_config_active_cameras(camera_db)
+    config_sync_warning = None
+    try:
+        _sync_config_active_cameras(camera_db)
+    except Exception as exc:
+        # The database is the source of truth. A stale/read-only compatibility
+        # YAML file must not turn a successful device registration into a raw
+        # 500 response (which browsers misleadingly report as a CORS failure).
+        config_sync_warning = _redact_sensitive_text(str(exc))
+        _audit(
+            "v2_device_config_sync_failed",
+            {"device_id": device_id, "error": config_sync_warning},
+        )
     _audit("v2_device_authenticate", {"device_id": device_id, "channels": len(channels)})
     return {
         "provider": enumeration.provider,
         "device": db.get_device(device_id),
         "channels": channels,
         "streams": stream_statuses,
+        "warning": config_sync_warning,
     }
 
 
@@ -3122,12 +4083,17 @@ def _register_discovered_channels(
     every channel is saved, and channels beyond the free active-slot budget
     are left registered-but-inactive rather than rejecting the whole request.
     """
+    stream_url_set = {stream.stream_url for stream in channels}
+    all_cameras = db.list_cameras(include_secret=True)
     used_slots = {
         int(camera["slot_number"])
-        for camera in db.list_active_cameras(include_secret=False)
+        for camera in all_cameras
         if camera.get("slot_number") is not None
+        and camera.get("stream_url") not in stream_url_set
     }
     next_slot = 1
+    while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
+        next_slot += 1
     results: list[dict[str, Any]] = []
 
     for stream in channels:
@@ -3136,24 +4102,26 @@ def _register_discovered_channels(
         else:
             test_result = {"status": "connected", "message": "Stream registered without a pre-flight test."}
 
-        saved = db.add_camera(
+        saved = db.upsert_camera_by_stream_url(
             name=f"{name_prefix} {stream.name}",
             stream_url=stream.stream_url,
             status=test_result["status"],
         )
+        _delete_duplicate_stream_url_cameras(db, stream.stream_url, int(saved["id"]))
 
         active = None
         assigned_slot = None
         stream_status = None
         message = test_result["message"]
         if make_active and test_result["status"] == "connected":
-            while next_slot in used_slots and next_slot <= MAX_CAMERA_SLOTS:
-                next_slot += 1
-            if next_slot <= MAX_CAMERA_SLOTS:
-                active = db.assign_slot(saved["id"], next_slot)
-                used_slots.add(next_slot)
-                assigned_slot = next_slot
-                next_slot += 1
+            active, assigned_slot, next_slot = _activate_stream_managed_camera(
+                db,
+                int(saved["id"]),
+                next_slot,
+                used_slots,
+                reuse_existing_slot=False,
+            )
+            if active is not None:
                 stream_status = _start_stream_for_camera(active)
             else:
                 message = (
@@ -3173,6 +4141,7 @@ def _register_discovered_channels(
                 "stream": stream_status,
             }
         )
+
     return results
 
 
@@ -3337,6 +4306,58 @@ def v2_stream_health() -> dict[str, Any]:
     return _get_stream_manager().status()
 
 
+@app.get("/api/v2/channels/{channel_id}/stream/routes")
+def v2_channel_stream_routes(channel_id: int) -> dict[str, Any]:
+    """Return internal AI plus browser WebRTC/HLS routes for one camera."""
+    manager = _get_stream_manager()
+    route = manager.route_info(str(channel_id))
+    status = manager.status(str(channel_id))
+    media_path = manager.media_client.path_status(route["dashboard_path"])
+    return {
+        "channel_id": str(channel_id),
+        "transport": status.get("transport", "direct"),
+        "routes": route,
+        "health": status,
+        "clients": len(media_path.get("readers") or []),
+        "media_path": media_path,
+    }
+
+
+@app.post("/api/v2/channels/{channel_id}/stream/restart")
+def v2_restart_stream(channel_id: int) -> dict[str, Any]:
+    status = _get_stream_manager().restart(str(channel_id))
+    if status.get("status") == "offline":
+        raise HTTPException(status_code=404, detail="Stream is not active.")
+    return {"restarted": True, "stream": status}
+
+
+@app.get("/api/v2/channels/{channel_id}/stream/snapshot")
+def v2_channel_stream_snapshot(channel_id: int) -> Response:
+    data = _get_stream_manager().latest_frame_bytes(channel_id=str(channel_id))
+    if data is None:
+        raise HTTPException(status_code=503, detail="No fresh camera frame is available.")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store", "X-AI-Frame-Source": "stream-manager"},
+    )
+
+
+@app.get("/api/v2/channels/{channel_id}/recording/status")
+def v2_channel_recording_status(channel_id: int) -> dict[str, Any]:
+    manager = _get_stream_manager()
+    route = manager.route_info(str(channel_id))
+    source_path = manager.media_client.path_status(route["source_path"])
+    return {
+        "channel_id": str(channel_id),
+        "enabled": bool(manager.media_client.enabled),
+        "recording": bool(source_path.get("record")),
+        "path": route["source_path"],
+        "storage_root": "/recordings",
+        "media_path": source_path,
+    }
+
+
 @app.get("/api/v2/channels/{channel_id}/stream/health")
 def v2_channel_stream_health(channel_id: int) -> dict[str, Any]:
     return _get_stream_manager().status(str(channel_id))
@@ -3411,18 +4432,20 @@ def test_saved_camera(camera_id: int) -> dict[str, Any]:
 def delete_saved_camera(camera_id: int) -> dict[str, Any]:
     db = _get_camera_db()
     deleted = db.delete_camera(camera_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Camera not found.")
-
-    _sync_config_active_cameras(db)
-    if _status()["running"]:
-        stop_detection()
-        start_detection(StartRequest())
+    if deleted:
+        try:
+            _sync_config_active_cameras(db)
+        except Exception as exc:
+            _audit(
+                "camera_config_sync_failed",
+                {"camera_id": camera_id, "error": _redact_sensitive_text(str(exc))},
+            )
 
     cameras = db.list_cameras(include_secret=False)
     active_cameras = [row for row in cameras if row["is_active"]]
     return {
-        "deleted": True,
+        "deleted": deleted,
+        "already_absent": not deleted,
         "cameras": cameras,
         "active_cameras": active_cameras,
         "active_camera": active_cameras[0] if active_cameras else None,
@@ -3546,7 +4569,13 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     global _process, _started_at, _last_exit_code, _stdout_handle, _stderr_handle, _manual_stop_requested
     request = request or StartRequest()
     if _detector_pid() is not None:
-        raise HTTPException(status_code=409, detail="Detection is already running.")
+        # Starting an already-running persistent service is a successful no-op.
+        # The dashboard may repeat this request after reconnects, navigation, or
+        # React remounts; treating that as a conflict creates a noisy 409 even
+        # though the requested state has already been reached.
+        status = _status()
+        status["already_running"] = True
+        return status
     # Clear the manual-stop latch as soon as a start is attempted, not after
     # validation succeeds. Otherwise a start that's triggered right after a
     # stop (e.g. restarting to pick up a newly added camera) and then fails
@@ -3806,11 +4835,189 @@ async def upload_inventory_image(item_id: str = Form(...), file: UploadFile = Fi
 def catalog_items(scope_id: str) -> dict[str, Any]:
     scope = _catalog_scope(scope_id)
     db = _get_catalog_db()
+    items = db.list_items(scope)
+    for item in items:
+        item["detection_prompts"] = _catalog_item_prompts(scope, str(item["id"]))
     return {
-        "items": db.list_items(scope),
+        "items": items,
         "schedule": _catalog_schedule(scope),
         "latest_run": db.latest_run(scope),
     }
+
+
+@app.post("/api/catalog/learning/start")
+async def start_product_learning(
+    scope_id: str, request: ProductLearningStart
+) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    active = next(
+        (
+            session
+            for session in _product_learning_sessions.values()
+            if session.get("scope_id") == scope
+            and session.get("status") in {"capturing", "processing"}
+        ),
+        None,
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="A product learning session is already active.")
+    session_id = secrets.token_urlsafe(18)
+    session = {
+        "session_id": session_id,
+        "scope_id": scope,
+        "status": "capturing",
+        "duration_seconds": request.duration_seconds,
+        "camera_name": _catalog_camera_label(request.camera_name),
+        "remaining_seconds": request.duration_seconds,
+        "started_at": _now_iso(),
+        "completed_at": None,
+        "camera_count": 0,
+        "frames_seen": 0,
+        "proposal_count": 0,
+        "view_count": 0,
+        "views": [],
+        "error": None,
+    }
+    _product_learning_sessions[session_id] = session
+    task = asyncio.create_task(asyncio.to_thread(_run_product_learning_session, session_id))
+    _product_learning_tasks[session_id] = task
+    _audit("product_learning_started", {"scope_id": scope, "session_id": session_id})
+    return _product_learning_public(session)
+
+
+@app.get("/api/catalog/learning/{session_id}")
+def product_learning_status(session_id: str, scope_id: str) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    session = _product_learning_sessions.get(session_id)
+    if not session or session.get("scope_id") != scope:
+        raise HTTPException(status_code=404, detail="Product learning session not found.")
+    return _product_learning_public(session)
+
+
+@app.post("/api/catalog/learning/save")
+def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[str, Any]:
+    import cv2
+
+    scope = _catalog_scope(scope_id)
+    session = _product_learning_sessions.get(request.session_id)
+    if not session or session.get("scope_id") != scope:
+        raise HTTPException(status_code=404, detail="Product learning session not found.")
+    if session.get("status") != "ready" or len(session.get("_views") or []) < 2:
+        raise HTTPException(status_code=409, detail="Product learning has not completed.")
+    product_name = " ".join(request.product_name.split()).strip()
+    db = _get_catalog_db()
+    all_views = session["_views"]
+    indices = sorted(set(int(index) for index in request.view_indices))
+    if any(index < 0 or index >= len(all_views) for index in indices):
+        raise HTTPException(status_code=400, detail="One or more selected views are invalid.")
+    views = [all_views[index] for index in indices]
+    if len(views) < 2:
+        raise HTTPException(status_code=400, detail="Select at least two product views.")
+    if request.existing_item_id:
+        item = db.get_item(request.existing_item_id)
+        if not item or str(item.get("scope_id")) != scope:
+            raise HTTPException(status_code=404, detail="Existing catalog product not found.")
+        product_name = str(item["name"])
+    else:
+        if any(
+            _catalog_normalize_name(item["name"]) == _catalog_normalize_name(product_name)
+            for item in db.list_items(scope)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This product already exists. Select the suggested existing product instead.",
+            )
+        item = db.create_item(scope, product_name)
+
+    item_dir = CATALOG_IMAGE_DIR / scope / str(item["id"])
+    item_dir.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time())
+    for index, view in enumerate(views, start=1):
+        filename = f"learned_{stamp}_{index:02d}.jpg"
+        path = item_dir / filename
+        if not cv2.imwrite(str(path), view["crop"]):
+            continue
+        frame = view["crop"]
+        db.add_image(
+            item_id=str(item["id"]),
+            filename=filename,
+            url=f"/snapshots/catalog/{quote(scope)}/{quote(str(item['id']))}/{quote(filename)}",
+            embedding=view["embedding"],
+            width_px=int(frame.shape[1]),
+            height_px=int(frame.shape[0]),
+        )
+
+    prompts = _catalog_save_item_prompts(
+        scope,
+        str(item["id"]),
+        [product_name, *_catalog_item_prompts(scope, str(item["id"]))],
+    )
+    global _catalog_yolo_detector, _catalog_yolo_detector_key
+    _catalog_yolo_detector = None
+    _catalog_yolo_detector_key = None
+    fingerprints = _read_json(PRODUCT_FINGERPRINTS_PATH) or {"products": {}}
+    previous_fingerprint = fingerprints.setdefault("products", {}).get(str(item["id"])) or {}
+    fingerprints["products"][str(item["id"])] = {
+        "product_id": str(item["id"]),
+        "product_name": product_name,
+        "scope_id": scope,
+        "created_at": previous_fingerprint.get("created_at") or _now_iso(),
+        "last_updated_at": _now_iso(),
+        "matching_confidence": float(
+            os.getenv("CATALOG_PROPOSAL_SIMILARITY_THRESHOLD", "0.62")
+        ),
+        "learning_statistics": {
+            "duration_seconds": session["duration_seconds"],
+            "camera_count": session["camera_count"],
+            "frames_seen": session["frames_seen"],
+            "proposal_count": session["proposal_count"],
+            "reference_count": len(db.list_images(str(item["id"]))),
+            "latest_learning_reference_count": len(views),
+            "updated_existing_product": bool(request.existing_item_id),
+        },
+        "detection_prompts": prompts,
+    }
+    PRODUCT_FINGERPRINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PRODUCT_FINGERPRINTS_PATH.write_text(
+        json.dumps(fingerprints, indent=2), encoding="utf-8"
+    )
+    session["status"] = "saved"
+    session["product_id"] = str(item["id"])
+    session["product_name"] = product_name
+    _audit(
+        "product_learning_saved",
+        {
+            "scope_id": scope,
+            "session_id": request.session_id,
+            "item_id": item["id"],
+            "name": product_name,
+            "reference_count": len(views),
+        },
+    )
+    return {
+        "item": db.get_item(str(item["id"])),
+        "fingerprint": fingerprints["products"][str(item["id"])],
+        "active": True,
+    }
+
+
+@app.put("/api/catalog/items/{item_id}/prompts")
+def update_catalog_item_prompts(
+    item_id: str, scope_id: str, update: CatalogPromptUpdate
+) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    item = _get_catalog_db().get_item(item_id)
+    if not item or item["scope_id"] != scope:
+        raise HTTPException(status_code=404, detail="Catalog item not found.")
+    prompts = _catalog_save_item_prompts(scope, item_id, update.prompts)
+    global _catalog_yolo_detector, _catalog_yolo_detector_key
+    _catalog_yolo_detector = None
+    _catalog_yolo_detector_key = None
+    _audit(
+        "catalog_prompts_updated",
+        {"scope_id": scope, "item_id": item_id, "prompts": prompts},
+    )
+    return {"item_id": item_id, "prompts": prompts}
 
 
 @app.post("/api/catalog/items")
@@ -3919,6 +5126,17 @@ def catalog_results(scope_id: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/catalog/results/history")
+def catalog_results_history(scope_id: str, limit: int = 200) -> dict[str, Any]:
+    scope = _catalog_scope(scope_id)
+    db = _get_catalog_db()
+    return {
+        "scope_id": scope,
+        "results": db.result_history(scope, limit=limit),
+        "schedule": _catalog_schedule(scope),
+    }
+
+
 @app.post("/api/catalog/recognition/run")
 async def run_catalog_recognition(scope_id: str) -> dict[str, Any]:
     global _catalog_run_lock
@@ -3943,7 +5161,7 @@ async def start_live_catalog_recognition(scope_id: str) -> dict[str, Any]:
     scope = _catalog_scope(scope_id)
     existing = _live_catalog_runs.get(scope)
     if existing and existing["status"] == "running":
-        raise HTTPException(status_code=409, detail="A live recognition run is already active for this scope.")
+        return _live_catalog_status_payload(scope)
 
     started_at = datetime.now(timezone.utc)
     ends_at = started_at + timedelta(seconds=CATALOG_LIVE_RUN_DURATION_SECONDS)
@@ -3976,7 +5194,7 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
     sheet.title = "Detected Items"
     sheet.sheet_view.showGridLines = False
     sheet.freeze_panes = "A6"
-    sheet.merge_cells("A1:G1")
+    sheet.merge_cells("A1:H1")
     sheet["A1"] = "AI Vision — Detected Item Count"
     sheet["A1"].font = Font(size=18, bold=True, color="FFFFFF")
     sheet["A1"].fill = PatternFill("solid", fgColor="1E3A5F")
@@ -3990,7 +5208,16 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
     sheet["B4"] = scope_id
     sheet["D4"] = "Detected item types"
     sheet["E4"] = len(results)
-    headers = ["Item", "Count", "Confidence", "Width (cm)", "Height (cm)", "Depth (cm)", "3D method"]
+    headers = [
+        "Item",
+        "Count",
+        "Camera / objects",
+        "Confidence",
+        "Width (cm)",
+        "Height (cm)",
+        "Depth (cm)",
+        "3D method",
+    ]
     sheet.append(headers)
     header_fill = PatternFill("solid", fgColor="2563EB")
     for cell in sheet[5]:
@@ -4002,6 +5229,12 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
             [
                 result["item_name"],
                 int(result["quantity"]),
+                ", ".join(
+                    f"{entry.get('camera_name')}: {int(entry.get('quantity') or 0)}"
+                    for entry in result.get("camera_counts") or []
+                    if int(entry.get("quantity") or 0) > 0
+                )
+                or "Unknown camera",
                 float(result["confidence"]),
                 round(float(result["width_m"]) * 100, 1) if result.get("width_m") else None,
                 round(float(result["height_m"]) * 100, 1) if result.get("height_m") else None,
@@ -4010,7 +5243,7 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
             ]
         )
     if results:
-        table = Table(displayName="DetectedItems", ref=f"A5:G{5 + len(results)}")
+        table = Table(displayName="DetectedItems", ref=f"A5:H{5 + len(results)}")
         table.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium2",
             showFirstColumn=False,
@@ -4021,20 +5254,21 @@ def _catalog_export_workbook(scope_id: str) -> bytes:
         sheet.add_table(table)
     sheet.column_dimensions["A"].width = 30
     sheet.column_dimensions["B"].width = 12
-    sheet.column_dimensions["C"].width = 14
+    sheet.column_dimensions["C"].width = 30
     sheet.column_dimensions["D"].width = 14
     sheet.column_dimensions["E"].width = 14
     sheet.column_dimensions["F"].width = 14
-    sheet.column_dimensions["G"].width = 30
-    for row in sheet.iter_rows(min_row=6, max_row=5 + len(results), min_col=2, max_col=6):
+    sheet.column_dimensions["G"].width = 14
+    sheet.column_dimensions["H"].width = 30
+    for row in sheet.iter_rows(min_row=6, max_row=5 + len(results), min_col=2, max_col=7):
         for cell in row:
             cell.alignment = Alignment(horizontal="center")
-    for cell in sheet["C"][5:]:
+    for cell in sheet["D"][5:]:
         cell.number_format = "0.0%"
-    for column in ("D", "E", "F"):
+    for column in ("E", "F", "G"):
         for cell in sheet[column][5:]:
             cell.number_format = "0.0"
-    sheet.auto_filter.ref = f"A5:G{max(5, 5 + len(results))}"
+    sheet.auto_filter.ref = f"A5:H{max(5, 5 + len(results))}"
     sheet.print_title_rows = "1:5"
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.fitToWidth = 1
@@ -4198,32 +5432,168 @@ async def stream_logs():
 
 @app.get("/api/live_mjpeg")
 async def live_mjpeg(slot: int | None = None, camera: str | None = None):
-    """Return a multipart/x-mixed-replace MJPEG stream by repeatedly
-    reading the latest frame written by the detector. Use ?slot=1, ?slot=2,
-    etc. to view individual active camera screens.
-    """
+    """Stream frames from the persistent Stream Manager's shared buffer."""
 
     boundary = "frame"
-    latest_paths = _live_feed_paths(slot=slot, camera=camera)
 
     async def frame_generator():
+        last_sent: bytes | None = None
         while True:
-            latest = next((path for path in latest_paths if path.exists()), None)
-            if latest is not None:
+            data = _get_stream_manager().latest_frame_bytes(slot_number=slot, name=camera)
+            # Only push a part when the frame actually changed, so the MJPEG
+            # stream tracks the Stream Manager's real frame rate instead of
+            # re-transmitting the same JPEG on every poll.
+            if data is not None and data is not last_sent and data != last_sent:
                 try:
-                    data = latest.read_bytes()
                     header = (
                         f"--{boundary}\r\n"
                         "Content-Type: image/jpeg\r\n"
                         f"Content-Length: {len(data)}\r\n\r\n"
                     ).encode("utf-8")
                     yield header + data + b"\r\n"
+                    last_sent = data
                 except Exception:
                     # ignore read errors
                     pass
-            await asyncio.sleep(0.05)
+            # Poll faster than the source frame rate so new frames are forwarded
+            # with minimal latency (Stream Manager publishes up to ~15 fps).
+            await asyncio.sleep(0.03)
 
     return StreamingResponse(frame_generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
+
+
+@app.websocket("/api/live_ws")
+async def live_websocket(websocket: WebSocket):
+    """Multiplex every requested camera over one continuous connection.
+
+    Binary messages contain a two-byte unsigned slot number, an eight-byte
+    backend generation timestamp in Unix milliseconds, then one complete JPEG.
+    The timestamp is also burned visibly into the JPEG for stopwatch tests.
+    """
+
+    raw_slots = websocket.query_params.get("slots", "")
+    slots = sorted(
+        {
+            int(value)
+            for value in raw_slots.split(",")
+            if value.strip().isdigit() and 1 <= int(value) <= MAX_CAMERA_SLOTS
+        }
+    )
+    if not slots:
+        await websocket.close(code=1008, reason="At least one camera slot is required.")
+        return
+
+    await websocket.accept()
+    last_sent: dict[int, bytes] = {}
+    target_fps = max(1.0, min(float(os.getenv("LIVE_WEBSOCKET_FPS", "10")), 15.0))
+    interval = 1.0 / target_fps
+    try:
+        while True:
+            cycle_started = time.monotonic()
+            for slot in slots:
+                packet = _get_stream_manager().latest_frame_packet(slot_number=slot)
+                if packet is None:
+                    continue
+                data, generated_at_ms = packet
+                if data is None or data == last_sent.get(slot):
+                    continue
+                await websocket.send_bytes(
+                    struct.pack("!HQ", slot, generated_at_ms) + data
+                )
+                last_sent[slot] = data
+            elapsed = time.monotonic() - cycle_started
+            await asyncio.sleep(max(0.001, interval - elapsed))
+    except (WebSocketDisconnect, RuntimeError):
+        return
+
+
+@app.post("/api/v2/streams/webrtc/{slot}/whep")
+async def start_webrtc_session(slot: int, request: Request):
+    """Proxy one complete-ICE WHEP offer to MediaMTX over the private network."""
+    if not 1 <= slot <= MAX_CAMERA_SLOTS:
+        raise HTTPException(status_code=404, detail="Camera slot not found.")
+    stream = next(
+        (
+            item for item in _get_stream_manager().status().get("streams", [])
+            if int(item.get("slot_number") or 0) == slot
+        ),
+        None,
+    )
+    route = (stream or {}).get("routes") or {}
+    dashboard_path = route.get("dashboard_path")
+    if not dashboard_path:
+        raise HTTPException(status_code=404, detail="WebRTC route is unavailable.")
+    offer = await request.body()
+    target = (
+        f"{os.getenv('MEDIAMTX_WEBRTC_URL', 'http://mediamtx:8889').rstrip('/')}"
+        f"/{quote(str(dashboard_path), safe='')}/whep"
+    )
+
+    def exchange() -> tuple[int, bytes, dict[str, str]]:
+        upstream = UrlRequest(
+            target,
+            data=offer,
+            method="POST",
+            headers={"Content-Type": "application/sdp"},
+        )
+        try:
+            with urlopen(upstream, timeout=10) as response:
+                return response.status, response.read(), dict(response.headers.items())
+        except UrlHTTPError as exc:
+            return exc.code, exc.read(), dict(exc.headers.items())
+
+    status_code, body, headers = await asyncio.to_thread(exchange)
+    if status_code >= 400:
+        raise HTTPException(
+            status_code=status_code,
+            detail=body.decode("utf-8", errors="replace") or "MediaMTX rejected the WHEP offer.",
+        )
+    return Response(
+        content=body,
+        status_code=status_code,
+        media_type="application/sdp",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/v2/streams/runtime-metrics")
+async def stream_runtime_metrics():
+    streams = _get_stream_manager().status().get("streams", [])
+
+    def cpu_ticks() -> tuple[int, int]:
+        values = [
+            int(value)
+            for value in Path("/proc/stat").read_text().splitlines()[0].split()[1:]
+        ]
+        return sum(values), values[3] + (values[4] if len(values) > 4 else 0)
+
+    total_before, idle_before = cpu_ticks()
+    await asyncio.sleep(0.1)
+    total_after, idle_after = cpu_ticks()
+    total_delta = max(1, total_after - total_before)
+    cpu_percent = round(
+        100.0 * (1.0 - max(0, idle_after - idle_before) / total_delta), 1
+    )
+    meminfo = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        key, value = line.split(":", 1)
+        meminfo[key] = int(value.strip().split()[0])
+    host_memory_used_mb = round(
+        (meminfo.get("MemTotal", 0) - meminfo.get("MemAvailable", 0)) / 1024,
+        1,
+    )
+    return {
+        "measured_at_ms": int(time.time() * 1000),
+        "process_cpu_percent": cpu_percent,
+        "process_memory_mb": host_memory_used_mb,
+        "online_streams": sum(1 for item in streams if item.get("status") == "online"),
+        "aggregate_jpeg_kbps": round(
+            sum(float(item.get("bitrate_kbps") or 0) for item in streams), 1
+        ),
+        "aggregate_output_fps": round(
+            sum(float(item.get("output_fps") or 0) for item in streams), 2
+        ),
+    }
 
 
 @app.get("/api/live_frame")
@@ -4236,24 +5606,19 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
     screens stuck on "Waiting for frames" even when the backend is healthy.
     """
 
-    latest = next((path for path in _live_feed_paths(slot=slot, camera=camera) if path.exists()), None)
-    if latest is None:
-        raise HTTPException(status_code=404, detail="No live frame is available yet.")
+    data = _get_stream_manager().latest_frame_bytes(slot_number=slot, name=camera)
+    if data and data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
+        return Response(
+            content=data,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "X-AI-Frame-Source": "stream-manager",
+            },
+        )
 
-    for _ in range(5):
-        data = latest.read_bytes()
-        if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
-            return Response(
-                content=data,
-                media_type="image/jpeg",
-                headers={
-                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                    "Pragma": "no-cache",
-                },
-            )
-        await asyncio.sleep(0.03)
-
-    raise HTTPException(status_code=503, detail="Latest live frame is being written; retry.")
+    raise HTTPException(status_code=404, detail="No live frame is available yet.")
 
 
 def _live_feed_path(slot: int | None = None, camera: str | None = None) -> Path:
@@ -4272,7 +5637,8 @@ def _live_feed_paths(slot: int | None = None, camera: str | None = None) -> list
     if camera:
         safe_name = "".join(ch if ch.isalnum() else "_" for ch in camera).strip("_") or "camera"
         paths.append(SNAPSHOT_DIR / f"latest_{safe_name}.jpg")
-    paths.append(SNAPSHOT_DIR / "latest.jpg")
+    if slot is None and not camera:
+        paths.append(SNAPSHOT_DIR / "latest.jpg")
     return paths
 
 

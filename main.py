@@ -4,7 +4,7 @@ main.py
 AI Vision Assistant entry point.
 
 What this does:
-  1. Connects to one or more webcam / RTSP cameras.          (FR-1)
+  1. Reads frames published by Stream Manager.                (FR-1)
   2. Runs YOLO object detection on every frame.               (FR-2)
   3. Draws bounding boxes, labels, confidence, FPS.           (FR-3)
   4. Shows live per-class object counts.                      (FR-4)
@@ -40,16 +40,17 @@ import yaml
 from cameras.camera import load_cameras
 from streams.frame_source import load_processing_cameras
 from detection.detector import Detector
+from detection.scheduler import LatestFrameInferenceScheduler
 from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
 from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
 from database.warehouse_db import WarehouseDB
-from tracking.line_counter import AppearanceCounter, LineCounter
 from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
+from warehouse_engine import WarehouseEngine
 
 
 def load_config(path: str) -> dict:
@@ -81,15 +82,17 @@ def main():
     # --- Frame source (V2 stream-first architecture) ---
     #
     # The API server starts the Stream Manager and sets AI_VISION_STREAM_FIRST=1.
-    # In that mode YOLO consumes already-published frames from snapshots instead
-    # of opening RTSP/NVR connections directly. Direct camera loading remains as
-    # a local developer fallback for running this file by hand.
+    # YOLO consumes the Stream Manager's cross-process frame buffers instead of
+    # opening RTSP/NVR connections directly. Direct camera loading is reserved for an
+    # explicit local developer override and is not used by the backend path.
     snap_cfg = config.get("snapshots", {})
     snapshots_dir = snap_cfg.get("save_dir", "snapshots")
-    stream_first = os.getenv("AI_VISION_STREAM_FIRST", "1") != "0"
+    direct_camera_override = os.getenv("AI_VISION_ALLOW_DIRECT_CAMERA", "0") == "1"
+    stream_first = os.getenv("AI_VISION_STREAM_FIRST", "1") != "0" or not direct_camera_override
     if stream_first:
         cameras = load_processing_cameras(config["cameras"], snapshot_dir=snapshots_dir)
     else:
+        print("WARNING: direct camera mode is enabled for local development only.")
         cameras = load_cameras(config["cameras"])
     if not cameras:
         _write_detection_health(
@@ -120,11 +123,21 @@ def main():
         class_prompts=det_cfg.get("class_prompts"),
         image_size=det_cfg.get("image_size", 640),
         class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
+        iou_threshold=det_cfg.get("iou_threshold", 0.55),
+        max_detections=det_cfg.get("max_detections", 300),
+        compile_model=det_cfg.get("compile", False),
+        fallback_model_path=det_cfg.get("fallback_model_path"),
     )
     if detector.model is None:
         print("Using deterministic dummy detector. Starting demo run...")
     else:
-        print("Model loaded. Starting live detection... (press 'q' to quit)")
+        model_health = detector.health()
+        print(
+            "Ultralytics model loaded: "
+            f"{model_health['active_model']} on {model_health['device']}"
+            + (" (fallback)" if model_health["fallback_used"] else "")
+        )
+        print("Starting live detection... (press 'q' to quit)")
 
     spatial_cfg = config.get("spatial_analysis", {})
     spatial_analyzer = (
@@ -142,20 +155,25 @@ def main():
     # --- Tracking (Phase 3) + occupancy (Phase 4) ---
     track_cfg = config.get("tracking", {})
     tracking_enabled = track_cfg.get("enabled", True)
-    object_tracker = None
+    object_trackers = {}
     presence_tracker = None
     tracking_db = None
 
     if tracking_enabled and detector.model is not None:
-        object_tracker = ObjectTracker(
-            model=detector.model,
-            confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
-            device=det_cfg.get("device", "cpu"),
-            classes=track_cfg.get("classes", det_cfg.get("classes")),
-            tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
-            image_size=det_cfg.get("image_size", 640),
-            class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
-        )
+        object_trackers = {
+            cam.name: ObjectTracker(
+                model=detector.model,
+                confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
+                device=detector.device,
+                classes=track_cfg.get("classes", det_cfg.get("classes")),
+                tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
+                image_size=det_cfg.get("image_size", 640),
+                class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
+                iou_threshold=det_cfg.get("iou_threshold", 0.55),
+                max_detections=det_cfg.get("max_detections", 300),
+            )
+            for cam in cameras
+        }
         presence_tracker = PresenceTracker(
             grace_period_seconds=track_cfg.get("grace_period_seconds", 5.0)
         )
@@ -165,29 +183,53 @@ def main():
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
         )
 
-    # --- Warehouse stock counting MVP ---
+    # --- Warehouse Intelligence Engine ---
     warehouse_cfg = config.get("warehouse_counting", {})
-    warehouse_enabled = warehouse_cfg.get("enabled", False)
+    engine_cfg = {**warehouse_cfg, **config.get("warehouse_engine", {})}
+    warehouse_enabled = engine_cfg.get("enabled", warehouse_cfg.get("enabled", False))
     warehouse_db = None
-    warehouse_counters = {}
-    reviewed_unknown_ids: set[tuple[str, int]] = set()
+    warehouse_engine = None
     if warehouse_enabled:
         warehouse_db = WarehouseDB(db_path=warehouse_cfg.get("db_path", "database/warehouse.db"))
-        count_mode = warehouse_cfg.get("mode", "appearance")
-        line = warehouse_cfg.get(
-            "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
-        )
-        warehouse_counters = {
-            cam.name: (
-                LineCounter(line=line, camera_id=cam.name)
-                if count_mode == "line"
-                else AppearanceCounter(camera_id=cam.name)
+
+        def accepted_movement_sink(event, detection):
+            warehouse_db.record_movement(
+                product_name=event.product_name,
+                direction="IN" if event.inventory_delta > 0 else "OUT",
+                camera_id=event.camera_id,
+                tracking_id=getattr(detection, "track_id", None),
+                confidence=event.confidence,
+                quantity=abs(event.inventory_delta),
+                object_type=getattr(detection, "object_type", None),
+                dimensions_m=(
+                    getattr(detection, "width_m", None),
+                    getattr(detection, "height_m", None),
+                    getattr(detection, "depth_m", None),
+                )
+                if all(
+                    getattr(detection, field, None) is not None
+                    for field in ("width_m", "height_m", "depth_m")
+                )
+                else None,
+                distance_m=getattr(detection, "distance_m", None),
+                quantity_grid=getattr(detection, "quantity_grid", (1, 1, 1)),
+                measurement_method=getattr(detection, "method", None),
             )
-            for cam in cameras
-        }
+        warehouse_engine = WarehouseEngine(
+            {
+                **engine_cfg,
+                "db_path": engine_cfg.get("engine_db_path", "database/warehouse_engine.db"),
+                "minimum_confidence": engine_cfg.get(
+                    "minimum_confidence",
+                    warehouse_cfg.get("confidence_threshold", 0.8),
+                ),
+            },
+            movement_sink=accepted_movement_sink,
+        )
         print(
-            f"Warehouse counting enabled ({count_mode} mode). "
-            f"Stock DB: {warehouse_db.db_path}"
+            "Warehouse Intelligence Engine enabled. "
+            f"Engine DB: {warehouse_engine.database.path}; "
+            f"compatibility stock DB: {warehouse_db.db_path}"
         )
 
     # --- Product recognition knowledge engine ---
@@ -241,18 +283,17 @@ def main():
     last_spatial_objects = []
     last_spatial_objects_by_camera = {}
     last_detections_by_camera = {}
+    inference_by_camera = {}
 
     prev_time = time.time()
     frame_number = 0
     dummy_positions = {cam.name: 0 for cam in cameras}
 
-    # Real inference is the expensive part on a CPU-only droplet, not video
-    # capture. `target_fps` throttles how often each camera actually runs the
-    # model (reusing the last detections in between), and max_concurrent_cameras
-    # caps how many cameras run real inference at all - every camera still
-    # streams live video regardless of this cap.
+    # Capture stays independent from inference. Each camera has one replaceable
+    # pending frame, so a slow model drops old work instead of building delay.
     target_detection_fps = float(det_cfg.get("target_fps", 0) or 0)
     min_detection_interval = 1.0 / target_detection_fps if target_detection_fps > 0 else 0.0
+    stale_after_ms = int(det_cfg.get("stale_after_ms", 3000))
     max_concurrent_cameras = int(det_cfg.get("max_concurrent_cameras", 0) or 0)
     inference_camera_names = (
         {cam.name for cam in cameras[:max_concurrent_cameras]}
@@ -260,7 +301,18 @@ def main():
         else {cam.name for cam in cameras}
     )
     last_detection_at = {cam.name: 0.0 for cam in cameras}
-    last_detections: dict[str, list] = {cam.name: [] for cam in cameras}
+    processors = {
+        cam.name: (
+            object_trackers[cam.name].update
+            if cam.name in object_trackers
+            else detector.detect
+        )
+        for cam in cameras
+        if cam.name in inference_camera_names and detector.model is not None
+    }
+    inference_scheduler = (
+        LatestFrameInferenceScheduler(processors) if processors else None
+    )
 
     try:
         while True:
@@ -271,8 +323,6 @@ def main():
 
             any_frame = False
             for cam in cameras:
-                if stream_first and cam.name not in inference_camera_names:
-                    continue
                 frame = cam.read()
                 if frame is None:
                     continue
@@ -280,6 +330,7 @@ def main():
                 last_frame_seen_at = now
                 frames_read += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
+                frame_at = time.time()
 
                 should_infer = (
                     cam.name in inference_camera_names
@@ -289,15 +340,69 @@ def main():
                     )
                 )
 
-                if object_tracker is not None:
+                inference_result = None
+                if inference_scheduler is not None and cam.name in processors:
                     if should_infer:
-                        detections = object_tracker.update(frame)
+                        inference_scheduler.submit(cam.name, frame, frame_at=frame_at)
                         last_detection_at[cam.name] = now
-                        last_detections[cam.name] = detections
-                    else:
-                        detections = last_detections.get(cam.name, [])
+                    inference_result = inference_scheduler.take_result(cam.name)
+
+                if inference_result is not None:
+                    frame = inference_result.frame
+                    detections = inference_result.detections
+                    inference_age_ms = max(
+                        0, round((time.time() - inference_result.inference_at) * 1000)
+                    )
+                    frame_age_ms = max(
+                        0, round((time.time() - inference_result.frame_at) * 1000)
+                    )
+                    result_is_stale = frame_age_ms > stale_after_ms
+                    inference_by_camera[cam.name] = {
+                        **inference_scheduler.metrics(cam.name),
+                        "frame_at": datetime.fromtimestamp(
+                            inference_result.frame_at
+                        ).isoformat(timespec="milliseconds"),
+                        "inference_at": datetime.fromtimestamp(
+                            inference_result.inference_at
+                        ).isoformat(timespec="milliseconds"),
+                        "frame_age_ms": frame_age_ms,
+                        "inference_age_ms": inference_age_ms,
+                        "stale": result_is_stale,
+                        "error": inference_result.error,
+                    }
+                elif detector.model is None:
+                    detections = _demo_tracked_objects(dummy_positions[cam.name])
+                    dummy_positions[cam.name] += 1
                     last_tracked_count = len(detections)
-                    check_ins = presence_tracker.update(cam.name, detections, now)
+                    result_is_stale = False
+                else:
+                    metrics = (
+                        inference_scheduler.metrics(cam.name)
+                        if inference_scheduler is not None and cam.name in processors
+                        else {
+                            "queue_depth": 0,
+                            "dropped_frames": 0,
+                            "inference_fps": 0.0,
+                            "inference_age_ms": None,
+                        }
+                    )
+                    inference_by_camera[cam.name] = {
+                        **metrics,
+                        "frame_at": datetime.fromtimestamp(frame_at).isoformat(
+                            timespec="milliseconds"
+                        ),
+                        "frame_age_ms": 0,
+                        "stale": True,
+                        "error": None,
+                    }
+                    last_detections_by_camera[cam.name] = []
+                    continue
+
+                if cam.name in object_trackers:
+                    last_tracked_count = len(detections)
+                    check_ins = presence_tracker.update(
+                        cam.name, detections, inference_result.inference_at
+                    )
                     for event in check_ins:
                         tracking_db.record_check_in(
                             event.track_id, event.camera_name, event.class_name
@@ -305,22 +410,21 @@ def main():
                         print(
                             f"[{cam.name}] Check-in: #{event.track_id} {event.class_name}"
                         )
-                elif detector.model is None:
-                    detections = _demo_tracked_objects(dummy_positions[cam.name])
-                    dummy_positions[cam.name] += 1
-                    last_tracked_count = len(detections)
-                elif should_infer:
-                    detections = detector.detect(frame)
-                    last_detection_at[cam.name] = now
-                    last_detections[cam.name] = detections
-                    last_tracked_count = 0
                 else:
-                    detections = last_detections.get(cam.name, [])
                     last_tracked_count = 0
 
                 last_detection_count = len(detections)
                 if product_recognizer is not None:
                     product_recognizer.annotate(cam.name, frame, detections)
+                # Class-agnostic proposals are observations, never inventory by
+                # themselves. Only a learned catalog fingerprint may promote a
+                # tracked proposal into a countable warehouse object.
+                for detection in detections:
+                    if (
+                        detection.class_name == "object proposal"
+                        and getattr(detection, "inventory_name", None)
+                    ):
+                        detection.confidence = max(float(detection.confidence), 0.85)
 
                 if spatial_analyzer is not None:
                     measurements = spatial_analyzer.enrich(frame, detections)
@@ -342,23 +446,29 @@ def main():
                     draw_fps(frame, fps)
                 draw_counts(frame, detections)
 
-                if warehouse_enabled and warehouse_db is not None:
-                    line = warehouse_cfg.get(
+                if warehouse_engine is not None and not result_is_stale:
+                    line = engine_cfg.get(
                         "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
                     )
-                    count_mode = warehouse_cfg.get("mode", "appearance")
-                    if count_mode == "line":
+                    if line:
                         draw_counting_line(frame, line)
-                    _process_warehouse_counting(
-                        camera_name=cam.name,
-                        detections=detections,
-                        warehouse_counter=warehouse_counters[cam.name],
-                        warehouse_db=warehouse_db,
-                        confidence_threshold=warehouse_cfg.get("confidence_threshold", 0.5),
-                        reviewed_unknown_ids=reviewed_unknown_ids,
-                        count_unknown=warehouse_cfg.get("count_low_confidence_as_unknown", True),
-                        count_mode=count_mode,
+                    learned_detections = [
+                        detection
+                        for detection in detections
+                        if getattr(detection, "inventory_name", None)
+                    ]
+                    engine_events = warehouse_engine.process(
+                        camera_id=cam.name,
+                        detections=learned_detections,
+                        timestamp=inference_result.inference_at,
                     )
+                    for engine_event in engine_events:
+                        if engine_event.inventory_delta:
+                            print(
+                                f"[{cam.name}] {engine_event.event_type}: "
+                                f"{engine_event.object_id} {engine_event.product_name} "
+                                f"delta={engine_event.inventory_delta}"
+                            )
 
                 if snapshot_saver is not None:
                     saved = snapshot_saver.maybe_save(cam.name, frame, detections)
@@ -423,7 +533,8 @@ def main():
                     "last_detection_count": last_detection_count,
                     "last_tracked_count": last_tracked_count,
                     "model_loaded": detector.model is not None,
-                    "tracking_enabled": object_tracker is not None or detector.model is None,
+                    "detector": detector.health(),
+                    "tracking_enabled": bool(object_trackers) or detector.model is None,
                     "warehouse_counting_enabled": warehouse_enabled,
                     "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
                     if warehouse_enabled
@@ -436,6 +547,7 @@ def main():
                     "last_spatial_objects": last_spatial_objects,
                     "last_spatial_objects_by_camera": last_spatial_objects_by_camera,
                     "last_detections_by_camera": last_detections_by_camera,
+                    "inference_by_camera": inference_by_camera,
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
@@ -451,6 +563,8 @@ def main():
                 break
 
     finally:
+        if inference_scheduler is not None:
+            inference_scheduler.close()
         for cam in cameras:
             cam.release()
         if product_recognizer is not None:
@@ -561,58 +675,6 @@ def _write_atomic_bytes(path: Path, data: bytes) -> None:
 
 def _safe_live_feed_name(value: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in str(value)).strip("_") or "camera"
-
-
-def _process_warehouse_counting(
-    camera_name: str,
-    detections,
-    warehouse_counter,
-    warehouse_db: WarehouseDB,
-    confidence_threshold: float,
-    reviewed_unknown_ids: set[tuple[str, int]],
-    count_unknown: bool,
-    count_mode: str,
-) -> None:
-    tracked = [det for det in detections if hasattr(det, "track_id")]
-    if not tracked:
-        return
-
-    for det in tracked:
-        review_key = (camera_name, det.track_id)
-        if (
-            count_unknown
-            and det.confidence < confidence_threshold
-            and review_key not in reviewed_unknown_ids
-        ):
-            reviewed_unknown_ids.add(review_key)
-            warehouse_db.record_unknown_item(
-                tracking_id=det.track_id,
-                confidence=det.confidence,
-                screenshot_path=None,
-                camera_id=camera_name,
-            )
-
-    countable = [det for det in tracked if det.confidence >= confidence_threshold]
-    for event in warehouse_counter.update(countable):
-        stock = warehouse_db.record_movement(
-            product_name=event.product_name,
-            direction=event.direction,
-            camera_id=event.camera_id,
-            tracking_id=event.tracking_id,
-            confidence=event.confidence,
-            quantity=event.quantity,
-            object_type=event.object_type,
-            dimensions_m=event.dimensions_m,
-            distance_m=event.distance_m,
-            quantity_grid=event.quantity_grid,
-            measurement_method=event.measurement_method,
-        )
-        action = "recognized" if count_mode == "appearance" else f"crossed {event.direction}"
-        print(
-            f"[{event.camera_id}] {event.quantity}x {event.product_name} "
-            f"ID={event.tracking_id} "
-            f"{action} | stock {event.product_name} = {stock}"
-        )
 
 
 if __name__ == "__main__":

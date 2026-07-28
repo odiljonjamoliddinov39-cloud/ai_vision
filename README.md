@@ -1,5 +1,34 @@
 # AI Vision Assistant — Phase 1 MVP
 
+## Mobile application
+
+The production Flutter client lives in [`mobile/`](mobile/README.md). It uses
+the same backend as the web dashboard:
+
+```text
+Flutter login
+  -> POST /api/v2/auth/login
+  -> Bearer session
+  -> /api/v2/me/dashboard + /api/status + /api/cameras
+  -> /api/live_frame?slot=N
+  -> Stream Manager latest frame
+  -> Android / iOS camera grid
+```
+
+Android 10+:
+
+```powershell
+cd mobile
+.\scripts\build_android.ps1
+```
+
+iOS 16+ (requires macOS, Xcode, and an Apple Developer signing team):
+
+```bash
+cd mobile
+DEVELOPMENT_TEAM=ABCDE12345 ./scripts/build_ios.sh
+```
+
 ## AI Vision V2 Architecture
 
 AI Vision V2 is device-first and stream-first:

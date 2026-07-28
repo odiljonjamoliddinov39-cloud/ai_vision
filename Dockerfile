@@ -1,3 +1,5 @@
+FROM bluenviron/mediamtx:1 AS mediamtx
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -27,9 +29,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # App code changes frequently, so copy it last.
 COPY . .
+COPY --from=mediamtx /mediamtx /usr/local/bin/mediamtx
 
 RUN mkdir -p /app/logs /app/snapshots /app/models /app/database
 
-EXPOSE 8080
+RUN chmod +x /app/infrastructure/start-stack.sh
 
+ENV EMBEDDED_MEDIAMTX=true \
+    AI_VISION_ENTERPRISE_STREAMING=true \
+    MEDIAMTX_REQUIRED=true \
+    MEDIAMTX_STRICT_STARTUP=true \
+    MEDIAMTX_API_URL=http://127.0.0.1:9997 \
+    MEDIAMTX_RTSP_URL=rtsp://127.0.0.1:8554 \
+    MEDIAMTX_WEBRTC_URL=http://127.0.0.1:8889 \
+    MEDIAMTX_HLS_URL=http://127.0.0.1:8888
+
+EXPOSE 8080 8554 8888 8889 8189/udp 9997
+
+ENTRYPOINT ["/app/infrastructure/start-stack.sh"]
 CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8080"]

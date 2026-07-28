@@ -1,0 +1,52 @@
+logLevel: info
+api: yes
+apiAddress: :9997
+
+# The API is published only on the host loopback interface. Allow the backend
+# container and the host-side health probe to use it without credentials.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+  - user: any
+    pass:
+    ips:
+      - 127.0.0.1
+      - ::1
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: no
+hlsVariant: lowLatency
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: [67.205.160.8]
+
+pathDefaults:
+  source: publisher
+  sourceOnDemand: no
+  record: no
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 1h
+  recordDeleteAfter: 30d
+
+paths:
+  all_others:

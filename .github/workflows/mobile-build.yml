@@ -1,0 +1,98 @@
+name: Mobile Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-build.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.8"
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Configure Play upload signing
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
+          {
+            echo "storePassword=$ANDROID_STORE_PASSWORD"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "storeFile=../upload-keystore.jks"
+          } > android/key.properties
+
+      - name: Build debug APK
+        run: >-
+          flutter build apk --debug
+          --dart-define=AI_VISION_API_BASE_URL=https://67-205-160-8.sslip.io
+
+      - name: Build release APK
+        run: >-
+          flutter build apk --release
+          --dart-define=AI_VISION_API_BASE_URL=https://67-205-160-8.sslip.io
+
+      - name: Build release AAB
+        run: >-
+          flutter build appbundle --release
+          --dart-define=AI_VISION_API_BASE_URL=https://67-205-160-8.sslip.io
+
+      - name: Collect outputs
+        run: |
+          mkdir -p dist/ci
+          cp build/app/outputs/flutter-apk/app-debug.apk dist/ci/AI-Vision-debug.apk
+          cp build/app/outputs/flutter-apk/app-release.apk dist/ci/AI-Vision-release.apk
+          cp build/app/outputs/bundle/release/app-release.aab dist/ci/AI-Vision-release.aab
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Vision-Android
+          path: mobile/dist/ci/*
+          if-no-files-found: error
+          retention-days: 30

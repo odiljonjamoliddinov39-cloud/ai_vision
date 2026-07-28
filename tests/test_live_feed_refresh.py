@@ -8,6 +8,10 @@ from api import server
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_backend_supports_one_hundred_active_camera_slots():
+    assert server.MAX_CAMERA_SLOTS == 100
+
+
 def _live_frame_request(slot: int) -> Request:
     return Request(
         {
@@ -27,27 +31,41 @@ def test_dashboard_continuously_refreshes_mounted_live_frames():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
     assert source.count("data-live-frame data-live-slot") == 3
-    assert "window.setInterval(refreshLiveFrames, LIVE_FRAME_REFRESH_MS)" in source
-    assert "const LIVE_FRAME_REFRESH_BATCH = 4;" in source
-    assert "new IntersectionObserver(" in source
-    assert 'image.dataset.liveVisible !== "false"' in source
-    assert 'document.addEventListener("visibilitychange", syncLiveFrameRefresh)' in source
-    assert "new MutationObserver((mutations) => {" in source
-    assert 'fetch(liveFrameUrl(slot), { cache: "no-store" })' in source
-    assert "URL.revokeObjectURL(previousObjectUrl)" in source
-    assert 'data-live-priming="true" src="${liveFrameUrl(channel.slot_number)}"' in source
-    assert 'loading="lazy" decoding="async"' in source
-    assert 'if (image.dataset.livePriming === "true") return;' in source
-    assert "image.complete && image.naturalWidth > 0" in source
+    assert "new WebSocket(liveWebSocketUrl(slots))" in source
+    assert 'socket.binaryType = "arraybuffer";' in source
+    assert 'socket.addEventListener("message"' in source
+    assert "new IntersectionObserver(" not in source
+    assert "window.setInterval(reconcileLiveStreams" not in source
+    assert source.count("<canvas data-live-frame") == 2
+    assert '<canvas class="feed-stale" data-live-frame' in source
+    assert 'document.addEventListener("visibilitychange"' not in source
 
 
-def test_dashboard_refreshes_live_frames_in_small_visible_batches():
+def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "const LIVE_FRAME_REFRESH_MS = 150;" in source
-    assert 'if (image.dataset.liveLoading === "true") return;' in source
-    assert "const count = Math.min(LIVE_FRAME_REFRESH_BATCH, visibleImages.length);" in source
-    assert "liveFrameCursor = (liveFrameCursor + count) % visibleImages.length;" in source
+    assert "const MAX_NVR_SLOTS = 100;" in source
+    assert "for (let slot = 1; slot <= MAX_NVR_SLOTS; slot += 1)" in source
+    assert "Math.max(...usedSlots) + 1" not in source
+    assert "new MutationObserver((mutations) => {" in source
+    # Every mounted tile receives frames from one multiplexed WebSocket.
+    assert "enqueueLiveFrame(slot, payload.slice(10), true, generatedAtMs);" in source
+    assert "decodeFrame: (jpegBytes) => createImageBitmap(new Blob([jpegBytes]" in source
+    assert '.drawImage(bitmap, 0, 0);' in source
+    assert "function stopLiveFrameRefresh()" in source
+    assert 'data-live-priming="true" role="img"' in source
+    assert "/api/live_frame?slot=${slot}" not in source
+    assert "image.complete && image.naturalWidth > 0" not in source
+
+
+def test_dashboard_streams_offscreen_cameras_without_viewport_gating():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "MAX_LIVE_STREAMS" not in source
+    assert "liveVisible" not in source
+    assert "document.hidden" not in source
+    assert "url.searchParams.set(\"slots\", slots);" in source
+    assert ".join(\",\");" in source
 
 
 def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
@@ -65,18 +83,22 @@ def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
     assert "if (structuralChange) syncLiveFrameRefresh();" in source
 
 
-def test_dashboard_backs_off_after_a_404_instead_of_retrying_every_tick():
+def test_dashboard_reconnects_the_continuous_socket_after_failure():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert "const LIVE_FRAME_404_BACKOFF_MS = 3000;" in source
-    assert 'if (response.status === 404) {' in source
-    assert (
-        "image.dataset.live404Until = String(Date.now() + LIVE_FRAME_404_BACKOFF_MS);"
-        in source
-    )
-    assert (
-        "if (backoffUntil && Date.now() < backoffUntil) return;" in source
-    )
+    assert "const LIVE_STREAM_RECONNECT_MS = 1500;" in source
+    assert "function scheduleLiveSocketReconnect()" in source
+    assert "scheduleLiveSocketReconnect();" in source
+    assert 'socket.addEventListener("error", () => socket.close());' in source
+
+
+def test_backend_multiplexes_slots_on_one_websocket():
+    source = (ROOT / "api" / "server.py").read_text(encoding="utf-8")
+
+    assert '@app.websocket("/api/live_ws")' in source
+    assert 'raw_slots = websocket.query_params.get("slots", "")' in source
+    assert 'struct.pack("!HQ", slot, generated_at_ms) + data' in source
+    assert 'os.getenv("LIVE_WEBSOCKET_FPS", "10")' in source
 
 
 def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
@@ -84,7 +106,50 @@ def test_camera_accounts_land_on_the_live_feed_without_removing_other_modules():
 
     assert 'if (!accountModule && role.access?.camera) accountModule = "feed"' in source
     assert 'menus.push({ id: "camera", label: "Camera Control"' in source
+    assert 'menus.push({ id: "camera_info", label: "Camera Info"' in source
     assert 'menus.push({ id: "feed", label: "Camera Feed"' in source
+
+
+def test_camera_feed_groups_rooms_and_allows_renaming():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert "company.cameraConfig.feedGroups" in source
+    assert "const FEED_GROUP_SIZE = 8;" in source
+    assert "function inferFeedGroup(nvr, nvrIndex, channel, channelIndex, nvrCount)" in source
+    assert "function feedGroupsHtml(config)" in source
+    assert 'data-acc-form="feed-group"' in source
+    assert 'data-feed-group-id="${escapeAttr(group.id)}"' in source
+    assert 't("feed.group_saved")' in source
+    assert ".feed-group-head" in styles
+    assert ".feed-group-form" in styles
+
+
+def test_camera_info_page_lists_connected_camera_models():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'if (menu.id === "camera_info")' in source
+    assert 'accountsApi("/api/v2/devices")' in source
+    assert "function renderCameraInfo(container)" in source
+    assert 't("table.camera")' in source
+    assert 't("table.model")' in source
+    assert 't("table.ai_slot")' in source
+    assert "Waiting for slot" in source
+    assert "Not assigned" in source
+    assert "response.device?.model" in source
+
+
+def test_dashboard_has_ru_eng_language_toggle():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="languageToggle"' in html
+    assert "LANGUAGE_KEY" in source
+    assert "function setLanguageToggleChrome()" in source
+    assert "function rerenderCurrentViewForLanguage()" in source
+    assert '"menu.camera_info": "Инфо камер"' in source
+    assert ".language-toggle" in styles
 
 
 def test_camera_control_rows_use_stream_health_for_live_slots():
@@ -94,7 +159,7 @@ def test_camera_control_rows_use_stream_health_for_live_slots():
     assert "function streamStatusBySlot()" in source
     assert 'const isLive = stream?.status === "online";' in source
     assert 'const label = isLive' in source
-    assert '? "Live"' in source
+    assert '? t("status.live")' in source
 
 
 def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
@@ -108,8 +173,25 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=48" in html
-    assert "/dashboard-v2/assets/styles.css?v=37" in html
+    assert "/dashboard-v2/assets/app.js?v=64" in html
+    assert "/dashboard-v2/assets/styles.css?v=43" in html
+
+
+def test_dashboard_uses_single_flight_latest_frame_coalescing():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    pipeline = (ROOT / "dashboard-v2" / "live-frame-pipeline.js").read_text(encoding="utf-8")
+
+    assert "liveFrameGenerations" not in source
+    assert "function enqueueLiveFrame(" in source
+    assert "function decodeNextLiveFrame(" in source
+    assert "function renderLiveBitmap(" in source
+    assert "function resetLiveFrameState(" in source
+    assert "if (state.decoding)" in pipeline
+    assert "state.pendingFrame = { frame, metadata };" in pipeline
+    assert "state.droppedFrameCount += 1;" in pipeline
+    assert "state.lifecycleToken !== lifecycleToken" in pipeline
+    assert "maximumDecodeCount" in pipeline
+    assert "[live-frame-diagnostics]" in source
 
 
 def test_dashboard_startup_retries_and_exposes_a_visible_failure_state():

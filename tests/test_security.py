@@ -9,6 +9,7 @@ import api.server as server  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from api.server import (  # noqa: E402
     _authorized_modules,
+    _is_public_path,
     _rbac_context,
     _redact_config,
     _security_enabled,
@@ -63,6 +64,19 @@ def test_api_key_validation_accepts_header_and_query(monkeypatch):
     assert _valid_api_key(denied) is False
     assert _valid_api_key(header_allowed) is True
     assert _valid_api_key(query_allowed) is True
+
+
+def test_mobile_login_is_public_when_infrastructure_api_key_is_enabled():
+    assert _is_public_path("/api/v2/auth/login") is True
+    assert _is_public_path("/api/v2/auth/login/passkey/options") is True
+
+
+def test_api_key_validation_accepts_authenticated_bearer_session(monkeypatch):
+    monkeypatch.setenv("ADMIN_API_KEY", "test-secret")
+    request = FakeRequest(headers={"authorization": "Bearer mobile-session"})
+    monkeypatch.setattr(server, "_v2_session_user", lambda incoming: {"id": 7})
+
+    assert _valid_api_key(request) is True
 
 
 def test_security_audit_chain_detects_valid_log(tmp_path):

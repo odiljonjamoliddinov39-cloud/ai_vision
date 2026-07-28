@@ -6,11 +6,12 @@ frames already published by the Stream Manager instead of opening RTSP itself.
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
 
 import cv2
 import numpy as np
+
+from streams.shared_buffer import SharedFrameReader
 
 
 class StreamFrameCamera:
@@ -18,9 +19,14 @@ class StreamFrameCamera:
         self.name = name
         self.slot_number = slot_number
         self.source = source
-        self.snapshot_dir = Path(snapshot_dir)
+        self.snapshot_dir = snapshot_dir
         self._dummy_frame_number = 0
-        self._last_mtime = 0.0
+        self._last_sequence = 0
+        self._reader = (
+            SharedFrameReader(snapshot_dir, slot_number)
+            if slot_number is not None
+            else None
+        )
 
     def read(self):
         if str(self.source).strip().lower() == "dummy":
@@ -29,32 +35,24 @@ class StreamFrameCamera:
         if self.slot_number is None:
             return None
 
-        path = self.snapshot_dir / f"latest_stream_slot_{self.slot_number}.jpg"
-        fallback = self.snapshot_dir / f"latest_slot_{self.slot_number}.jpg"
-        if not path.exists() and fallback.exists():
-            path = fallback
-        if not path.exists():
+        if self._reader is None:
             time.sleep(0.05)
             return None
 
-        try:
-            current_mtime = path.stat().st_mtime
-            if current_mtime <= self._last_mtime:
-                time.sleep(0.02)
-                return None
-            data = path.read_bytes()
-        except OSError:
-            return None
-        if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
+        snapshot = self._reader.read(after_sequence=self._last_sequence)
+        if snapshot is None:
+            time.sleep(0.02)
             return None
 
+        sequence, data = snapshot
         frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is not None:
-            self._last_mtime = current_mtime
+            self._last_sequence = sequence
         return frame
 
     def release(self) -> None:
-        return None
+        if self._reader is not None:
+            self._reader.close()
 
     def is_opened(self) -> bool:
         return True
