@@ -1,3 +1,6 @@
+# UNUSED BY ACTIVE RUNTIME.
+# Retained for compatibility only. The active tracker is custom_iou and reports
+# tracker_config_applied=false; these ByteTrack values are not loaded.
 tracker_type: bytetrack
 track_high_thresh: 0.08
 track_low_thresh: 0.04

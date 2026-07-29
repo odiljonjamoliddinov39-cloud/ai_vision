@@ -51,6 +51,13 @@ from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
 from warehouse_engine import WarehouseEngine
+from runtime_wiring import (
+    audit_snapshot_triggers,
+    audit_warehouse_coordinates,
+    business_detections,
+    detection_accounting,
+    runtime_health_fields,
+)
 
 
 def load_config(path: str) -> dict:
@@ -179,7 +186,8 @@ def main():
         )
         tracking_db = TrackingDB(db_path=track_cfg.get("db_path", "database/tracking.db"))
         print(
-            f"Tracking enabled ({track_cfg.get('tracker_config', 'bytetrack.yaml')}), "
+            "Tracking enabled (custom_iou; "
+            f"{track_cfg.get('tracker_config', 'bytetrack.yaml')} retained but unused), "
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
         )
 
@@ -257,6 +265,15 @@ def main():
             trigger_classes=snap_cfg.get("trigger_classes"),
             cooldown_seconds=snap_cfg.get("cooldown_seconds", 5),
         )
+    snapshot_trigger_audit = audit_snapshot_triggers(
+        snap_cfg.get("trigger_classes"),
+        detector.health().get("prompts") or det_cfg.get("classes"),
+    )
+    if snapshot_trigger_audit["unreachable_triggers"]:
+        print(
+            "Configuration audit: unreachable snapshot trigger classes: "
+            + ", ".join(snapshot_trigger_audit["unreachable_triggers"])
+        )
     # ensure snapshots dir exists for live feed
     os.makedirs(snapshots_dir, exist_ok=True)
     live_feed_enabled = display_cfg.get("live_feed_enabled", True)
@@ -284,6 +301,15 @@ def main():
     last_spatial_objects_by_camera = {}
     last_detections_by_camera = {}
     inference_by_camera = {}
+    frame_dimensions_by_camera = {}
+    proposal_count_by_camera = {}
+    verified_detection_count_by_camera = {}
+    last_frame_width = None
+    last_frame_height = None
+    coordinate_audit = audit_warehouse_coordinates(
+        engine_cfg, frame_dimensions_by_camera
+    )
+    reported_coordinate_mismatch_count = None
 
     prev_time = time.time()
     frame_number = 0
@@ -398,10 +424,28 @@ def main():
                     last_detections_by_camera[cam.name] = []
                     continue
 
+                last_frame_height, last_frame_width = frame.shape[:2]
+                frame_dimensions_by_camera[cam.name] = {
+                    "width": int(last_frame_width),
+                    "height": int(last_frame_height),
+                }
+
+                if product_recognizer is not None:
+                    product_recognizer.annotate(cam.name, frame, detections)
+
+                # Proposals remain available to recognition and association,
+                # but only recognized proposals can enter business consumers.
+                verified_detections = business_detections(detections)
+                accounting = detection_accounting(detections)
+                proposal_count_by_camera[cam.name] = accounting["proposal_count"]
+                verified_detection_count_by_camera[cam.name] = accounting[
+                    "verified_detection_count"
+                ]
+
                 if cam.name in object_trackers:
-                    last_tracked_count = len(detections)
+                    last_tracked_count = len(verified_detections)
                     check_ins = presence_tracker.update(
-                        cam.name, detections, inference_result.inference_at
+                        cam.name, verified_detections, inference_result.inference_at
                     )
                     for event in check_ins:
                         tracking_db.record_check_in(
@@ -413,9 +457,7 @@ def main():
                 else:
                     last_tracked_count = 0
 
-                last_detection_count = len(detections)
-                if product_recognizer is not None:
-                    product_recognizer.annotate(cam.name, frame, detections)
+                last_detection_count = sum(verified_detection_count_by_camera.values())
                 # Class-agnostic proposals are observations, never inventory by
                 # themselves. Only a learned catalog fingerprint may promote a
                 # tracked proposal into a countable warehouse object.
@@ -427,7 +469,9 @@ def main():
                         detection.confidence = max(float(detection.confidence), 0.85)
 
                 if spatial_analyzer is not None:
-                    measurements = spatial_analyzer.enrich(frame, detections)
+                    measurements = spatial_analyzer.enrich(
+                        frame, verified_detections
+                    )
                     last_spatial_objects = [
                         {
                             **measurement.__dict__,
@@ -438,13 +482,13 @@ def main():
                     last_spatial_objects_by_camera[cam.name] = last_spatial_objects
 
                 last_detections_by_camera[cam.name] = [
-                    _serialize_detection(det, frame) for det in detections
+                    _serialize_detection(det, frame) for det in verified_detections
                 ]
 
                 draw_detections(frame, detections, box_thickness, font_scale)
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
-                draw_counts(frame, detections)
+                draw_counts(frame, verified_detections)
 
                 if warehouse_engine is not None and not result_is_stale:
                     line = engine_cfg.get(
@@ -454,7 +498,7 @@ def main():
                         draw_counting_line(frame, line)
                     learned_detections = [
                         detection
-                        for detection in detections
+                        for detection in verified_detections
                         if getattr(detection, "inventory_name", None)
                     ]
                     engine_events = warehouse_engine.process(
@@ -471,7 +515,9 @@ def main():
                             )
 
                 if snapshot_saver is not None:
-                    saved = snapshot_saver.maybe_save(cam.name, frame, detections)
+                    saved = snapshot_saver.maybe_save(
+                        cam.name, frame, verified_detections
+                    )
                     for path in saved:
                         print(f"[{cam.name}] Snapshot saved: {path}")
 
@@ -485,7 +531,7 @@ def main():
                     )
 
                 if event_logger is not None:
-                    event_logger.log_detections(cam.name, detections)
+                    event_logger.log_detections(cam.name, verified_detections)
 
                 if not args.no_display:
                     cv2.imshow(f"{window_prefix} {cam.name}", frame)
@@ -516,6 +562,42 @@ def main():
             elif not any_frame:
                 time.sleep(0.05)
 
+            coordinate_audit = audit_warehouse_coordinates(
+                engine_cfg, frame_dimensions_by_camera
+            )
+            mismatch_count = coordinate_audit["mismatch_count"]
+            if (
+                mismatch_count
+                and mismatch_count != reported_coordinate_mismatch_count
+            ):
+                print(
+                    "Configuration audit: warehouse coordinates do not match "
+                    f"the active frame dimensions ({mismatch_count} mismatch(es))."
+                )
+            reported_coordinate_mismatch_count = mismatch_count
+
+            tracker = next(iter(object_trackers.values()), None)
+            detector_health = detector.health()
+            health_fields = runtime_health_fields(
+                tracking_engine=(
+                    getattr(tracker, "tracking_engine", "custom_iou")
+                    if tracker is not None
+                    else "disabled"
+                ),
+                tracker_config_applied=(
+                    getattr(tracker, "tracker_config_applied", False)
+                    if tracker is not None
+                    else False
+                ),
+                active_model=detector_health.get("active_model"),
+                frame_width=last_frame_width,
+                frame_height=last_frame_height,
+                inference_by_camera=inference_by_camera,
+                proposal_count_by_camera=proposal_count_by_camera,
+                verified_detection_count_by_camera=(
+                    verified_detection_count_by_camera
+                ),
+            )
             _write_detection_health(
                 health_path,
                 {
@@ -533,7 +615,8 @@ def main():
                     "last_detection_count": last_detection_count,
                     "last_tracked_count": last_tracked_count,
                     "model_loaded": detector.model is not None,
-                    "detector": detector.health(),
+                    "detector": detector_health,
+                    **health_fields,
                     "tracking_enabled": bool(object_trackers) or detector.model is None,
                     "warehouse_counting_enabled": warehouse_enabled,
                     "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
@@ -548,6 +631,9 @@ def main():
                     "last_spatial_objects_by_camera": last_spatial_objects_by_camera,
                     "last_detections_by_camera": last_detections_by_camera,
                     "inference_by_camera": inference_by_camera,
+                    "frame_dimensions_by_camera": frame_dimensions_by_camera,
+                    "coordinate_audit": coordinate_audit,
+                    "snapshot_trigger_audit": snapshot_trigger_audit,
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
@@ -615,6 +701,17 @@ def _serialize_detection(det, frame) -> dict:
 
 
 def _write_detection_health(path: str, payload: dict) -> None:
+    payload = {
+        "tracking_engine": "disabled",
+        "tracker_config_applied": False,
+        "active_model": None,
+        "frame_width": None,
+        "frame_height": None,
+        "inference_fps": 0.0,
+        "proposal_count": 0,
+        "verified_detection_count": 0,
+        **payload,
+    }
     health_path = Path(path)
     health_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path = health_path.with_name(f"{health_path.stem}_summary{health_path.suffix}")
@@ -628,6 +725,14 @@ def _write_detection_health(path: str, payload: dict) -> None:
         "last_detection_count",
         "last_tracked_count",
         "model_loaded",
+        "tracking_engine",
+        "tracker_config_applied",
+        "active_model",
+        "frame_width",
+        "frame_height",
+        "inference_fps",
+        "proposal_count",
+        "verified_detection_count",
         "updated_at",
     )
     summary = {field: payload.get(field) for field in summary_fields}

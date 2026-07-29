@@ -1,5 +1,39 @@
 import { LiveFramePipeline } from "./live-frame-pipeline.js?v=1";
 
+// Temporary corrective-diagnostics instrumentation. Enable with
+// `?initDebug=1` (or `&initDebug=1` when another query parameter is present).
+// Counters remain readable even if the main thread becomes too busy to emit
+// every console message.
+const DASHBOARD_INIT_DEBUG =
+  new URLSearchParams(window.location.search).get("initDebug") === "1";
+const dashboardTraceStartedAt = performance.now();
+const dashboardTraceCounters = new Map();
+window.__AI_VISION_INIT_TRACE__ = [];
+window.__AI_VISION_INIT_COUNTERS__ = {};
+
+function dashboardTrace(stage, details = {}) {
+  if (!DASHBOARD_INIT_DEBUG) return;
+  const entry = {
+    stage,
+    elapsedMs: Math.round((performance.now() - dashboardTraceStartedAt) * 10) / 10,
+    ...details,
+  };
+  window.__AI_VISION_INIT_TRACE__.push(entry);
+  console.debug("[dashboard-init]", entry);
+}
+
+function dashboardTraceRate(stage, details = {}) {
+  if (!DASHBOARD_INIT_DEBUG) return;
+  const count = (dashboardTraceCounters.get(stage) || 0) + 1;
+  dashboardTraceCounters.set(stage, count);
+  window.__AI_VISION_INIT_COUNTERS__[stage] = count;
+  if (count <= 20 || count % 1000 === 0) {
+    dashboardTrace(stage, { count, ...details });
+  }
+}
+
+dashboardTrace("script:start");
+
 const els = {
   moduleNav: document.querySelector("#moduleNav"),
   pageTitle: document.querySelector("#pageTitle"),
@@ -23,6 +57,11 @@ const els = {
   sideCompanies: document.querySelector("#sideCompanies"),
   toast: document.querySelector("#toast"),
 };
+dashboardTrace("dom:bound", {
+  missing: Object.entries(els)
+    .filter(([, element]) => !element)
+    .map(([name]) => name),
+});
 
 const API_BASE = (() => {
   const param = new URLSearchParams(window.location.search).get("api");
@@ -555,6 +594,10 @@ const liveDetectionsBySlot = new Map();
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
   if (!badge) return;
+  dashboardTraceRate("live:badge-write", {
+    slot: image.dataset.liveSlot || null,
+    isLive,
+  });
   badge.textContent = isLive ? t("status.live") : t("status.waiting_video");
   badge.classList.toggle("feed-stale-badge", !isLive);
 }
@@ -996,12 +1039,14 @@ function scheduleLiveSocketReconnect() {
 }
 
 function reconcileLiveStreams() {
+  dashboardTraceRate("live:reconcile:start");
   const surfaces = Array.from(els.moduleContent.querySelectorAll("[data-live-frame]"));
   const slotNumbers = [...new Set(
     surfaces.map((surface) => Number(surface.dataset.liveSlot)).filter(Boolean)
   )].sort((left, right) => left - right);
   const slots = slotNumbers.join(",");
   if (!slots) {
+    dashboardTraceRate("live:reconcile:no-surfaces");
     // Leaving the feed view must not behave like switching the cameras off.
     // Keep the multiplexed browser connection alive so the current frames are
     // ready when the operator returns. The server-side Stream Manager remains
@@ -1023,12 +1068,14 @@ function reconcileLiveStreams() {
     && (liveFrameSocket.readyState === WebSocket.OPEN
       || liveFrameSocket.readyState === WebSocket.CONNECTING)
   ) {
+    dashboardTraceRate("live:reconcile:socket-reused", { slots });
     return;
   }
 
   stopLiveFrameRefresh();
   liveFrameSocketSlots = slots;
   const socket = new WebSocket(liveWebSocketUrl(slots));
+  dashboardTraceRate("live:websocket:create", { slots });
   socket.binaryType = "arraybuffer";
   liveFrameSocket = socket;
   socket.addEventListener("message", (event) => {
@@ -1223,6 +1270,7 @@ function stopWebRtcRefresh() {
 }
 
 function applyLiveTransportMode() {
+  dashboardTraceRate("live:transport:apply", { mode: liveTransportMode });
   const useWebRtc = liveTransportMode === "webrtc";
   els.moduleContent.querySelectorAll("[data-live-frame]").forEach((canvas) => {
     canvas.style.display = useWebRtc ? "none" : "block";
@@ -1291,11 +1339,14 @@ function bindLiveTransportControls() {
 }
 
 function syncLiveFrameRefresh() {
+  dashboardTraceRate("live:sync:start");
   syncLiveDetectionRefresh();
   const hasLiveFrames = Boolean(els.moduleContent.querySelector("[data-live-frame]"));
   if (!hasLiveFrames) {
+    dashboardTraceRate("live:sync:no-frames");
     return;
   }
+  dashboardTraceRate("live:sync:apply-transport", { mode: liveTransportMode });
   applyLiveTransportMode();
 }
 
@@ -4939,6 +4990,7 @@ async function loadDeferredDashboardData() {
 }
 
 function scheduleDeferredDashboardData() {
+  dashboardTrace("load:deferred-scheduled");
   const loadDetails = () => void loadDeferredDashboardData();
   if ("requestIdleCallback" in window) {
     window.requestIdleCallback(loadDetails, { timeout: 1000 });
@@ -4948,29 +5000,41 @@ function scheduleDeferredDashboardData() {
 }
 
 async function load() {
+  dashboardTrace("load:start");
   setLanguageToggleChrome();
+  dashboardTrace("load:language-ready");
   const [session, overview] = await Promise.all([
     api("/api/v2/rbac/me"),
     api("/api/v2/dashboard/overview"),
   ]);
+  dashboardTrace("load:summary-resolved");
   state.session = session;
   state.overview = overview;
   // Clear the static "Checking..." state as soon as the tiny summary arrives.
   // Account lookup and detailed stream health are deliberately non-blocking.
   renderDetectorState();
+  dashboardTrace("load:detector-rendered");
   const account = await resolveAccountFromHash();
+  dashboardTrace("load:account-resolved", { found: Boolean(account) });
   if (account) {
+    dashboardTrace("load:account-render:start");
     renderAccountView(account);
+    dashboardTrace("load:account-render:complete");
     scheduleDeferredDashboardData();
     return;
   }
   els.pageTitle.textContent = t("header.head_dashboard");
   els.companiesSection.hidden = false;
   renderNavigation();
+  dashboardTrace("load:navigation-rendered");
   renderSummary();
+  dashboardTrace("load:summary-rendered");
   renderScope();
+  dashboardTrace("load:scope-rendered");
   renderModuleContent();
+  dashboardTrace("load:module-rendered", { activeModule: state.activeModule });
   scheduleDeferredDashboardData();
+  dashboardTrace("load:complete");
 }
 
 function renderLoadFailure(error, retrying) {
@@ -4988,14 +5052,20 @@ function renderLoadFailure(error, retrying) {
 }
 
 async function loadDashboard(attempt = 0) {
+  dashboardTrace("load-dashboard:start", { attempt });
   if (loadRetryTimer !== null) {
     window.clearTimeout(loadRetryTimer);
     loadRetryTimer = null;
   }
   try {
     await load();
+    dashboardTrace("load-dashboard:complete", { attempt });
     return true;
   } catch (error) {
+    dashboardTrace("load-dashboard:error", {
+      attempt,
+      message: error instanceof Error ? error.message : String(error),
+    });
     const retrying = attempt < LOAD_RETRY_DELAYS_MS.length;
     renderLoadFailure(error, retrying);
     if (retrying) {
@@ -5067,7 +5137,9 @@ function applyTheme(theme) {
 }
 
 applyTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
+dashboardTrace("init:theme-applied");
 setLanguageToggleChrome();
+dashboardTrace("init:language-applied");
 
 els.themeToggle.addEventListener("click", () => {
   const next = currentTheme() === "dark" ? "light" : "dark";
@@ -5083,6 +5155,7 @@ function applySidebarState(collapsed) {
 }
 
 applySidebarState(localStorage.getItem("ai_vision_v2_sidebar") === "collapsed");
+dashboardTrace("init:sidebar-applied");
 
 els.sidebarToggle.addEventListener("click", () => {
   const collapsed = !els.shell.classList.contains("sidebar-collapsed");
@@ -5112,6 +5185,17 @@ window.addEventListener("hashchange", () => window.location.reload());
 // should resync; badge text updates are just a symptom of a reconcile already
 // run.
 const liveFrameObserver = new MutationObserver((mutations) => {
+  dashboardTraceRate("observer:callback", {
+    mutations: mutations.length,
+    targets: mutations.slice(0, 5).map((mutation) => {
+      const target = mutation.target;
+      if (!(target instanceof Element)) return target?.nodeName || "unknown";
+      if (target.matches("[data-live-latency]")) return "live-latency";
+      if (target.matches(".feed-transmitting")) return "feed-badge";
+      if (target.matches("[data-live-detection-status]")) return "detection-status";
+      return target.id || target.className || target.tagName;
+    }),
+  });
   const structuralChange = mutations.some((mutation) => {
     const target = mutation.target;
     return !(
@@ -5119,9 +5203,12 @@ const liveFrameObserver = new MutationObserver((mutations) => {
       && target.closest(".feed-transmitting, [data-live-detection-status]")
     );
   });
+  dashboardTraceRate("observer:decision", { structuralChange });
+  if (structuralChange) dashboardTraceRate("observer:sync-live-frames");
   if (structuralChange) syncLiveFrameRefresh();
 });
 liveFrameObserver.observe(els.moduleContent, { childList: true, subtree: true });
+dashboardTrace("init:mutation-observer-installed");
 window.addEventListener("resize", drawAllLiveDetectionOverlays);
 window.addEventListener("beforeunload", () => {
   stopLiveFrameRefresh();
@@ -5133,8 +5220,11 @@ window.addEventListener("beforeunload", () => {
 // Start the current dashboard immediately and migrate old browser-only data in
 // the background.
 renderSideCompanies();
+dashboardTrace("init:side-companies-started");
 updateBrandAvatar();
+dashboardTrace("init:brand-avatar-started");
 loadDashboard();
+dashboardTrace("init:dashboard-load-started");
 
 migrateLegacyLocalStorage()
   .then((result) => {

@@ -68,6 +68,7 @@ services:
       # export multi-gigabyte Torch/CUDA image layers.
       - ./api/server.py:/app/api/server.py:ro
       - ./main.py:/app/main.py:ro
+      - ./runtime_wiring.py:/app/runtime_wiring.py:ro
       - ./streams/manager.py:/app/streams/manager.py:ro
       - ./streams/mediamtx.py:/app/streams/mediamtx.py:ro
       - ./dashboard-v2:/app/dashboard-v2:ro
@@ -98,6 +99,7 @@ services:
     command: ["python", "main.py", "--config", "config/config.yaml", "--no-display"]
     volumes:
       - ./main.py:/app/main.py:ro
+      - ./runtime_wiring.py:/app/runtime_wiring.py:ro
       - ./models:/app/models
       - ./logs:/app/logs
       - ./snapshots:/app/snapshots

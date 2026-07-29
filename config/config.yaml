@@ -62,6 +62,8 @@ display:
   live_frame_jpeg_quality: 85
 tracking:
   enabled: true
+  # Legacy compatibility reference only. Active runtime uses custom_iou and
+  # reports tracker_config_applied=false; this file is not loaded on that path.
   tracker_config: config/warehouse_bytetrack.yaml
   classes: null
   grace_period_seconds: 5.0

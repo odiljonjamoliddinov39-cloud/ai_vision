@@ -61,14 +61,20 @@ class ObjectTracker:
         Args:
             model: an already-loaded ultralytics.YOLO instance. Reusing the
                 Detector's model avoids loading the weights twice.
-            tracker_config: "bytetrack.yaml" (default, IoU-only, fast) or
-                "botsort.yaml" (adds appearance re-identification, slower).
+            tracker_config: retained for public configuration compatibility.
+                The active predict + custom IoU path does not load this file.
         """
         self.model = model
         self.confidence_threshold = confidence_threshold
         self.device = device
         self.classes_filter = set(classes) if classes else None
         self.tracker_config = tracker_config
+        self.tracking_engine = (
+            "custom_iou"
+            if callable(getattr(self.model, "predict", None))
+            else "ultralytics_legacy"
+        )
+        self.tracker_config_applied = self.tracking_engine != "custom_iou"
         self.image_size = image_size
         self.class_agnostic_nms = class_agnostic_nms
         self.iou_threshold = float(iou_threshold)
