@@ -10,6 +10,7 @@ from streams.manager import (
     StreamSessionConfig,
     _ManagedStreamSession,
     _ffmpeg_command,
+    _is_decoder_damage,
     _jpeg_has_decoder_concealment,
 )
 from streams.shared_buffer import SharedFrameReader, SharedFrameWriter, buffer_path
@@ -234,6 +235,32 @@ def test_stream_manager_rejects_grey_decoder_concealment_and_keeps_clean_frame(t
     assert session.latest_frame_bytes() == clean_jpeg.tobytes()
     assert session.status_data.dropped_frames == 1
     assert session.status_data.decode_errors == 1
+
+
+def test_stream_manager_quarantines_frames_after_decoder_damage(tmp_path):
+    session = _ManagedStreamSession(
+        StreamSessionConfig(
+            channel_id="1",
+            name="Camera 1",
+            source="rtsp://example.test/stream",
+            slot_number=1,
+            snapshot_dir=tmp_path,
+        )
+    )
+    frame = np.full((120, 160, 3), (20, 140, 220), dtype=np.uint8)
+    ok, jpeg = cv2.imencode(".jpg", frame)
+    assert ok
+    assert _is_decoder_damage("[hevc] corrupt decoded frame")
+
+    session._decoder_damage_budget = 2
+    session._publish_jpeg(jpeg.tobytes())
+    session._publish_jpeg(jpeg.tobytes())
+    assert session.latest_frame_bytes() is None
+    session._publish_jpeg(jpeg.tobytes())
+
+    assert session.latest_frame_bytes() == jpeg.tobytes()
+    assert session.status_data.dropped_frames == 2
+    assert session.status_data.decode_errors == 2
 
 
 def test_analytics_frame_source_skips_unchanged_stream_frame(tmp_path):

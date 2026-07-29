@@ -171,7 +171,7 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=69" in html
+    assert "/dashboard-v2/assets/app.js?v=70" in html
     assert "/dashboard-v2/assets/styles.css?v=43" in html
 
 
@@ -193,6 +193,9 @@ def test_dashboard_draws_live_yolo_detection_overlays():
     assert "Reference scan" in source
     assert "YOLO live · stopped" in source
     assert "Detection API · unavailable" in source
+    assert 'LIVE_TRANSPORT_PREFERENCE_VERSION = "2"' in source
+    assert 'localStorage.setItem("ai_vision_live_transport", "webrtc")' in source
+    assert "liveDetectionFailureCount >= 3" in source
 
 
 def test_dashboard_uses_single_flight_latest_frame_coalescing():
@@ -250,11 +253,32 @@ def test_analytics_movements_chart_is_wired_to_ai_check_in_ledger():
     # older occupancy check-in/check-out activity tracker.
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert 'accountsApi("/api/warehouse/movements?limit=200")' in source
+    assert 'api("/api/v2/dashboard/analytics?limit=200")' in source
     assert "function aggregateMovements(movements)" in source
     assert 'movementsSpec.points = aggregateMovements(movements);' in source
     assert "points: emptyMovements()," in source
     assert 'title: "AI Check-ins"' in source
+
+
+def test_dashboard_operational_status_uses_stream_and_camera_fallbacks():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "function operationalCameraCount()" in source
+    assert 'stream?.status === "online"' in source
+    assert "Number(summary.active_cameras || 0)" in source
+    assert 'data-runtime-resource="${res.key}"' in source
+    assert 'api("/api/v2/streams/runtime-metrics", { timeoutMs: 5000 })' in source
+
+
+def test_detection_overlay_reads_a_lightweight_health_snapshot():
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    server_source = (ROOT / "api" / "server.py").read_text(encoding="utf-8")
+
+    assert "latest_path = health_path.with_name" in main_source
+    assert '"last_detections_by_camera": payload.get("last_detections_by_camera") or {}' in main_source
+    assert "DETECTION_HEALTH_LATEST_PATH" in server_source
+    assert "return _latest_detection_payload()" in server_source
+    assert "LIVE_WEBSOCKET_TOTAL_FRAME_BUDGET" in server_source
 
 
 def test_analytics_shows_a_recent_activity_card_from_real_events():

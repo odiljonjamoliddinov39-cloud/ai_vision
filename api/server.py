@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import struct
 import subprocess
@@ -98,6 +99,7 @@ DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
 DETECTION_HEALTH_SUMMARY_PATH = ROOT / "logs" / "detection_health_summary.json"
+DETECTION_HEALTH_LATEST_PATH = ROOT / "logs" / "detection_health_latest.json"
 DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
 MAX_CAMERA_SLOTS = 100
 DEFAULT_ALLOWED_ORIGINS = [
@@ -3139,6 +3141,37 @@ def _dashboard_runtime_summary() -> dict[str, Any]:
     }
 
 
+def _latest_detection_payload(*, include_spatial: bool = True) -> dict[str, Any]:
+    """Read the small live-overlay document, with a deploy-safe legacy fallback."""
+    latest_is_current = False
+    try:
+        latest_is_current = (
+            DETECTION_HEALTH_LATEST_PATH.exists()
+            and (
+                not DETECTION_HEALTH_PATH.exists()
+                or DETECTION_HEALTH_LATEST_PATH.stat().st_mtime
+                >= DETECTION_HEALTH_PATH.stat().st_mtime
+            )
+        )
+    except OSError:
+        latest_is_current = False
+    health = _read_json(DETECTION_HEALTH_LATEST_PATH) if latest_is_current else None
+    if not health:
+        health = _read_json(DETECTION_HEALTH_PATH) or {}
+    payload = {
+        "state": health.get("state", "offline"),
+        "updated_at": health.get("updated_at"),
+        "detections": health.get("last_detections_by_camera") or {},
+    }
+    if include_spatial:
+        payload["spatial"] = (
+            health.get("last_spatial_objects_by_camera")
+            or health.get("last_spatial_objects")
+            or {}
+        )
+    return payload
+
+
 def _should_autostart_detection() -> bool:
     if not _env_bool("AUTO_START_DETECTION", True):
         return False
@@ -3684,12 +3717,7 @@ def dashboard_v2_cameras(request: Request) -> dict[str, Any]:
 @app.get("/api/v2/dashboard/detections")
 def dashboard_v2_detections(request: Request) -> dict[str, Any]:
     _require_permission(request, "view_dashboard")
-    health = _read_json(DETECTION_HEALTH_PATH) or {}
-    return {
-        "state": health.get("state", "offline"),
-        "updated_at": health.get("updated_at"),
-        "detections": health.get("last_detections_by_camera") or {},
-    }
+    return _latest_detection_payload(include_spatial=False)
 
 
 @app.get("/api/v2/dashboard/analytics")
@@ -4542,15 +4570,7 @@ def v2_analytics_health() -> dict[str, Any]:
 
 @app.get("/api/v2/detections/latest")
 def v2_latest_detections() -> dict[str, Any]:
-    health = _read_json(DETECTION_HEALTH_PATH) or {}
-    return {
-        "state": health.get("state", "offline"),
-        "updated_at": health.get("updated_at"),
-        "detections": health.get("last_detections_by_camera") or {},
-        "spatial": health.get("last_spatial_objects_by_camera")
-        or health.get("last_spatial_objects")
-        or {},
-    }
+    return _latest_detection_payload()
 
 
 @app.post("/api/cameras/{camera_id}/test")
@@ -5622,7 +5642,17 @@ async def live_websocket(websocket: WebSocket):
 
     await websocket.accept()
     last_sent: dict[int, bytes] = {}
-    target_fps = max(1.0, min(float(os.getenv("LIVE_WEBSOCKET_FPS", "10")), 15.0))
+    configured_fps = max(
+        1.0, min(float(os.getenv("LIVE_WEBSOCKET_FPS", "10")), 15.0)
+    )
+    total_frame_budget = max(
+        1.0, float(os.getenv("LIVE_WEBSOCKET_TOTAL_FRAME_BUDGET", "26"))
+    )
+    # A single socket can carry all 26 cameras. Sending every full-size JPEG
+    # at the single-camera rate fills mobile TCP buffers and makes the browser
+    # display seconds-old frames. Bound aggregate work while preserving
+    # continuous latest-frame delivery; WebRTC remains the smooth default.
+    target_fps = max(0.25, min(configured_fps, total_frame_budget / len(slots)))
     interval = 1.0 / target_fps
     try:
         while True:
@@ -5719,10 +5749,22 @@ async def stream_runtime_metrics():
         (meminfo.get("MemTotal", 0) - meminfo.get("MemAvailable", 0)) / 1024,
         1,
     )
+    host_memory_total_mb = round(meminfo.get("MemTotal", 0) / 1024, 1)
+    memory_percent = round(
+        100.0 * host_memory_used_mb / max(1.0, host_memory_total_mb), 1
+    )
+    disk = shutil.disk_usage(ROOT)
+    storage_percent = round(100.0 * disk.used / max(1, disk.total), 1)
     return {
         "measured_at_ms": int(time.time() * 1000),
         "process_cpu_percent": cpu_percent,
         "process_memory_mb": host_memory_used_mb,
+        "host_cpu_percent": cpu_percent,
+        "host_memory_used_mb": host_memory_used_mb,
+        "host_memory_total_mb": host_memory_total_mb,
+        "host_memory_percent": memory_percent,
+        "storage_percent": storage_percent,
+        "gpu_percent": None,
         "online_streams": sum(1 for item in streams if item.get("status") == "online"),
         "aggregate_jpeg_kbps": round(
             sum(float(item.get("bitrate_kbps") or 0) for item in streams), 1

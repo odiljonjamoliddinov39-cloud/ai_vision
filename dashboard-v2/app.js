@@ -522,9 +522,14 @@ const LIVE_FRAME_DIAGNOSTIC_INTERVAL_MS = 7500;
 const liveFrameDebugEnabled = new URLSearchParams(window.location.search).get("liveDebug") === "1"
   || localStorage.getItem("ai_vision_live_debug") === "1";
 let liveFrameLastDiagnosticAt = 0;
-let liveTransportMode = localStorage.getItem("ai_vision_live_transport") === "webrtc"
-  ? "webrtc"
-  : "websocket";
+const LIVE_TRANSPORT_PREFERENCE_VERSION = "2";
+if (localStorage.getItem("ai_vision_live_transport_version") !== LIVE_TRANSPORT_PREFERENCE_VERSION) {
+  localStorage.setItem("ai_vision_live_transport", "webrtc");
+  localStorage.setItem("ai_vision_live_transport_version", LIVE_TRANSPORT_PREFERENCE_VERSION);
+}
+let liveTransportMode = localStorage.getItem("ai_vision_live_transport") === "websocket"
+  ? "websocket"
+  : "webrtc";
 const livePeerConnections = new Map();
 let liveWebRtcStatsTimer = null;
 let liveComparisonTimer = null;
@@ -534,10 +539,11 @@ let liveWsLastRenderedFrames = 0;
 let liveWebRtcSnapshot = { fps: 0, bandwidthKbps: 0, latencyMs: null, jitterMs: 0 };
 const liveMetricSamples = { websocket: [], webrtc: [] };
 let backendClockOffsetMs = 0;
-const LIVE_DETECTION_REFRESH_MS = 400;
+const LIVE_DETECTION_REFRESH_MS = 750;
 const LIVE_DETECTION_STALE_MS = 5000;
 let liveDetectionTimer = null;
 let liveDetectionRequestPending = false;
+let liveDetectionFailureCount = 0;
 let liveDetectionOverlayEnabled = localStorage.getItem("ai_vision_yolo_overlay") !== "0";
 let liveDetectionEndpointAvailable = true;
 let liveDetectionSnapshotToken = "";
@@ -853,6 +859,7 @@ async function refreshLiveDetections() {
   liveDetectionRequestPending = true;
   try {
     updateLiveDetections(await api("/api/v2/detections/latest", { timeoutMs: 3000 }));
+    liveDetectionFailureCount = 0;
     liveDetectionEndpointAvailable = true;
     if (Date.now() - liveCatalogScanCheckedAt >= 1000) {
       liveCatalogScanCheckedAt = Date.now();
@@ -862,8 +869,11 @@ async function refreshLiveDetections() {
       ).catch(() => ({ running: false, remaining_seconds: 0, yolo_scan: null }));
     }
   } catch {
-    liveDetectionsBySlot.clear();
-    liveDetectionEndpointAvailable = false;
+    liveDetectionFailureCount += 1;
+    if (liveDetectionFailureCount >= 3) {
+      liveDetectionsBySlot.clear();
+      liveDetectionEndpointAvailable = false;
+    }
   } finally {
     liveDetectionRequestPending = false;
     drawAllLiveDetectionOverlays();
@@ -876,6 +886,7 @@ function stopLiveDetectionRefresh() {
     liveDetectionTimer = null;
   }
   liveDetectionRequestPending = false;
+  liveDetectionFailureCount = 0;
   liveDetectionsBySlot.clear();
   liveCatalogScanStatus = { running: false, remaining_seconds: 0, yolo_scan: null };
   liveCatalogScanCheckedAt = 0;
@@ -2735,18 +2746,28 @@ function catalogApiPath(path) {
 }
 
 async function catalogRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options);
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const payload = await response.json();
-      detail = payload.detail || detail;
-    } catch {
-      detail = await response.text();
+  const { timeoutMs = DASHBOARD_API_TIMEOUT_MS, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const payload = await response.json();
+        detail = payload.detail || detail;
+      } catch {
+        detail = await response.text();
+      }
+      throw new Error(detail || "Catalog request failed.");
     }
-    throw new Error(detail || "Catalog request failed.");
+    return response.json();
+  } finally {
+    window.clearTimeout(timeout);
   }
-  return response.json();
 }
 
 function formatCatalogTime(value) {
@@ -3337,7 +3358,14 @@ async function renderCatalogResults(container) {
   try {
     const [payload, engine] = await Promise.all([
       catalogRequest(catalogApiPath("/api/catalog/results")),
-      catalogRequest("/api/warehouse-engine/overview?limit=100"),
+      catalogRequest("/api/warehouse-engine/overview?limit=100").catch(() => ({
+        detected_objects: 0,
+        tracked_objects: 0,
+        inventory_objects: 0,
+        active_events: 0,
+        zone_statistics: {},
+        events: [],
+      })),
     ]);
     if (!container.isConnected || accountModule !== "analytics") return;
     container.innerHTML = `
@@ -4675,7 +4703,7 @@ function wireCharts(root) {
 function currentOperationalAlerts() {
   const summary = state.overview?.summary || {};
   const health = state.overview?.health || {};
-  const cameraCount = Number(health.camera_count || 0);
+  const cameraCount = operationalCameraCount();
 
   if (health.error) {
     return [{ title: "Detector error", where: String(health.error), sev: "critical", color: "#dc2626" }];
@@ -4690,6 +4718,19 @@ function currentOperationalAlerts() {
     return [{ title: "Waiting for camera frames", where: `${cameraCount} camera feed${cameraCount === 1 ? "" : "s"} connecting`, sev: "medium", color: "var(--warn)" }];
   }
   return [];
+}
+
+function operationalCameraCount() {
+  const streams = state.streams || [];
+  const onlineStreams = streams.filter((stream) => stream?.status === "online").length;
+  if (streams.length > 0) return onlineStreams;
+  const summary = state.overview?.summary || {};
+  const health = state.overview?.health || {};
+  return Math.max(
+    onlineStreams,
+    Number(health.camera_count || 0),
+    Number(summary.active_cameras || 0)
+  );
 }
 
 function renderAnalytics(container, catalogMode = false) {
@@ -4760,13 +4801,12 @@ function renderAnalytics(container, catalogMode = false) {
   });
 
   const alerts = currentOperationalAlerts();
-  const health = state.overview?.health || {};
-  const cameraCount = Number(health.camera_count || 0);
+  const cameraCount = operationalCameraCount();
   const resources = [
-    { name: "CPU Usage", pct: 42, color: "#2a78d6" },
-    { name: "GPU Usage", pct: 67, color: "#7c3aed" },
-    { name: "Storage Usage", pct: 58, color: "#0891b2" },
-    { name: "Memory Usage", pct: 71, color: "#db2777" },
+    { key: "cpu", name: "CPU Usage", color: "#2a78d6" },
+    { key: "gpu", name: "GPU Usage", color: "#7c3aed" },
+    { key: "storage", name: "Storage Usage", color: "#0891b2" },
+    { key: "memory", name: "Memory Usage", color: "#db2777" },
   ];
   container.innerHTML = `
     <p class="chart-note">${catalogMode ? "Operational overview with scheduled catalog recognition results below." : "Companies/uptime are sample data - AI Check-ins below are live."}</p>
@@ -4799,9 +4839,9 @@ function renderAnalytics(container, catalogMode = false) {
         ${resources
           .map(
             (res) => `
-              <div class="res-row">
-                <div class="res-head"><strong>${res.name}</strong><span>${res.pct}%</span></div>
-                <div class="res-bar"><i style="width:${res.pct}%;background:${res.color}"></i></div>
+              <div class="res-row" data-runtime-resource="${res.key}">
+                <div class="res-head"><strong>${res.name}</strong><span>Loading…</span></div>
+                <div class="res-bar"><i style="width:0%;background:${res.color}"></i></div>
               </div>
             `
           )
@@ -4818,11 +4858,13 @@ function renderAnalytics(container, catalogMode = false) {
   `;
   wireCharts(container);
   void loadLiveWarehouseActivity(container);
+  void loadLiveRuntimeResources(container);
 }
 
 async function loadLiveWarehouseActivity(container) {
   try {
-    const { movements } = await accountsApi("/api/warehouse/movements?limit=200");
+    const activity = await api("/api/v2/dashboard/analytics?limit=200");
+    const movements = activity.recent_movements || activity.movements || [];
     if (!container.isConnected) return;
 
     const movementsSpec = chartRegistry.get("movements");
@@ -4855,12 +4897,44 @@ async function loadLiveWarehouseActivity(container) {
   }
 }
 
+async function loadLiveRuntimeResources(container) {
+  try {
+    const metrics = await api("/api/v2/streams/runtime-metrics", { timeoutMs: 5000 });
+    if (!container.isConnected) return;
+    const values = {
+      cpu: Number(metrics.host_cpu_percent ?? metrics.process_cpu_percent),
+      gpu: metrics.gpu_percent == null ? null : Number(metrics.gpu_percent),
+      storage: Number(metrics.storage_percent),
+      memory: Number(metrics.host_memory_percent),
+    };
+    Object.entries(values).forEach(([key, rawValue]) => {
+      const row = container.querySelector(`[data-runtime-resource="${key}"]`);
+      if (!row) return;
+      const value = Number.isFinite(rawValue) ? Math.max(0, Math.min(100, rawValue)) : null;
+      const label = row.querySelector(".res-head span");
+      const bar = row.querySelector(".res-bar i");
+      if (label) label.textContent = value === null ? "N/A" : `${Math.round(value)}%`;
+      if (bar) bar.style.width = value === null ? "0%" : `${value}%`;
+    });
+  } catch {
+    container.querySelectorAll("[data-runtime-resource]").forEach((row) => {
+      const label = row.querySelector(".res-head span");
+      if (label) label.textContent = "Unavailable";
+    });
+  }
+}
+
 async function loadDeferredDashboardData() {
   const streamsHealth = await api("/api/v2/streams/health", { timeoutMs: 10000 }).catch(
     () => null
   );
   if (streamsHealth) {
     state.streams = streamsHealth.streams || state.streams || [];
+    if (accountState && accountModule === "analytics") {
+      renderAccountModule();
+    } else if (state.activeModule === "overview" || state.activeModule === "home") {
+      renderModuleContent();
+    }
   }
 }
 

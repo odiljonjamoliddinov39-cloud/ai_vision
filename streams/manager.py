@@ -302,6 +302,8 @@ class _ManagedStreamSession:
         self._publish_times = deque(maxlen=90)
         self._published_sizes = deque(maxlen=90)
         self._last_frame_monotonic: float | None = None
+        self._decoder_damage_budget = 0
+        self._decoder_damage_lock = threading.Lock()
 
     def same_source(self, config: StreamSessionConfig) -> bool:
         if self._thread is None or not self._thread.is_alive():
@@ -551,6 +553,15 @@ class _ManagedStreamSession:
             if self._stop.is_set():
                 break
             text = line.decode("utf-8", errors="replace").strip()
+            if _is_decoder_damage(text):
+                # FFmpeg can emit a structurally valid JPEG immediately after
+                # reporting a broken H.26x reference chain. Quarantine the
+                # corresponding output instead of publishing grey/magenta
+                # macroblocks as the newest live frame.
+                with self._decoder_damage_lock:
+                    self._decoder_damage_budget = max(
+                        self._decoder_damage_budget, 2
+                    )
             if not text or _is_benign_ffmpeg_noise(text):
                 continue
             if self._warning_log.should_log(text):
@@ -596,6 +607,12 @@ class _ManagedStreamSession:
         if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
             self.status_data.dropped_frames += 1
             return
+        with self._decoder_damage_lock:
+            if self._decoder_damage_budget > 0:
+                self._decoder_damage_budget -= 1
+                self.status_data.dropped_frames += 1
+                self.status_data.decode_errors += 1
+                return
         if _jpeg_has_decoder_concealment(data):
             # A damaged H.264 reference chain can still be transcoded into a
             # structurally valid JPEG whose missing macroblocks are filled with
@@ -862,6 +879,11 @@ _BENIGN_FFMPEG_MARKERS = (
 
 def _is_benign_ffmpeg_noise(text: str) -> bool:
     return any(marker in text for marker in _BENIGN_FFMPEG_MARKERS)
+
+
+def _is_decoder_damage(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in _BENIGN_FFMPEG_MARKERS)
 
 
 def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:

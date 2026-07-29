@@ -618,6 +618,7 @@ def _write_detection_health(path: str, payload: dict) -> None:
     health_path = Path(path)
     health_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path = health_path.with_name(f"{health_path.stem}_summary{health_path.suffix}")
+    latest_path = health_path.with_name(f"{health_path.stem}_latest{health_path.suffix}")
     summary_fields = (
         "state",
         "error",
@@ -632,8 +633,24 @@ def _write_detection_health(path: str, payload: dict) -> None:
     summary = {field: payload.get(field) for field in summary_fields}
     if summary.get("camera_count") is None:
         summary["camera_count"] = len(payload.get("cameras") or [])
+    latest = {
+        "state": payload.get("state"),
+        "updated_at": payload.get("updated_at"),
+        "camera_count": summary.get("camera_count"),
+        "last_frame_at": payload.get("last_frame_at"),
+        "last_detections_by_camera": payload.get("last_detections_by_camera") or {},
+        "last_spatial_objects_by_camera": (
+            payload.get("last_spatial_objects_by_camera")
+            or payload.get("last_spatial_objects")
+            or {}
+        ),
+    }
 
-    for destination, document in ((health_path, payload), (summary_path, summary)):
+    for destination, document in (
+        (health_path, payload),
+        (summary_path, summary),
+        (latest_path, latest),
+    ):
         data = json.dumps(document, indent=2)
         tmp_path = destination.with_name(f"{destination.stem}.{os.getpid()}.tmp")
         written = False
