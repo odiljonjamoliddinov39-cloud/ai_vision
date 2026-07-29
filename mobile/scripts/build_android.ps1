@@ -66,16 +66,49 @@ function Invoke-NativeTool {
             '"' + $_.Replace('"', '\"') + '"'
         }) -join " "
         $batchCommand = 'call "' + $Executable + '" ' + $argumentLine
-        & $env:ComSpec /d /s /c $batchCommand 2>&1 | Out-Host
+        & $env:ComSpec /d /s /c $batchCommand 2>&1 |
+            ForEach-Object { $_.ToString() } |
+            Out-Host
     }
     else {
-        & $Executable @Arguments 2>&1 | Out-Host
+        & $Executable @Arguments 2>&1 |
+            ForEach-Object { $_.ToString() } |
+            Out-Host
     }
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousPreference
     if ($exitCode -ne 0) {
         throw "$FailureMessage Exit code: $exitCode"
     }
+}
+
+function Invoke-FlutterTool {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [Parameter()]
+        [string]$FailureMessage = "Flutter command failed."
+    )
+
+    $dart = Join-Path $flutterRoot "bin\cache\dart-sdk\bin\dart.exe"
+    $snapshot = Join-Path $flutterRoot "bin\cache\flutter_tools.snapshot"
+    $packageConfig = Join-Path $flutterRoot "packages\flutter_tools\.dart_tool\package_config.json"
+    if (
+        (Test-Path -LiteralPath $dart) -and
+        (Test-Path -LiteralPath $snapshot) -and
+        (Test-Path -LiteralPath $packageConfig)
+    ) {
+        Invoke-NativeTool `
+            -Executable $dart `
+            -Arguments (@("--packages=$packageConfig", $snapshot) + $Arguments) `
+            -FailureMessage $FailureMessage
+        return
+    }
+
+    Invoke-NativeTool `
+        -Executable $flutter `
+        -Arguments $Arguments `
+        -FailureMessage $FailureMessage
 }
 
 function Find-JavaHome {
@@ -128,10 +161,41 @@ if (-not (Test-Path -LiteralPath $sdkManager)) {
 $env:JAVA_HOME = Find-JavaHome
 $env:ANDROID_HOME = $androidSdk
 $env:ANDROID_SDK_ROOT = $androidSdk
+$env:FLUTTER_ROOT = $flutterRoot
+$flutterUserState = Join-Path $projectRoot ".flutter-user"
+New-Item -ItemType Directory -Force -Path $flutterUserState | Out-Null
+$env:APPDATA = $flutterUserState
+$env:LOCALAPPDATA = $flutterUserState
 $env:Path = "$env:JAVA_HOME\bin;$androidSdk\platform-tools;$env:Path"
+
+# Flutter uses Git internally to determine its framework and engine versions.
+# The portable SDK can be prepared by the Codex sandbox account and then built
+# by the interactive Windows account. Trust only this SDK for this process;
+# do not weaken the user's global Git safe-directory policy.
+$gitConfigCountText = [Environment]::GetEnvironmentVariable("GIT_CONFIG_COUNT", "Process")
+$gitConfigIndex = 0
+if (-not [string]::IsNullOrWhiteSpace($gitConfigCountText)) {
+    $parsedGitConfigCount = 0
+    if ([int]::TryParse($gitConfigCountText, [ref]$parsedGitConfigCount)) {
+        $gitConfigIndex = $parsedGitConfigCount
+    }
+}
+$flutterSafeDirectory = (Resolve-Path -LiteralPath $flutterRoot).Path.Replace("\", "/")
+[Environment]::SetEnvironmentVariable(
+    "GIT_CONFIG_KEY_$gitConfigIndex",
+    "safe.directory",
+    "Process"
+)
+[Environment]::SetEnvironmentVariable(
+    "GIT_CONFIG_VALUE_$gitConfigIndex",
+    $flutterSafeDirectory,
+    "Process"
+)
+$env:GIT_CONFIG_COUNT = [string]($gitConfigIndex + 1)
 
 Write-Host "Java: $env:JAVA_HOME" -ForegroundColor Cyan
 Write-Host "Android SDK: $androidSdk" -ForegroundColor Cyan
+Write-Host "Flutter SDK trusted for this build process: $flutterSafeDirectory" -ForegroundColor Cyan
 
 Invoke-NativeTool `
     -Executable (Join-Path $env:JAVA_HOME "bin\java.exe") `
@@ -174,65 +238,100 @@ if (-not (Test-Path -LiteralPath $keyProperties) -or -not (Test-Path -LiteralPat
     ) | Set-Content -LiteralPath $keyProperties -Encoding ASCII
 }
 
-$licenseAnswers = (1..200 | ForEach-Object { "y" }) -join [Environment]::NewLine
-$previousErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-$licenseCommand = 'call "' + $sdkManager + '" "--licenses"'
-$licenseAnswers | & $env:ComSpec /d /s /c $licenseCommand 2>&1 | Out-Host
-$licenseExitCode = $LASTEXITCODE
-$ErrorActionPreference = $previousErrorActionPreference
-if ($licenseExitCode -ne 0) {
-    throw "Android SDK license acceptance failed. Exit code: $licenseExitCode"
+$androidPackagesReady = @(
+    (Join-Path $androidSdk "platform-tools\adb.exe"),
+    (Join-Path $androidSdk "platforms\android-36\android.jar"),
+    (Join-Path $androidSdk "build-tools\36.0.0\aapt2.exe"),
+    (Join-Path $androidSdk "ndk\28.2.13676358\source.properties")
+) | ForEach-Object { Test-Path -LiteralPath $_ }
+
+if ($androidPackagesReady -contains $false) {
+    $licenseAnswers = (1..200 | ForEach-Object { "y" }) -join [Environment]::NewLine
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $licenseCommand = 'call "' + $sdkManager + '" "--licenses"'
+    $licenseAnswers |
+        & $env:ComSpec /d /s /c $licenseCommand 2>&1 |
+        ForEach-Object { $_.ToString() } |
+        Out-Host
+    $licenseExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($licenseExitCode -ne 0) {
+        throw "Android SDK license acceptance failed. Exit code: $licenseExitCode"
+    }
+
+    Invoke-NativeTool `
+        -Executable $sdkManager `
+        -Arguments @(
+            "platform-tools",
+            "platforms;android-36",
+            "build-tools;36.0.0",
+            "ndk;28.2.13676358"
+        ) `
+        -FailureMessage "Android SDK package installation failed."
+}
+else {
+    Write-Host "Android SDK packages are already installed; skipping package download." -ForegroundColor Green
 }
 
-Invoke-NativeTool `
-    -Executable $sdkManager `
-    -Arguments @(
-        "platform-tools",
-        "platforms;android-36",
-        "build-tools;36.0.0",
-        "ndk;28.2.13676358"
-    ) `
-    -FailureMessage "Android SDK package installation failed."
-
-Invoke-NativeTool `
-    -Executable $flutter `
+Invoke-FlutterTool `
     -Arguments @("config", "--android-sdk", $androidSdk) `
     -FailureMessage "Flutter Android SDK configuration failed."
 
 Set-Location $projectRoot
-Invoke-NativeTool `
-    -Executable $flutter `
-    -Arguments @("pub", "get") `
-    -FailureMessage "Flutter dependency resolution failed."
-Invoke-NativeTool `
-    -Executable $flutter `
-    -Arguments @("analyze") `
+$offlinePackageConfig = Join-Path $projectRoot ".dart_tool\package_config.json"
+$resolvedAllDependencies = $true
+try {
+    Invoke-FlutterTool `
+        -Arguments @("pub", "get") `
+        -FailureMessage "Flutter dependency resolution failed."
+}
+catch {
+    if (-not (Test-Path -LiteralPath $offlinePackageConfig)) {
+        throw
+    }
+
+    # The application itself has no third-party runtime packages. The project
+    # carries a minimal package_config.json for release builds when pub.dev is
+    # temporarily unreachable. Tests still require flutter_test and should be
+    # run after network dependency resolution is available.
+    $resolvedAllDependencies = $false
+    Write-Warning "pub.dev is unavailable; continuing with the verified offline Flutter package configuration."
+}
+
+$analyzeArguments = if ($resolvedAllDependencies) {
+    @("analyze", "--no-pub")
+}
+else {
+    @("analyze", "--no-pub", "lib")
+}
+Invoke-FlutterTool `
+    -Arguments $analyzeArguments `
     -FailureMessage "Flutter analysis failed."
-Invoke-NativeTool `
-    -Executable $flutter `
+Invoke-FlutterTool `
     -Arguments @(
         "build",
         "apk",
         "--debug",
+        "--no-pub",
         "--dart-define=AI_VISION_API_BASE_URL=$ApiBaseUrl"
     ) `
     -FailureMessage "Debug APK build failed."
-Invoke-NativeTool `
-    -Executable $flutter `
+Invoke-FlutterTool `
     -Arguments @(
         "build",
         "apk",
         "--release",
+        "--no-pub",
         "--dart-define=AI_VISION_API_BASE_URL=$ApiBaseUrl"
     ) `
     -FailureMessage "Release APK build failed."
-Invoke-NativeTool `
-    -Executable $flutter `
+Invoke-FlutterTool `
     -Arguments @(
         "build",
         "appbundle",
         "--release",
+        "--no-pub",
         "--dart-define=AI_VISION_API_BASE_URL=$ApiBaseUrl"
     ) `
     -FailureMessage "Release AAB build failed."
