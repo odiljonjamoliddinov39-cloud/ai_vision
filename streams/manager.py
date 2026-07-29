@@ -33,9 +33,19 @@ class StreamSessionConfig:
     source: str
     slot_number: int | None = None
     snapshot_dir: str | Path = "snapshots"
-    width: int = field(default_factory=lambda: int(os.getenv("STREAM_PREVIEW_WIDTH", "640")))
-    jpeg_quality: int = field(default_factory=lambda: int(os.getenv("STREAM_JPEG_QUALITY", "68")))
-    preview_fps: float = field(default_factory=lambda: float(os.getenv("STREAM_PREVIEW_FPS", "3")))
+    width: int = field(
+        default_factory=lambda: int(
+            os.getenv("AI_STREAM_WIDTH", os.getenv("STREAM_PREVIEW_WIDTH", "1280"))
+        )
+    )
+    jpeg_quality: int = field(
+        default_factory=lambda: int(os.getenv("STREAM_JPEG_QUALITY", "85"))
+    )
+    preview_fps: float = field(
+        default_factory=lambda: float(
+            os.getenv("AI_STREAM_FPS", os.getenv("STREAM_PREVIEW_FPS", "12"))
+        )
+    )
     origin_source: str | None = None
     media_route: MediaRoute | None = None
 
@@ -245,13 +255,11 @@ class StreamManager:
         source = str(config.origin_source or config.source).strip()
         if not self.media_client.enabled or not source.lower().startswith("rtsp://"):
             return config
-        upstream_source = source
-        if os.getenv("MEDIAMTX_PREFER_HIKVISION_SUBSTREAM", "false").strip().lower() in {
-            "1", "true", "yes", "on"
-        }:
-            upstream_source = _hikvision_substream_url(source)
         try:
-            route = self.media_client.ensure_source(str(config.channel_id), upstream_source)
+            # Preserve the camera profile selected by the operator. Rewriting
+            # Hikvision main-stream URLs to substreams here made the single
+            # MediaMTX source lower quality for every consumer, including AI.
+            route = self.media_client.ensure_source(str(config.channel_id), source)
         except Exception:
             # A platform can deploy the backend service from docker-compose
             # without provisioning its sibling MediaMTX service. Never strand
@@ -674,10 +682,9 @@ def _ffmpeg_command(
 ) -> list[str]:
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     preview_width = max(240, min(int(width), 1280))
-    # Keep reference frames but discard non-reference frames under load; this
-    # preserves moving video without the severe stutter of keyframe-only mode.
-    # Keep a modest input probe/buffer: forcing nobuffer+low_delay can make
-    # FFmpeg emit grey concealment blocks when an H.264 reference is late.
+    # Decode the complete reference chain. Both ``nokey`` and ``noref`` starve
+    # tracking and recognition of temporal information and can leave YOLO with
+    # sparse or incomplete images. Sampling belongs after decode.
     preview_fps = max(1.0, min(float(fps), 30.0))
     # OpenCV JPEG quality is 0..100, while ffmpeg's mjpeg qscale is roughly
     # 2(best)..31(worst). Keep previews small enough for multi-camera grids.
@@ -688,12 +695,10 @@ def _ffmpeg_command(
         "tcp",
         "-threads",
         "1",
-        "-skip_frame",
-        "noref",
         "-probesize",
-        "262144",
+        "1048576",
         "-analyzeduration",
-        "500000",
+        "1000000",
         "-fflags",
         "+discardcorrupt",
         "-i",
@@ -827,17 +832,6 @@ def _rtsp_source_for_attempt(source: str, reconnect_count: int) -> str:
     """
     if reconnect_count < 2:
         return source
-    return re.sub(
-        r"(/Streaming/Channels/\d+)01(?=($|[/?#]))",
-        r"\g<1>02",
-        source,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-
-def _hikvision_substream_url(source: str) -> str:
-    """Select Hikvision/NVR substream 02 without changing stored camera data."""
     return re.sub(
         r"(/Streaming/Channels/\d+)01(?=($|[/?#]))",
         r"\g<1>02",

@@ -76,10 +76,7 @@ def test_dashboard_live_frame_observer_ignores_badge_text_mutations():
     # elements actually added/removed) should call syncLiveFrameRefresh.
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert (
-        "return !(target instanceof Element && target.closest(\".feed-transmitting\"));"
-        in source
-    )
+    assert 'target.closest(".feed-transmitting, [data-live-detection-status]")' in source
     assert "if (structuralChange) syncLiveFrameRefresh();" in source
 
 
@@ -155,7 +152,8 @@ def test_dashboard_has_ru_eng_language_toggle():
 def test_camera_control_rows_use_stream_health_for_live_slots():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert 'api("/api/v2/streams/health").catch(() => ({ streams: [] }))' in source
+    assert "async function loadDeferredDashboardData()" in source
+    assert 'api("/api/v2/streams/health", { timeoutMs: 10000 })' in source
     assert "function streamStatusBySlot()" in source
     assert 'const isLive = stream?.status === "online";' in source
     assert 'const label = isLive' in source
@@ -173,8 +171,28 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=64" in html
+    assert "/dashboard-v2/assets/app.js?v=69" in html
     assert "/dashboard-v2/assets/styles.css?v=43" in html
+
+
+def test_dashboard_draws_live_yolo_detection_overlays():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'api("/api/v2/detections/latest", { timeoutMs: 3000 })' in source
+    assert "function liveDetectionOverlayHtml(slot)" in source
+    assert "data-live-detection-overlay" in source
+    assert "function drawLiveDetectionOverlay(overlay)" in source
+    assert "function liveDetectionColor(label)" in source
+    assert "detection.inventory_name || detection.class_name" in source
+    assert "detection.track_id" in source
+    assert "first.frame_width" in source
+    assert "first.frame_height" in source
+    assert "data-yolo-overlay" in source
+    assert "YOLO boxes · ON" in source
+    assert "Recognition scan" in source
+    assert "Reference scan" in source
+    assert "YOLO live · stopped" in source
+    assert "Detection API · unavailable" in source
 
 
 def test_dashboard_uses_single_flight_latest_frame_coalescing():

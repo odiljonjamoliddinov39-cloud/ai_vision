@@ -60,6 +60,35 @@ def test_stream_manager_routes_upstream_rtsp_through_mediamtx(monkeypatch, tmp_p
     assert status["transport"] == "mediamtx"
 
 
+def test_stream_manager_preserves_configured_hikvision_main_profile(monkeypatch, tmp_path):
+    client = FakeMediaMTX()
+    captured = []
+
+    monkeypatch.setenv("MEDIAMTX_PREFER_HIKVISION_SUBSTREAM", "true")
+    monkeypatch.setattr(
+        "streams.manager._ManagedStreamSession.start",
+        lambda self: captured.append(self.config),
+    )
+    manager = StreamManager(snapshot_dir=tmp_path, media_client=client)
+    source = (
+        "rtsp://user:secret@camera.example.test/"
+        "Streaming/Channels/1101"
+    )
+
+    manager.start(
+        StreamSessionConfig(
+            channel_id="11",
+            name="Warehouse 11",
+            source=source,
+            slot_number=11,
+            snapshot_dir=tmp_path,
+        )
+    )
+
+    assert client.sources == [("11", source)]
+    assert captured[0].origin_source == source
+
+
 def test_mediamtx_registration_uses_required_path_recording_variable(monkeypatch):
     client = MediaMTXClient(
         enabled=True,

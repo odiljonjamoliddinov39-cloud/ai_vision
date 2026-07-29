@@ -97,6 +97,7 @@ ACCOUNTS_DB_PATH = ROOT / "database" / "accounts.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
 DETECTION_HEALTH_PATH = ROOT / "logs" / "detection_health.json"
+DETECTION_HEALTH_SUMMARY_PATH = ROOT / "logs" / "detection_health_summary.json"
 DETECTION_PID_PATH = ROOT / "logs" / "detection.pid"
 MAX_CAMERA_SLOTS = 100
 DEFAULT_ALLOWED_ORIGINS = [
@@ -3074,6 +3075,70 @@ def _status() -> dict[str, Any]:
     }
 
 
+_DASHBOARD_HEALTH_FIELDS = (
+    "state",
+    "error",
+    "camera_count",
+    "frames_read",
+    "last_frame_at",
+    "last_detection_count",
+    "last_tracked_count",
+    "model_loaded",
+    "updated_at",
+)
+
+
+def _dashboard_health_summary(health: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return only fields needed to paint the dashboard shell.
+
+    The detector health document also contains every camera, detection,
+    inference result, spatial measurement and object. Copying that document
+    into an overview response made the initial dashboard payload grow with the
+    number of cameras and detections.
+    """
+    source = health
+    if source is None:
+        summary_is_current = False
+        try:
+            summary_is_current = (
+                DETECTION_HEALTH_SUMMARY_PATH.exists()
+                and (
+                    not DETECTION_HEALTH_PATH.exists()
+                    or DETECTION_HEALTH_SUMMARY_PATH.stat().st_mtime
+                    >= DETECTION_HEALTH_PATH.stat().st_mtime
+                )
+            )
+        except OSError:
+            summary_is_current = False
+        source = (
+            _read_json(DETECTION_HEALTH_SUMMARY_PATH)
+            if summary_is_current
+            else None
+        )
+        if not source:
+            source = _read_json(DETECTION_HEALTH_PATH)
+    source = source or {}
+    summary = {field: source.get(field) for field in _DASHBOARD_HEALTH_FIELDS}
+    if summary.get("camera_count") is None:
+        summary["camera_count"] = len(source.get("cameras") or [])
+    return summary
+
+
+def _dashboard_runtime_summary() -> dict[str, Any]:
+    """Read dashboard readiness without enumerating streams or log tails."""
+    pid = _detector_pid()
+    return {
+        "running": pid is not None,
+        "pid": pid,
+        "started_at": _started_at,
+        "uptime_seconds": round(time.time() - _started_at, 1)
+        if _started_at
+        else 0,
+        "last_exit_code": _last_exit_code,
+        "health": _dashboard_health_summary(),
+    }
+
+
 def _should_autostart_detection() -> bool:
     if not _env_bool("AUTO_START_DETECTION", True):
         return False
@@ -3390,7 +3455,8 @@ def v2_admin_overview(request: Request) -> dict[str, Any]:
     ac = _get_access_control_db()
     cameras = _get_camera_db().list_cameras(include_secret=False)
     active_cameras = [camera for camera in cameras if camera["is_active"]]
-    health = (_status().get("health") or {})
+    server_status = _dashboard_runtime_summary()
+    health = server_status["health"]
     return {
         "totals": {
             "companies": len([org for org in ac.list_organizations() if org["type"] == "company"]),
@@ -3399,11 +3465,11 @@ def v2_admin_overview(request: Request) -> dict[str, Any]:
             "users": len(ac.list_users()),
             "online_cameras": len(active_cameras),
             "offline_cameras": max(0, len(cameras) - len(active_cameras)),
-            "active_ai_processes": 1 if _status()["running"] else 0,
+            "active_ai_processes": 1 if server_status["running"] else 0,
             "products_counted_today": health.get("last_detection_count", 0),
             "active_alerts": 0,
         },
-        "server_status": _status(),
+        "server_status": server_status,
         "recent_activity": _get_security_audit_db().recent(limit=12),
     }
 
@@ -3550,18 +3616,13 @@ def dashboard_v2_navigation(request: Request, surface: str = "head") -> dict[str
     }
 
 
-@app.get("/api/v2/head/overview")
-def dashboard_v2_head_overview(request: Request) -> dict[str, Any]:
-    context = _require_permission(request, "view_dashboard")
-    status_data = _status()
-    health = status_data.get("health") or {}
+def _dashboard_overview_payload(_context: dict[str, Any]) -> dict[str, Any]:
+    status_data = _dashboard_runtime_summary()
+    health = status_data["health"]
     cameras = _get_camera_db().list_cameras(include_secret=False)
     active_cameras = [camera for camera in cameras if camera["is_active"]]
     stock = _get_warehouse_db().get_all_stock()
-    movement_counts = _get_warehouse_db().movement_counts()
-    audit = _get_security_audit_db().verify()
     return {
-        "context": context,
         "summary": {
             "organizations": 1,
             "active_cameras": len(active_cameras),
@@ -3571,28 +3632,104 @@ def dashboard_v2_head_overview(request: Request) -> dict[str, Any]:
             "last_frame_at": health.get("last_frame_at"),
             "last_detection_count": health.get("last_detection_count", 0),
             "stock_items": len(stock),
-            "audit_verified": audit.get("verified", False),
+            # Full hash-chain verification scans the entire audit table. It is
+            # intentionally deferred to /api/security/audit instead of
+            # delaying every initial dashboard paint.
+            "audit_verified": None,
+            "audit_check": "deferred",
         },
         "health": health,
-        "movement_counts": movement_counts,
-        "future_integrations": [
-            "ERP",
-            "HRM",
-            "CRM",
-            "Inventory Management",
-            "Quality Control",
-            "Predictive Analytics",
-            "Multi-site Management",
-            "API Integrations",
-        ],
+    }
+
+
+@app.get("/api/v2/dashboard/overview")
+def dashboard_v2_overview(request: Request) -> dict[str, Any]:
+    """Small, stable payload used for the first dashboard paint."""
+    context = _require_permission(request, "view_dashboard")
+    return _dashboard_overview_payload(context)
+
+
+@app.get("/api/v2/head/overview")
+def dashboard_v2_head_overview(request: Request) -> dict[str, Any]:
+    """Backward-compatible alias for the lightweight dashboard overview."""
+    context = _require_permission(request, "view_dashboard")
+    return _dashboard_overview_payload(context)
+
+
+@app.get("/api/v2/dashboard/health")
+def dashboard_v2_health(request: Request) -> dict[str, Any]:
+    _require_permission(request, "view_dashboard")
+    return _dashboard_runtime_summary()
+
+
+@app.get("/api/v2/dashboard/cameras")
+def dashboard_v2_cameras(request: Request) -> dict[str, Any]:
+    _require_permission(request, "view_dashboard")
+    cameras = _get_camera_db().list_cameras(include_secret=False)
+    return {
+        "count": len(cameras),
+        "online": len(
+            [
+                camera
+                for camera in cameras
+                if camera.get("is_active")
+                and str(camera.get("status") or "").lower()
+                not in {"offline", "failed", "stopped"}
+            ]
+        ),
+        "cameras": cameras,
+    }
+
+
+@app.get("/api/v2/dashboard/detections")
+def dashboard_v2_detections(request: Request) -> dict[str, Any]:
+    _require_permission(request, "view_dashboard")
+    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    return {
+        "state": health.get("state", "offline"),
+        "updated_at": health.get("updated_at"),
+        "detections": health.get("last_detections_by_camera") or {},
+    }
+
+
+@app.get("/api/v2/dashboard/analytics")
+def dashboard_v2_analytics(request: Request, limit: int = 50) -> dict[str, Any]:
+    _require_permission(request, "view_dashboard")
+    db = _get_warehouse_db()
+    return {
+        "movement_counts": db.movement_counts(),
+        "recent_movements": db.recent_movements(limit=max(1, min(limit, 500))),
+    }
+
+
+@app.get("/api/v2/dashboard/warehouse")
+def dashboard_v2_warehouse(request: Request) -> dict[str, Any]:
+    _require_permission(request, "view_dashboard")
+    db = _get_warehouse_db()
+    return {
+        "stock": db.get_all_stock(),
+        "movement_counts": db.movement_counts(),
+    }
+
+
+@app.get("/api/v2/dashboard/spatial")
+def dashboard_v2_spatial(request: Request) -> dict[str, Any]:
+    _require_permission(request, "view_dashboard")
+    health = _read_json(DETECTION_HEALTH_PATH) or {}
+    return {
+        "state": health.get("state", "offline"),
+        "updated_at": health.get("updated_at"),
+        "spatial": health.get("last_spatial_objects_by_camera")
+        or health.get("last_spatial_objects")
+        or {},
     }
 
 
 @app.get("/api/v2/user/overview")
 def dashboard_v2_user_overview(request: Request) -> dict[str, Any]:
     context = _require_permission(request, "view_dashboard")
-    status_data = _status()
-    health = status_data.get("health") or {}
+    status_data = _dashboard_runtime_summary()
+    health = status_data["health"]
     stock = _get_warehouse_db().get_all_stock()
     movements = _get_warehouse_db().recent_movements(limit=12)
     return {

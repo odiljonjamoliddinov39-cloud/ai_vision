@@ -199,6 +199,7 @@ const I18N = {
     "summary.stock_items": "Stock items",
     "summary.saved_cameras": "Saved cameras",
     "summary.audit_verified": "Audit verified",
+    "summary.pending": "Pending",
     "summary.yes": "Yes",
     "summary.no": "No",
     "summary.delta_cameras": "+1 this week",
@@ -405,6 +406,7 @@ const I18N = {
     "summary.stock_items": "Товары на складе",
     "summary.saved_cameras": "Сохраненные камеры",
     "summary.audit_verified": "Аудит проверен",
+    "summary.pending": "Ожидается",
     "summary.yes": "Да",
     "summary.no": "Нет",
     "summary.delta_cameras": "+1 за неделю",
@@ -532,6 +534,17 @@ let liveWsLastRenderedFrames = 0;
 let liveWebRtcSnapshot = { fps: 0, bandwidthKbps: 0, latencyMs: null, jitterMs: 0 };
 const liveMetricSamples = { websocket: [], webrtc: [] };
 let backendClockOffsetMs = 0;
+const LIVE_DETECTION_REFRESH_MS = 400;
+const LIVE_DETECTION_STALE_MS = 5000;
+let liveDetectionTimer = null;
+let liveDetectionRequestPending = false;
+let liveDetectionOverlayEnabled = localStorage.getItem("ai_vision_yolo_overlay") !== "0";
+let liveDetectionEndpointAvailable = true;
+let liveDetectionSnapshotToken = "";
+let liveDetectionSnapshotSeenAt = 0;
+let liveCatalogScanStatus = { running: false, remaining_seconds: 0, yolo_scan: null };
+let liveCatalogScanCheckedAt = 0;
+const liveDetectionsBySlot = new Map();
 
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
@@ -545,6 +558,354 @@ function liveWebSocketUrl(slots) {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("slots", slots);
   return url.toString();
+}
+
+function liveDetectionOverlayHtml(slot) {
+  return `
+    <canvas
+      data-live-detection-overlay
+      data-live-slot="${slot}"
+      aria-hidden="true"
+      style="position:absolute;left:0;top:0;z-index:2;display:block;width:100%;height:auto;aspect-ratio:16/9;pointer-events:none"
+    ></canvas>
+    <span
+      data-live-detection-status
+      data-live-slot="${slot}"
+      style="position:absolute;left:8px;top:40px;z-index:4;padding:4px 9px;border:1px solid rgba(34,211,238,.5);border-radius:999px;background:rgba(7,21,45,.82);color:#a5f3fc;font:700 11px/1.2 Inter,system-ui,sans-serif;letter-spacing:.02em;backdrop-filter:blur(6px);pointer-events:none"
+    >YOLO · scanning</span>
+  `;
+}
+
+function normalizeLiveCameraName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/gi, " ")
+    .replace(/\s+/g, " ");
+}
+
+function liveCameraSlotNames() {
+  const entries = [];
+  (state.streams || []).forEach((stream) => {
+    const slot = Number(stream?.slot_number);
+    if (!slot) return;
+    entries.push({
+      slot,
+      channel: null,
+      names: [stream.name, stream.camera_name, `slot ${slot}`].filter(Boolean),
+    });
+  });
+  (accountState?.company?.cameraConfig?.nvrs || []).forEach((nvr) => {
+    (nvr.channelsDetail || []).forEach((channel) => {
+      const slot = Number(channel?.slot_number);
+      if (!slot) return;
+      const channelNumber = Number(channel.channel || channel.external_channel_id);
+      entries.push({
+        slot,
+        channel: Number.isFinite(channelNumber) ? channelNumber : null,
+        names: [
+          channel.name,
+          channel.camera_name,
+          `${nvr.name || ""} Channel ${channelNumber}`,
+          `${nvr.host || ""} Channel ${channelNumber}`,
+          `slot ${slot}`,
+        ].filter(Boolean),
+      });
+    });
+  });
+  return entries;
+}
+
+function resolveLiveDetectionSlot(cameraName, cameraIndex, mountedSlots, claimedSlots) {
+  const normalized = normalizeLiveCameraName(cameraName);
+  const explicitSlot = normalized.match(/\bslot\s*(\d+)\b/i);
+  if (explicitSlot && mountedSlots.includes(Number(explicitSlot[1]))) {
+    return Number(explicitSlot[1]);
+  }
+
+  const entries = liveCameraSlotNames();
+  const exact = entries.find((entry) =>
+    entry.names.some((name) => normalizeLiveCameraName(name) === normalized)
+  );
+  if (exact) return exact.slot;
+
+  const contained = entries.find((entry) =>
+    entry.names.some((name) => {
+      const candidate = normalizeLiveCameraName(name);
+      return candidate.length >= 5
+        && (normalized.includes(candidate) || candidate.includes(normalized));
+    })
+  );
+  if (contained) return contained.slot;
+
+  const channelMatch = normalized.match(/\bchannel\s*(\d+)\b/i);
+  if (channelMatch) {
+    const channelNumber = Number(channelMatch[1]);
+    const channelEntry = entries.find((entry) =>
+      entry.channel === channelNumber && !claimedSlots.has(entry.slot)
+    );
+    if (channelEntry) return channelEntry.slot;
+  }
+
+  return mountedSlots.find((slot, index) =>
+    index >= cameraIndex && !claimedSlots.has(slot)
+  ) || mountedSlots.find((slot) => !claimedSlots.has(slot)) || null;
+}
+
+function updateLiveDetections(payload) {
+  liveDetectionsBySlot.clear();
+  const snapshotToken = String(payload?.updated_at || "");
+  if (snapshotToken !== liveDetectionSnapshotToken) {
+    liveDetectionSnapshotToken = snapshotToken;
+    liveDetectionSnapshotSeenAt = Date.now();
+  }
+  if (!liveDetectionSnapshotSeenAt) liveDetectionSnapshotSeenAt = Date.now();
+  const mountedSlots = [...new Set(
+    Array.from(els.moduleContent.querySelectorAll("[data-live-detection-overlay]"))
+      .map((overlay) => Number(overlay.dataset.liveSlot))
+      .filter(Boolean)
+  )].sort((left, right) => left - right);
+  const claimedSlots = new Set();
+  Object.entries(payload?.detections || {}).forEach(([cameraName, detections], index) => {
+    const slot = resolveLiveDetectionSlot(cameraName, index, mountedSlots, claimedSlots);
+    if (!slot) return;
+    claimedSlots.add(slot);
+    liveDetectionsBySlot.set(slot, {
+      cameraName,
+      detections: Array.isArray(detections) ? detections : [],
+      state: payload?.state || "offline",
+      updatedAt: payload?.updated_at || null,
+      snapshotSeenAt: liveDetectionSnapshotSeenAt,
+    });
+  });
+}
+
+function liveDetectionColor(label) {
+  let hash = 0;
+  for (const character of String(label || "object")) {
+    hash = ((hash << 5) - hash + character.codePointAt(0)) | 0;
+  }
+  return `hsl(${Math.abs(hash) % 360} 92% 58%)`;
+}
+
+function setLiveDetectionStatus(overlay, text, mode = "scanning") {
+  const slot = overlay.dataset.liveSlot;
+  const status = overlay.parentElement?.querySelector(
+    `[data-live-detection-status][data-live-slot="${slot}"]`
+  );
+  if (!status) return;
+  status.textContent = text;
+  if (mode === "active") {
+    status.style.borderColor = "rgba(74,222,128,.72)";
+    status.style.background = "rgba(5,46,22,.88)";
+    status.style.color = "#bbf7d0";
+  } else if (mode === "offline") {
+    status.style.borderColor = "rgba(248,113,113,.65)";
+    status.style.background = "rgba(69,10,10,.88)";
+    status.style.color = "#fecaca";
+  } else if (mode === "idle") {
+    status.style.borderColor = "rgba(251,191,36,.65)";
+    status.style.background = "rgba(69,26,3,.88)";
+    status.style.color = "#fde68a";
+  } else {
+    status.style.borderColor = "rgba(34,211,238,.5)";
+    status.style.background = "rgba(7,21,45,.82)";
+    status.style.color = "#a5f3fc";
+  }
+}
+
+function drawLiveDetectionOverlay(overlay) {
+  if (!(overlay instanceof HTMLCanvasElement)) return;
+  const slot = Number(overlay.dataset.liveSlot);
+  const figure = overlay.parentElement;
+  const canvasSurface = figure?.querySelector(
+    `[data-live-frame][data-live-slot="${slot}"]`
+  );
+  const videoSurface = figure?.querySelector(
+    `[data-live-webrtc][data-live-slot="${slot}"]`
+  );
+  const surface = liveTransportMode === "webrtc" && videoSurface
+    ? videoSurface
+    : canvasSurface;
+  if (!surface) return;
+
+  const rect = surface.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const figureRect = figure.getBoundingClientRect();
+  overlay.style.left = `${rect.left - figureRect.left}px`;
+  overlay.style.top = `${rect.top - figureRect.top}px`;
+  overlay.style.width = `${rect.width}px`;
+  overlay.style.height = `${rect.height}px`;
+  overlay.style.aspectRatio = "auto";
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const renderWidth = Math.max(1, Math.round(rect.width * dpr));
+  const renderHeight = Math.max(1, Math.round(rect.height * dpr));
+  if (overlay.width !== renderWidth || overlay.height !== renderHeight) {
+    overlay.width = renderWidth;
+    overlay.height = renderHeight;
+  }
+
+  const context = overlay.getContext("2d");
+  context.clearRect(0, 0, overlay.width, overlay.height);
+  if (!liveDetectionOverlayEnabled) {
+    setLiveDetectionStatus(overlay, "YOLO overlay · OFF");
+    return;
+  }
+
+  const entry = liveDetectionsBySlot.get(slot);
+  const snapshotIsFresh = entry
+    && Date.now() - entry.snapshotSeenAt <= LIVE_DETECTION_STALE_MS;
+  const freshDetections = snapshotIsFresh ? entry.detections : [];
+  if (!freshDetections.length) {
+    if (!liveDetectionEndpointAvailable) {
+      setLiveDetectionStatus(overlay, "Detection API · unavailable", "offline");
+      return;
+    }
+    if (liveCatalogScanStatus.running) {
+      const seconds = Math.max(0, Number(liveCatalogScanStatus.remaining_seconds || 0));
+      const promptSkipped = Boolean(liveCatalogScanStatus.yolo_scan?.prompt_detector_skipped);
+      setLiveDetectionStatus(
+        overlay,
+        `${promptSkipped ? "Reference scan" : "Recognition scan"} · ${seconds}s`,
+        "scanning"
+      );
+      return;
+    }
+    const detectorOnline = entry?.state === "running"
+      || state.overview?.summary?.detector_running;
+    setLiveDetectionStatus(
+      overlay,
+      detectorOnline ? "YOLO · scanning · 0 boxes" : "YOLO live · stopped",
+      detectorOnline ? "scanning" : "idle"
+    );
+    return;
+  }
+
+  const first = freshDetections[0];
+  const sourceWidth = Number(first.frame_width)
+    || Number(videoSurface?.videoWidth)
+    || Number(canvasSurface?.width)
+    || rect.width;
+  const sourceHeight = Number(first.frame_height)
+    || Number(videoSurface?.videoHeight)
+    || Number(canvasSurface?.height)
+    || rect.height;
+  let scaleX = renderWidth / sourceWidth;
+  let scaleY = renderHeight / sourceHeight;
+  let offsetX = 0;
+  let offsetY = 0;
+  if (surface === videoSurface) {
+    const scale = Math.min(scaleX, scaleY);
+    scaleX = scale;
+    scaleY = scale;
+    offsetX = (renderWidth - sourceWidth * scale) / 2;
+    offsetY = (renderHeight - sourceHeight * scale) / 2;
+  }
+
+  freshDetections.forEach((detection) => {
+    const box = detection.bbox || {};
+    const x1 = Math.max(0, Math.min(renderWidth, offsetX + Number(box.x1 || 0) * scaleX));
+    const y1 = Math.max(0, Math.min(renderHeight, offsetY + Number(box.y1 || 0) * scaleY));
+    const x2 = Math.max(x1, Math.min(renderWidth, offsetX + Number(box.x2 || 0) * scaleX));
+    const y2 = Math.max(y1, Math.min(renderHeight, offsetY + Number(box.y2 || 0) * scaleY));
+    if (x2 - x1 < 2 || y2 - y1 < 2) return;
+    const label = detection.inventory_name || detection.class_name || "object";
+    const confidence = Math.round(Number(detection.confidence || 0) * 100);
+    const track = detection.track_id == null ? "" : `#${detection.track_id} `;
+    const text = `${track}${label} ${confidence}%`;
+    const color = liveDetectionColor(label);
+    const lineWidth = Math.max(3, 2.5 * dpr);
+    const fontSize = Math.max(12, Math.round(12 * dpr));
+
+    context.save();
+    context.strokeStyle = color;
+    context.lineWidth = lineWidth;
+    context.shadowColor = "rgba(0,0,0,.65)";
+    context.shadowBlur = 4 * dpr;
+    context.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    context.shadowBlur = 0;
+    context.font = `700 ${fontSize}px Inter, system-ui, sans-serif`;
+    const textWidth = context.measureText(text).width;
+    const labelHeight = fontSize + 8 * dpr;
+    const labelY = y1 >= labelHeight ? y1 - labelHeight : y1;
+    context.fillStyle = color;
+    context.fillRect(x1, labelY, Math.min(renderWidth - x1, textWidth + 12 * dpr), labelHeight);
+    context.fillStyle = "#06111f";
+    context.textBaseline = "middle";
+    context.fillText(text, x1 + 6 * dpr, labelY + labelHeight / 2);
+    context.restore();
+  });
+  setLiveDetectionStatus(
+    overlay,
+    `YOLO · ${freshDetections.length} object${freshDetections.length === 1 ? "" : "s"}`,
+    "active"
+  );
+}
+
+function drawAllLiveDetectionOverlays() {
+  els.moduleContent
+    .querySelectorAll("[data-live-detection-overlay]")
+    .forEach(drawLiveDetectionOverlay);
+}
+
+async function refreshLiveDetections() {
+  if (liveDetectionRequestPending || !liveDetectionOverlayEnabled) return;
+  liveDetectionRequestPending = true;
+  try {
+    updateLiveDetections(await api("/api/v2/detections/latest", { timeoutMs: 3000 }));
+    liveDetectionEndpointAvailable = true;
+    if (Date.now() - liveCatalogScanCheckedAt >= 1000) {
+      liveCatalogScanCheckedAt = Date.now();
+      liveCatalogScanStatus = await api(
+        catalogApiPath("/api/catalog/recognition/run-live/status"),
+        { timeoutMs: 3000 }
+      ).catch(() => ({ running: false, remaining_seconds: 0, yolo_scan: null }));
+    }
+  } catch {
+    liveDetectionsBySlot.clear();
+    liveDetectionEndpointAvailable = false;
+  } finally {
+    liveDetectionRequestPending = false;
+    drawAllLiveDetectionOverlays();
+  }
+}
+
+function stopLiveDetectionRefresh() {
+  if (liveDetectionTimer !== null) {
+    window.clearInterval(liveDetectionTimer);
+    liveDetectionTimer = null;
+  }
+  liveDetectionRequestPending = false;
+  liveDetectionsBySlot.clear();
+  liveCatalogScanStatus = { running: false, remaining_seconds: 0, yolo_scan: null };
+  liveCatalogScanCheckedAt = 0;
+}
+
+function syncLiveDetectionRefresh() {
+  const hasOverlays = Boolean(
+    els.moduleContent.querySelector("[data-live-detection-overlay]")
+  );
+  if (!hasOverlays) {
+    stopLiveDetectionRefresh();
+    return;
+  }
+  drawAllLiveDetectionOverlays();
+  if (!liveDetectionOverlayEnabled) return;
+  void refreshLiveDetections();
+  if (liveDetectionTimer === null) {
+    liveDetectionTimer = window.setInterval(
+      refreshLiveDetections,
+      LIVE_DETECTION_REFRESH_MS
+    );
+  }
+}
+
+function updateLiveDetectionToggle() {
+  els.moduleContent.querySelectorAll("[data-yolo-overlay]").forEach((button) => {
+    button.textContent = `YOLO boxes · ${liveDetectionOverlayEnabled ? "ON" : "OFF"}`;
+    button.classList.toggle("active", liveDetectionOverlayEnabled);
+    button.setAttribute("aria-pressed", String(liveDetectionOverlayEnabled));
+  });
 }
 
 function renderLiveBitmap(slot, bitmap, metadata = null) {
@@ -569,6 +930,9 @@ function renderLiveBitmap(slot, bitmap, metadata = null) {
     );
     setFeedBadgeLive(canvas, true);
   });
+  els.moduleContent
+    .querySelectorAll(`[data-live-detection-overlay][data-live-slot="${slot}"]`)
+    .forEach(drawLiveDetectionOverlay);
   return canvases.length > 0;
 }
 
@@ -716,6 +1080,9 @@ async function startWebRtcVideo(video) {
           Math.max(0, Math.round(performance.now() - captureTime))
         );
       }
+      video.parentElement
+        ?.querySelectorAll(`[data-live-detection-overlay][data-live-slot="${slot}"]`)
+        .forEach(drawLiveDetectionOverlay);
       if (video.isConnected && livePeerConnections.get(slot) === peer) {
         video.requestVideoFrameCallback(measureFrame);
       }
@@ -877,6 +1244,7 @@ function applyLiveTransportMode() {
   els.moduleContent.querySelectorAll("[data-live-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.liveMode === liveTransportMode);
   });
+  drawAllLiveDetectionOverlays();
 }
 
 function bindLiveTransportControls() {
@@ -887,13 +1255,32 @@ function bindLiveTransportControls() {
       applyLiveTransportMode();
     });
   });
+  els.moduleContent.querySelectorAll("[data-yolo-overlay]").forEach((button) => {
+    button.addEventListener("click", () => {
+      liveDetectionOverlayEnabled = !liveDetectionOverlayEnabled;
+      localStorage.setItem(
+        "ai_vision_yolo_overlay",
+        liveDetectionOverlayEnabled ? "1" : "0"
+      );
+      updateLiveDetectionToggle();
+      if (liveDetectionOverlayEnabled) {
+        syncLiveDetectionRefresh();
+      } else {
+        stopLiveDetectionRefresh();
+        drawAllLiveDetectionOverlays();
+      }
+    });
+  });
+  updateLiveDetectionToggle();
   if (liveComparisonTimer === null) {
     liveComparisonTimer = window.setInterval(sampleLiveComparison, 1000);
   }
   applyLiveTransportMode();
+  syncLiveDetectionRefresh();
 }
 
 function syncLiveFrameRefresh() {
+  syncLiveDetectionRefresh();
   const hasLiveFrames = Boolean(els.moduleContent.querySelector("[data-live-frame]"));
   if (!hasLiveFrames) {
     return;
@@ -940,19 +1327,33 @@ const permissionLabels = {
   view_settings: "View settings",
 };
 
-async function api(path) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "X-AI-Role": state.role,
-      "X-AI-User-Name": "Dashboard V2 Preview",
-      "X-AI-Company": "All Companies",
-    },
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || response.statusText);
+const DASHBOARD_API_TIMEOUT_MS = 12000;
+
+async function api(path, { timeoutMs = DASHBOARD_API_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      signal: controller.signal,
+      headers: {
+        "X-AI-Role": state.role,
+        "X-AI-User-Name": "Dashboard V2 Preview",
+        "X-AI-Company": "All Companies",
+      },
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || response.statusText);
+    }
+    return response.json();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Dashboard request timed out: ${path}`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  return response.json();
 }
 
 function escapeHtml(value) {
@@ -1054,7 +1455,15 @@ function renderSummary() {
     ["Last detections", "summary.last_detections", summary.last_detection_count ?? 0],
     ["Stock items", "summary.stock_items", summary.stock_items ?? 0],
     ["Saved cameras", "summary.saved_cameras", summary.saved_cameras ?? 0],
-    ["Audit verified", "summary.audit_verified", summary.audit_verified ? t("summary.yes") : t("summary.no")],
+    [
+      "Audit verified",
+      "summary.audit_verified",
+      summary.audit_verified == null
+        ? t("summary.pending")
+        : summary.audit_verified
+          ? t("summary.yes")
+          : t("summary.no"),
+    ],
   ];
   const deltas = {
     "Active cameras": { key: "summary.delta_cameras", dir: "up" },
@@ -1079,6 +1488,11 @@ function renderSummary() {
       `;
     })
     .join("");
+  renderDetectorState();
+}
+
+function renderDetectorState() {
+  const summary = state.overview?.summary || {};
   const running = Boolean(summary.detector_running);
   els.detectorState.textContent = running ? t("status.detector_running") : t("status.detector_stopped");
   els.detectorState.dataset.state = running ? "good" : "bad";
@@ -1119,7 +1533,7 @@ function renderModuleContent() {
       <div class="live-preview">
         ${Array.from({ length: Math.min(Number(summary.active_cameras || health.camera_count || 10), 10) }, (_, index) => {
           const slot = index + 1;
-          return `<figure><canvas data-live-frame data-live-slot="${slot}" role="img" aria-label="Camera slot ${slot}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>Slot ${slot}</figcaption></figure>`;
+          return `<figure><canvas data-live-frame data-live-slot="${slot}" role="img" aria-label="Camera slot ${slot}" style="display:block;width:100%;aspect-ratio:16/9"></canvas>${liveDetectionOverlayHtml(slot)}<figcaption>Slot ${slot}</figcaption></figure>`;
         }).join("")}
       </div>
     `;
@@ -1167,22 +1581,35 @@ const ACCESS_OPTIONS = [
 ];
 
 async function accountsApi(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const payload = await response.json();
-      detail = payload.detail || detail;
-    } catch {
-      detail = (await response.text()) || detail;
+  const { timeoutMs = DASHBOARD_API_TIMEOUT_MS, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...fetchOptions,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const payload = await response.json();
+        detail = payload.detail || detail;
+      } catch {
+        detail = (await response.text()) || detail;
+      }
+      throw new Error(detail || "Request failed.");
     }
-    throw new Error(detail || "Request failed.");
+    if (response.status === 204) return null;
+    return response.json();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Dashboard request timed out: ${path}`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  if (response.status === 204) return null;
-  return response.json();
 }
 
 let ccCompaniesCache = null;
@@ -1831,8 +2258,12 @@ async function handleSettingsClick(event) {
 async function resolveAccountFromHash() {
   const match = window.location.hash.match(/acc=([a-z0-9]+)/i);
   if (!match) return null;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), DASHBOARD_API_TIMEOUT_MS);
   try {
-    const response = await fetch(`${API_BASE}/api/v2/accounts/${encodeURIComponent(match[1])}`);
+    const response = await fetch(`${API_BASE}/api/v2/accounts/${encodeURIComponent(match[1])}`, {
+      signal: controller.signal,
+    });
     if (response.status === 404) {
       return { company: null, role: null, missing: true, error: null };
     }
@@ -1842,7 +2273,15 @@ async function resolveAccountFromHash() {
     const payload = await response.json();
     return { company: payload.company, role: payload.role, missing: false, error: null };
   } catch (error) {
-    return { company: null, role: null, missing: true, error: error instanceof Error ? error.message : String(error) };
+    const message =
+      error?.name === "AbortError"
+        ? "Account lookup timed out."
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    return { company: null, role: null, missing: true, error: message };
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 
@@ -1852,7 +2291,7 @@ function livePreviewHtml(summary, health) {
     <div class="live-preview">
       ${Array.from({ length: slots }, (_, index) => {
         const slot = index + 1;
-        return `<figure><canvas data-live-frame data-live-slot="${slot}" role="img" aria-label="Camera slot ${slot}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>Slot ${slot}</figcaption></figure>`;
+        return `<figure><canvas data-live-frame data-live-slot="${slot}" role="img" aria-label="Camera slot ${slot}" style="display:block;width:100%;aspect-ratio:16/9"></canvas>${liveDetectionOverlayHtml(slot)}<figcaption>Slot ${slot}</figcaption></figure>`;
       }).join("")}
     </div>
   `;
@@ -1940,7 +2379,7 @@ function renderFeedTile(nvr, channel) {
     return `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
   }
   if (channel.active && channel.slot_number != null) {
-    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><span data-live-latency style="position:absolute;left:10px;top:10px;z-index:3;background:#07152dcc;color:#fff;padding:3px 7px;border-radius:6px;font:12px monospace">—</span><canvas class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" role="img" aria-label="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><video data-live-webrtc data-live-slot="${channel.slot_number}" autoplay muted playsinline style="display:none;width:100%;aspect-ratio:16/9;background:#07152d;object-fit:contain"></video><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+    return `<figure><span class="feed-transmitting feed-stale-badge" style="z-index:4">${escapeHtml(t("status.waiting_video"))}</span><span data-live-latency style="position:absolute;left:10px;top:10px;z-index:4;background:#07152dcc;color:#fff;padding:3px 7px;border-radius:6px;font:12px monospace">—</span><canvas class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" role="img" aria-label="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><video data-live-webrtc data-live-slot="${channel.slot_number}" autoplay muted playsinline style="display:none;width:100%;aspect-ratio:16/9;background:#07152d;object-fit:contain"></video>${liveDetectionOverlayHtml(channel.slot_number)}<figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
   }
   return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
 }
@@ -3213,6 +3652,7 @@ function renderAccountModule() {
         <strong>Live transport test</strong>
         <button type="button" class="cc-chip cc-chip-small" data-live-mode="websocket">Mode A · JPEG/WebSocket</button>
         <button type="button" class="cc-chip cc-chip-small" data-live-mode="webrtc">Mode B · MediaMTX WebRTC</button>
+        <button type="button" class="cc-chip cc-chip-small active" data-yolo-overlay aria-pressed="true">YOLO boxes · ON</button>
         <span class="chart-note">Mode A: backend-to-canvas milliseconds. Mode B: received FPS and WebRTC jitter.</span>
         <div data-live-comparison style="margin-top:10px;overflow:auto">Collecting identical runtime samples…</div>
       </section>
@@ -4415,19 +4855,39 @@ async function loadLiveWarehouseActivity(container) {
   }
 }
 
+async function loadDeferredDashboardData() {
+  const streamsHealth = await api("/api/v2/streams/health", { timeoutMs: 10000 }).catch(
+    () => null
+  );
+  if (streamsHealth) {
+    state.streams = streamsHealth.streams || state.streams || [];
+  }
+}
+
+function scheduleDeferredDashboardData() {
+  const loadDetails = () => void loadDeferredDashboardData();
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(loadDetails, { timeout: 1000 });
+  } else {
+    window.setTimeout(loadDetails, 0);
+  }
+}
+
 async function load() {
   setLanguageToggleChrome();
-  const [session, overview, streamsHealth] = await Promise.all([
+  const [session, overview] = await Promise.all([
     api("/api/v2/rbac/me"),
-    api("/api/v2/head/overview"),
-    api("/api/v2/streams/health").catch(() => ({ streams: [] })),
+    api("/api/v2/dashboard/overview"),
   ]);
   state.session = session;
   state.overview = overview;
-  state.streams = streamsHealth.streams || [];
+  // Clear the static "Checking..." state as soon as the tiny summary arrives.
+  // Account lookup and detailed stream health are deliberately non-blocking.
+  renderDetectorState();
   const account = await resolveAccountFromHash();
   if (account) {
     renderAccountView(account);
+    scheduleDeferredDashboardData();
     return;
   }
   els.pageTitle.textContent = t("header.head_dashboard");
@@ -4436,6 +4896,7 @@ async function load() {
   renderSummary();
   renderScope();
   renderModuleContent();
+  scheduleDeferredDashboardData();
 }
 
 function renderLoadFailure(error, retrying) {
@@ -4579,15 +5040,27 @@ window.addEventListener("hashchange", () => window.location.reload());
 const liveFrameObserver = new MutationObserver((mutations) => {
   const structuralChange = mutations.some((mutation) => {
     const target = mutation.target;
-    return !(target instanceof Element && target.closest(".feed-transmitting"));
+    return !(
+      target instanceof Element
+      && target.closest(".feed-transmitting, [data-live-detection-status]")
+    );
   });
   if (structuralChange) syncLiveFrameRefresh();
 });
 liveFrameObserver.observe(els.moduleContent, { childList: true, subtree: true });
+window.addEventListener("resize", drawAllLiveDetectionOverlays);
 window.addEventListener("beforeunload", () => {
   stopLiveFrameRefresh();
   stopWebRtcRefresh();
+  stopLiveDetectionRefresh();
 });
+
+// The dashboard shell must never wait for best-effort legacy account recovery.
+// Start the current dashboard immediately and migrate old browser-only data in
+// the background.
+renderSideCompanies();
+updateBrandAvatar();
+loadDashboard();
 
 migrateLegacyLocalStorage()
   .then((result) => {
@@ -4601,10 +5074,6 @@ migrateLegacyLocalStorage()
     } else if (result.failures) {
       toast(`Could not automatically recover ${result.failures} saved item(s) from this browser. Recreate them in Company Control.`);
     }
+    renderSideCompaniesFromCache();
   })
-  .catch(() => {})
-  .finally(() => {
-    renderSideCompanies();
-    updateBrandAvatar();
-    loadDashboard();
-  });
+  .catch(() => {});

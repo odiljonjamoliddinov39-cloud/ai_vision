@@ -617,21 +617,41 @@ def _serialize_detection(det, frame) -> dict:
 def _write_detection_health(path: str, payload: dict) -> None:
     health_path = Path(path)
     health_path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(payload, indent=2)
-    tmp_path = health_path.with_name(f"{health_path.stem}.{os.getpid()}.tmp")
+    summary_path = health_path.with_name(f"{health_path.stem}_summary{health_path.suffix}")
+    summary_fields = (
+        "state",
+        "error",
+        "camera_count",
+        "frames_read",
+        "last_frame_at",
+        "last_detection_count",
+        "last_tracked_count",
+        "model_loaded",
+        "updated_at",
+    )
+    summary = {field: payload.get(field) for field in summary_fields}
+    if summary.get("camera_count") is None:
+        summary["camera_count"] = len(payload.get("cameras") or [])
 
-    for _ in range(3):
-        try:
-            tmp_path.write_text(data, encoding="utf-8")
-            tmp_path.replace(health_path)
-            return
-        except PermissionError:
-            time.sleep(0.05)
+    for destination, document in ((health_path, payload), (summary_path, summary)):
+        data = json.dumps(document, indent=2)
+        tmp_path = destination.with_name(f"{destination.stem}.{os.getpid()}.tmp")
+        written = False
+        for _ in range(3):
+            try:
+                tmp_path.write_text(data, encoding="utf-8")
+                tmp_path.replace(destination)
+                written = True
+                break
+            except PermissionError:
+                time.sleep(0.05)
+        if written:
+            continue
 
-    # Windows can briefly lock files read by the API process. A direct write
-    # is safer than crashing the detector; the API already tolerates short
-    # JSON read races.
-    health_path.write_text(data, encoding="utf-8")
+        # Windows can briefly lock files read by the API process. A direct
+        # write is safer than crashing the detector; the API tolerates short
+        # JSON read races.
+        destination.write_text(data, encoding="utf-8")
 
 
 def _write_live_frame(
