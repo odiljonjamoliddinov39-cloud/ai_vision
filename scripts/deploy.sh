@@ -9,7 +9,37 @@ SERVICES="${DEPLOY_SERVICES:-}"
 
 cd "$APP_DIR"
 
+# Free disk space threshold (MB). If the root filesystem has less free space
+# than this before we start, reclaim Docker space up front so the deploy does
+# not die on a cryptic "No space left on device" during git fetch.
+MIN_FREE_MB="${MIN_FREE_MB:-2048}"
+
+free_mb() {
+  df -Pm . | awk 'NR==2 {print $4}'
+}
+
+reclaim_docker_space() {
+  echo "Reclaiming Docker space (unused images, containers, networks, build cache)..."
+  docker system prune -af || true
+  docker builder prune -af || true
+}
+
 echo "Current directory: $APP_DIR"
+
+available_mb="$(free_mb)"
+echo "Free disk space: ${available_mb}MB (minimum ${MIN_FREE_MB}MB)"
+if [ "${available_mb:-0}" -lt "$MIN_FREE_MB" ]; then
+  echo "Low disk space detected. Cleaning up before fetch..."
+  reclaim_docker_space
+  available_mb="$(free_mb)"
+  echo "Free disk space after cleanup: ${available_mb}MB"
+  if [ "${available_mb:-0}" -lt "$MIN_FREE_MB" ]; then
+    echo "ERROR: Still under ${MIN_FREE_MB}MB free after cleanup. Free disk space on the droplet (e.g. 'docker system df', 'journalctl --vacuum-size=200M') and retry." >&2
+    df -h . >&2
+    exit 1
+  fi
+fi
+
 echo "Fetching latest $REMOTE/$BRANCH..."
 
 before="$(git rev-parse HEAD 2>/dev/null || true)"
@@ -30,6 +60,16 @@ else
 fi
 
 mkdir -p models logs snapshots database
+
+# Keep the droplet's disk from filling up over time. Cap the two directories
+# that grow unbounded between deploys.
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
+SNAPSHOT_RETENTION_DAYS="${SNAPSHOT_RETENTION_DAYS:-3}"
+echo "Rotating logs (>${LOG_RETENTION_DAYS}d) and snapshots (>${SNAPSHOT_RETENTION_DAYS}d)..."
+find logs -type f -mtime "+${LOG_RETENTION_DAYS}" -delete 2>/dev/null || true
+find snapshots -type f -mtime "+${SNAPSHOT_RETENTION_DAYS}" -delete 2>/dev/null || true
+# Truncate any single log file that has grown past 100MB.
+find logs -type f -size +100M -exec sh -c ': > "$1"' _ {} \; 2>/dev/null || true
 
 if [ ! -f .env ]; then
   echo "No .env found. Creating from .env.example; edit it on the server for production secrets."
@@ -55,7 +95,10 @@ else
   docker compose up -d --build --no-deps --force-recreate backend
 fi
 
-echo "Pruning unused Docker images..."
-docker image prune -f
+echo "Pruning unused Docker images and build cache..."
+docker image prune -f || true
+# Build cache accumulates on every 'docker compose --build' and 'docker image
+# prune' does not touch it. Cap it so it cannot silently fill the disk.
+docker builder prune -af --keep-storage 5GB 2>/dev/null || docker builder prune -af || true
 
 echo "Deployment complete: $after"
