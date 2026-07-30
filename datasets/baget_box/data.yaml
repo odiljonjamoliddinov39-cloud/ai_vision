@@ -3,3 +3,4 @@ train: images/train
 val: images/val
 names:
   0: baget box
+  1: sack

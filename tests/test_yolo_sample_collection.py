@@ -24,6 +24,28 @@ def test_detection_bbox_converts_to_yolo_label():
     assert label == "0 0.300000 0.500000 0.400000 0.600000"
 
 
+def test_box_detection_uses_class_zero():
+    label = collect_yolo_samples.yolo_box(
+        {"class_name": "cardboard box", "bbox": {"x1": 10, "y1": 20, "x2": 50, "y2": 80}},
+        width=100,
+        height=100,
+    )
+
+    assert label.startswith("0 ")
+
+
+def test_sack_detection_uses_class_one():
+    # A sack must be labelled as its own class (1), not folded into the box
+    # class, so a trained model can distinguish the two families.
+    label = collect_yolo_samples.yolo_box(
+        {"class_name": "sack of flour", "bbox": {"x1": 10, "y1": 20, "x2": 50, "y2": 80}},
+        width=100,
+        height=100,
+    )
+
+    assert label.startswith("1 ")
+
+
 def test_collector_saves_matching_detection_sample(tmp_path, monkeypatch):
     snapshot_dir = tmp_path / "snapshots"
     snapshot_dir.mkdir()

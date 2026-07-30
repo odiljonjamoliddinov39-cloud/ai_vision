@@ -392,7 +392,9 @@ def test_catalog_recognition_runs_fresh_yolo_when_cached_detections_are_empty(tm
     assert matches[0]["item_id"] == item["id"]
     assert matches[0]["item_name"] == "Baget Box"
     assert matches[0]["quantity"] == 1
-    assert matches[0]["confidence"] == pytest.approx(0.82)
+    # Confidence now reflects how strongly the crop matched the reference
+    # photos (visual similarity), not the detector's raw class confidence.
+    assert matches[0]["confidence"] >= 0.7
 
 
 def test_catalog_results_save_visual_evidence_for_result_analytics(tmp_path, monkeypatch):
@@ -459,8 +461,13 @@ def test_catalog_yolo_defaults_to_high_resolution_for_small_box_counting(monkeyp
     assert created["image_size"] == 1280
 
 
-def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similarity_is_low(tmp_path, monkeypatch):
+def test_single_catalog_item_ignores_yolo_box_when_reference_similarity_is_low(tmp_path, monkeypatch):
+    # Strict visual matching: a box that looks nothing like the enrolled
+    # reference photos must not be counted against the item, even when it is
+    # the only enrolled item and the detector labels it a box. (Previously a
+    # single item counted any box-shaped detection by name alone.)
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("CATALOG_RUN_PROMPT_DETECTOR", "true")
     db, item = _catalog_with_item(tmp_path, name="Baget Box")
     snapshot_dir = tmp_path / "snapshots"
     snapshot_dir.mkdir()
@@ -510,15 +517,56 @@ def test_single_catalog_item_counts_current_yolo_box_even_when_reference_similar
 
     matches = server._catalog_match_current_frame("warehouse-a")
 
-    assert matches[0] == {
-        "item_id": str(item["id"]),
-        "item_name": "Baget Box",
-        "quantity": 3,
-        "confidence": pytest.approx(0.75),
-        "dimensions_m": (0.8, 0.6, 0.4),
-        "measurement_method": "monocular_ground_plane",
-        "camera_counts": [{"camera_name": "NVR Camera 2", "quantity": 3}],
-    }
+    # The blue box does not resemble the reddish reference photos, so it is
+    # reported with a zero count rather than tallied against the entry.
+    assert matches[0]["item_id"] == str(item["id"])
+    assert matches[0]["item_name"] == "Baget Box"
+    assert matches[0]["quantity"] == 0
+    assert matches[0]["confidence"] == 0.0
+
+
+def test_single_catalog_box_item_rejects_sack_labeled_detection(tmp_path, monkeypatch):
+    # A sack/bag-labelled detection must never be counted against a box item,
+    # even when its crop is visually similar to the reference photos. The
+    # detector often mislabels a flour sack as a box; the product-family guard
+    # keeps it out of the count regardless of the visual score.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db, item = _catalog_with_item(tmp_path, name="Baget Box")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    # Same reddish appearance as the reference photos, so only the sack label
+    # (not the visual check) should keep it out of the count.
+    frame[40:120, 50:170] = _reference_image((220, 60, 20))
+    cv2.imwrite(str(snapshot_dir / "latest_stream_slot_1.jpg"), frame)
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "cameras": [{"name": "NVR Camera 2", "slot_number": 1}],
+                "last_spatial_objects_by_camera": {"NVR Camera 2": []},
+                "last_detections_by_camera": {
+                    "NVR Camera 2": [
+                        {
+                            "class_name": "sack of flour",
+                            "quantity": 5,
+                            "bbox": {"x1": 50, "y1": 40, "x2": 170, "y2": 120},
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+
+    matches = server._catalog_match_current_frame("warehouse-a")
+
+    assert matches[0]["item_id"] == str(item["id"])
+    assert matches[0]["item_name"] == "Baget Box"
+    assert matches[0]["quantity"] == 0
 
 
 def test_catalog_recognition_samples_multiple_frames_and_keeps_best_camera_count(tmp_path, monkeypatch):
@@ -572,11 +620,14 @@ def test_catalog_recognition_samples_multiple_frames_and_keeps_best_camera_count
 
 def test_catalog_recognition_uses_stream_manager_when_detector_health_has_no_cameras(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("CATALOG_RUN_PROMPT_DETECTOR", "true")
     db, item = _catalog_with_item(tmp_path, name="Baget Box")
     snapshot_dir = tmp_path / "snapshots"
     snapshot_dir.mkdir()
     frame = np.zeros((180, 240, 3), dtype=np.uint8)
-    frame[40:120, 50:170] = _reference_image((35, 160, 220))
+    # Sample box resembles the enrolled reference photos so visual matching
+    # accepts it; this test exercises stream-manager camera discovery.
+    frame[40:120, 50:170] = _reference_image((220, 60, 20))
     cv2.imwrite(str(snapshot_dir / "latest_stream_slot_29.jpg"), frame)
     health_path = tmp_path / "detection_health.json"
     health_path.write_text(json.dumps({"state": "starting", "cameras": []}), encoding="utf-8")
@@ -624,7 +675,8 @@ def test_catalog_recognition_uses_stream_manager_when_detector_health_has_no_cam
     assert payload["run"]["camera_count"] == 1
     assert payload["results"][0]["item_name"] == "Baget Box"
     assert payload["results"][0]["quantity"] == 1
-    assert payload["results"][0]["confidence"] == pytest.approx(0.81)
+    # Confidence is the visual-match score against the reference photos.
+    assert payload["results"][0]["confidence"] >= 0.7
 
 
 def test_live_catalog_recognition_persists_stream_manager_camera_count(tmp_path, monkeypatch):

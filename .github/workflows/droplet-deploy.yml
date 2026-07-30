@@ -49,14 +49,18 @@ jobs:
               echo "/opt/ai_vision is not initialized. Clone the repo on the Droplet once first."
               exit 1
             fi
-            # Reclaim disk space before the deploy so a full disk cannot break
-            # git fetch. docker image prune alone does not clear build cache,
-            # which is what historically filled the droplet.
-            echo "Free space before cleanup:"
-            df -h / || true
-            docker system prune -af || true
-            docker builder prune -af || true
-            echo "Free space after cleanup:"
-            df -h / || true
+            # Only reclaim space when the disk is actually low. An
+            # unconditional prune wipes the Docker build cache on every deploy,
+            # forcing a slow from-scratch AI-dependency rebuild (~18m).
+            # deploy.sh also self-heals low disk, but this keeps the SSH step
+            # resilient if the droplet's deploy.sh is ever stale.
+            free_mb="$(df -Pm /opt/ai_vision | awk 'NR==2 {print $4}')"
+            echo "Free disk space: ${free_mb}MB"
+            if [ "${free_mb:-0}" -lt 3072 ]; then
+              echo "Low disk space; reclaiming Docker space before deploy..."
+              docker system prune -af || true
+              docker builder prune -af || true
+              df -h / || true
+            fi
             chmod +x /opt/ai_vision/scripts/deploy.sh
             /opt/ai_vision/scripts/deploy.sh

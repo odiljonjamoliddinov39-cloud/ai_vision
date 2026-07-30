@@ -22,7 +22,10 @@ import shutil
 from typing import Any
 
 
-DEFAULT_MATCH_TERMS = [
+# Two-class dataset: baget boxes (class 0) and sacks (class 1). Collecting
+# sack samples as their own class is what lets a trained model tell a flour
+# sack apart from a box instead of forcing it into the nearest box prompt.
+BOX_MATCH_TERMS = [
     "baget box",
     "baguette box",
     "stack of baget boxes",
@@ -31,6 +34,40 @@ DEFAULT_MATCH_TERMS = [
     "box",
     "stack of cardboard boxes",
 ]
+SACK_MATCH_TERMS = [
+    "sack",
+    "sack of flour",
+    "stack of flour sacks",
+    "woven sack",
+    "bag of flour",
+    "large bag",
+]
+DEFAULT_MATCH_TERMS = [*BOX_MATCH_TERMS, *SACK_MATCH_TERMS]
+
+# Class ids in datasets/baget_box/data.yaml. Box terms are checked first
+# because "baget"/"baguette" contain the substring "bag".
+BOX_FAMILY_TERMS = ("box", "carton", "cardboard", "crate", "baget", "baguette", "package")
+SACK_FAMILY_TERMS = ("sack", "bag")
+CLASS_BAGET_BOX = 0
+CLASS_SACK = 1
+
+
+def detection_family(detection: dict[str, Any]) -> str | None:
+    label = " ".join(
+        normalize(detection.get(field))
+        for field in ("class_name", "object_type", "inventory_name")
+    )
+    if any(term in label for term in BOX_FAMILY_TERMS):
+        return "box"
+    if any(term in label for term in SACK_FAMILY_TERMS):
+        return "sack"
+    return None
+
+
+def class_id_for_detection(detection: dict[str, Any]) -> int:
+    # Default to the box class when the family is unknown, matching the
+    # dataset's primary class.
+    return CLASS_SACK if detection_family(detection) == "sack" else CLASS_BAGET_BOX
 
 
 def repo_root() -> Path:
@@ -121,7 +158,8 @@ def yolo_box(detection: dict[str, Any], width: int, height: int) -> str | None:
     y_center = ((y1 + y2) / 2.0) / height
     box_width = (x2 - x1) / width
     box_height = (y2 - y1) / height
-    return f"0 {x_center:.6f} {y_center:.6f} {box_width:.6f} {box_height:.6f}"
+    class_id = class_id_for_detection(detection)
+    return f"{class_id} {x_center:.6f} {y_center:.6f} {box_width:.6f} {box_height:.6f}"
 
 
 def camera_slots(health: dict[str, Any]) -> dict[str, int | None]:

@@ -63,7 +63,13 @@ Each row is:
 0 x_center y_center width height
 ```
 
-Values are normalized from 0 to 1. Class `0` means `baget box`.
+Values are normalized from 0 to 1. The dataset has two classes: class `0`
+means `baget box` and class `1` means `sack`. Label sacks (including flour
+sacks that sit next to boxes) as class `1` so the trained model can tell the
+two families apart instead of forcing a sack into the nearest box class.
+`scripts/collect_yolo_samples.py` assigns these class ids automatically from
+the detector label, but review them before training. Only `baget box` (class
+`0`) tracks should be counted as inventory.
 
 Good tools for labeling:
 
