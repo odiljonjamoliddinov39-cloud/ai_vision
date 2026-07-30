@@ -32,7 +32,7 @@ def test_baget_box_training_template_is_present():
 
     assert data["train"] == "images/train"
     assert data["val"] == "images/val"
-    assert data["names"] == {0: "baget box"}
+    assert data["names"] == {0: "baget box", 1: "sack"}
     assert "python scripts/train_yolo.py --validate-only" in docs.read_text(encoding="utf-8")
 
 
