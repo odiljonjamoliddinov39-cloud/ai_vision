@@ -137,6 +137,11 @@ def test_camera_info_page_lists_connected_camera_models():
     assert "Waiting for slot" in source
     assert "Not assigned" in source
     assert "response.device?.model" in source
+    assert "function cameraInfoDiagnosticsText(row)" in source
+    assert "stream?.last_error" in source
+    assert "stream?.frame_age_ms" in source
+    assert "stream?.reconnect_count" in source
+    assert "stream?.decode_errors" in source
 
 
 def test_dashboard_has_ru_eng_language_toggle():
@@ -173,8 +178,8 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=64" in html
-    assert "/dashboard-v2/assets/styles.css?v=45" in html
+    assert "/dashboard-v2/assets/app.js?v=65" in html
+    assert "/dashboard-v2/assets/styles.css?v=46" in html
 
 
 def test_dashboard_has_ai_modules_page_from_video_analytics_spec():

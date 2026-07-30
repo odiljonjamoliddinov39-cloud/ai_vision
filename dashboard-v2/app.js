@@ -1928,6 +1928,24 @@ function cameraInfoDeviceMaps(devices = []) {
   return { byId, byHost };
 }
 
+function cameraInfoNumber(...values) {
+  for (const value of values) {
+    if (value == null || value === "") continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function cameraInfoFrameAge(stream) {
+  const reported = cameraInfoNumber(stream?.frame_age_ms, stream?.frameAgeMs, stream?.age_ms);
+  if (reported != null) return reported;
+  const lastFrameAt = stream?.last_frame_at || stream?.lastFrameAt;
+  if (!lastFrameAt) return null;
+  const parsed = new Date(lastFrameAt).getTime();
+  return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : null;
+}
+
 function cameraInfoChannelRows(config, devices = []) {
   const { byId, byHost } = cameraInfoDeviceMaps(devices);
   const streamsBySlot = streamStatusBySlot();
@@ -1953,6 +1971,7 @@ function cameraInfoChannelRows(config, devices = []) {
       const channelNumber = channel.channel || channel.external_channel_id || index + 1;
       const channelStatus = channel.status || "registered";
       const status = slotNumber == null && channelStatus !== "failed" ? "unassigned" : stream?.status || channelStatus;
+      const lastError = stream?.last_error || stream?.lastError || "";
       return {
         key: `${nvr.id || nvr.host || "nvr"}-${channelNumber}-${slotNumber ?? index}`,
         nvrName: nvr.name || device.name || "NVR",
@@ -1963,9 +1982,16 @@ function cameraInfoChannelRows(config, devices = []) {
         cameraName: channel.name || channel.camera_name || `Camera ${channelNumber}`,
         slotNumber,
         status,
-        streamProvider: nvr.provider || "stream manager",
+        streamSeen: Boolean(stream),
+        streamProvider: stream?.provider || stream?.stream_provider || nvr.provider || "stream manager",
+        streamPath: stream?.stream_path || stream?.path || channel.stream_path || channel.profile || "",
+        lastError,
+        lastFrameAt: stream?.last_frame_at || stream?.lastFrameAt || "",
+        frameAgeMs: stream ? cameraInfoFrameAge(stream) : null,
+        reconnectCount: cameraInfoNumber(stream?.reconnect_count, stream?.reconnectCount) || 0,
+        decodeErrors: cameraInfoNumber(stream?.decode_errors, stream?.decodeErrors) || 0,
         detail:
-          stream?.last_error ||
+          lastError ||
           channel.message ||
           channel.profile ||
           (slotNumber == null ? "Registered, but not assigned to an AI Vision live slot." : ""),
@@ -1982,6 +2008,69 @@ function cameraInfoStatusMeta(status) {
   if (status === "unassigned") return { label: t("status.waiting_slot"), className: "pending" };
   if (status === "connected") return { label: t("status.connected"), className: "online" };
   return { label: t("status.registered"), className: "pending" };
+}
+
+function cameraInfoDuration(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value)) return "";
+  if (value < 1000) return `${Math.max(0, Math.round(value))} ms`;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h`;
+}
+
+function cameraInfoTime(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+}
+
+function cameraInfoPrimaryIssue(row) {
+  if (row.slotNumber == null) return uiText("No AI slot assigned", "AI слот не назначен");
+  if (!row.streamSeen) return uiText("No stream health received yet", "Данные health по потоку еще не получены");
+  if (row.lastError) return row.lastError;
+  if (row.status === "online") return uiText("Frames are live", "Кадры поступают");
+  if (row.status === "starting") return uiText("Stream is starting", "Поток запускается");
+  if (row.status === "reconnecting") return uiText("Stream Manager is reconnecting", "Stream Manager переподключается");
+  if (row.status === "offline" || row.status === "failed") return uiText("Stream is offline", "Поток отключен");
+  return row.detail || uiText("Waiting for stream data", "Ожидание данных потока");
+}
+
+function cameraInfoDiagnosticsText(row) {
+  const parts = [cameraInfoPrimaryIssue(row)];
+  if (row.frameAgeMs != null) {
+    parts.push(`${uiText("Last frame", "Последний кадр")}: ${cameraInfoDuration(row.frameAgeMs)} ${uiText("ago", "назад")}`);
+  } else if (row.lastFrameAt) {
+    parts.push(`${uiText("Last frame", "Последний кадр")}: ${cameraInfoTime(row.lastFrameAt)}`);
+  }
+  if (row.reconnectCount > 0) {
+    parts.push(`${uiText("Reconnects", "Переподключений")}: ${row.reconnectCount.toLocaleString()}`);
+  }
+  if (row.decodeErrors > 0) {
+    parts.push(`${uiText("Decode errors", "Ошибок декодирования")}: ${row.decodeErrors.toLocaleString()}`);
+  }
+  return parts.filter(Boolean).join(" · ");
+}
+
+function cameraInfoDiagnosticsHtml(row) {
+  const primary = cameraInfoPrimaryIssue(row);
+  const details = [];
+  if (row.frameAgeMs != null) {
+    details.push(`${uiText("Last frame", "Последний кадр")}: ${cameraInfoDuration(row.frameAgeMs)} ${uiText("ago", "назад")}`);
+  } else if (row.lastFrameAt) {
+    details.push(`${uiText("Last frame", "Последний кадр")}: ${cameraInfoTime(row.lastFrameAt)}`);
+  }
+  if (row.reconnectCount > 0) details.push(`${uiText("Reconnects", "Переподключений")}: ${row.reconnectCount.toLocaleString()}`);
+  if (row.decodeErrors > 0) details.push(`${uiText("Decode errors", "Ошибок декодирования")}: ${row.decodeErrors.toLocaleString()}`);
+  return `
+    <div class="camera-info-diagnostics">
+      <strong>${escapeHtml(primary)}</strong>
+      ${details.map((detail) => `<span>${escapeHtml(detail)}</span>`).join("")}
+    </div>
+  `;
 }
 
 function renderCameraInfoTable(rows) {
@@ -2001,6 +2090,7 @@ function renderCameraInfoTable(rows) {
             <th>${escapeHtml(t("table.ai_slot"))}</th>
             <th>${escapeHtml(t("table.status"))}</th>
             <th>${escapeHtml(t("table.stream"))}</th>
+            <th>${escapeHtml(uiText("Diagnostics", "Диагностика"))}</th>
           </tr>
         </thead>
         <tbody>
@@ -2008,7 +2098,7 @@ function renderCameraInfoTable(rows) {
             .map((row) => {
               const status = cameraInfoStatusMeta(row.status);
               return `
-                <tr title="${escapeAttr(row.detail)}">
+                <tr title="${escapeAttr(cameraInfoDiagnosticsText(row))}">
                   <td><strong>${escapeHtml(row.nvrName)}</strong><span class="camera-info-meta">${escapeHtml(row.deviceType)}</span></td>
                   <td>${escapeHtml(row.host)}</td>
                   <td>${escapeHtml(row.vendor)}</td>
@@ -2016,7 +2106,8 @@ function renderCameraInfoTable(rows) {
                   <td>${escapeHtml(row.cameraName)}</td>
                   <td>${row.slotNumber != null ? `${escapeHtml(t("table.slot"))} ${row.slotNumber}` : `<span class="camera-info-meta">${escapeHtml(t("table.not_assigned"))}</span>`}</td>
                   <td><span class="camera-info-status ${status.className}">${escapeHtml(status.label)}</span></td>
-                  <td>${escapeHtml(row.streamProvider)}</td>
+                  <td><strong>${escapeHtml(row.streamProvider)}</strong>${row.streamPath ? `<span class="camera-info-meta">${escapeHtml(row.streamPath)}</span>` : ""}</td>
+                  <td>${cameraInfoDiagnosticsHtml(row)}</td>
                 </tr>
               `;
             })
@@ -2039,6 +2130,8 @@ async function renderCameraInfo(container) {
     state.streams = streamsPayload.streams || state.streams || [];
     const rows = cameraInfoChannelRows(company.cameraConfig, devicesPayload.devices || []);
     const modelCount = new Set(rows.map((row) => `${row.vendor}/${row.model}`)).size;
+    const liveCount = rows.filter((row) => row.status === "online").length;
+    const attentionCount = rows.filter((row) => row.slotNumber != null && row.status !== "online").length;
     container.innerHTML = `
       <section class="detected-list camera-info">
         <header class="detected-list-head">
@@ -2054,6 +2147,8 @@ async function renderCameraInfo(container) {
           <article><span>${escapeHtml(t("camera_info.nvr_devices"))}</span><strong>${company.cameraConfig.nvrs.length.toLocaleString()}</strong></article>
           <article><span>${escapeHtml(t("table.camera"))}</span><strong>${rows.length.toLocaleString()}</strong></article>
           <article><span>${escapeHtml(t("camera_info.models"))}</span><strong>${modelCount.toLocaleString()}</strong></article>
+          <article><span>${escapeHtml(uiText("Live streams", "Live потоки"))}</span><strong>${liveCount.toLocaleString()} / ${rows.length.toLocaleString()}</strong></article>
+          <article><span>${escapeHtml(uiText("Need attention", "Требуют внимания"))}</span><strong>${attentionCount.toLocaleString()}</strong></article>
         </div>
         ${renderCameraInfoTable(rows)}
       </section>
