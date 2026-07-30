@@ -883,9 +883,14 @@ class V2DeviceAuthenticateRequest(BaseModel):
 
 
 def _v2_stream_vendor_hint(device: dict[str, Any], request: V2DeviceAuthenticateRequest) -> str | None:
-    vendor = device.get("vendor")
-    if vendor:
-        return str(vendor)
+    vendor = str(device.get("vendor") or "").strip().lower()
+    # "generic-embedded" only means the web server banner looked embedded
+    # (for example Boa/lighttpd). It is not a real RTSP path provider, and
+    # choosing generic RTSP would save rtsp://host:554/ which most NVRs do not
+    # use for video. Treat it as unknown so NVR/IP-camera RTSP falls through
+    # to the safer Hikvision-style channel template below.
+    if vendor and vendor not in {"generic-embedded", "generic-rtsp", "generic", "unknown"}:
+        return vendor
 
     # Some public NVR forwards expose only RTSP/554 and do not return a brand
     # banner to the unauthenticated OPTIONS probe. The RTSP root almost never

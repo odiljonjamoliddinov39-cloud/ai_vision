@@ -444,7 +444,7 @@ def test_explicit_hikvision_vendor_builds_channel_paths_even_without_detection(t
     assert urls[1].endswith("/Streaming/Channels/201")
 
 
-def test_v2_unknown_rtsp_defaults_to_hikvision_channel_path(tmp_path, monkeypatch):
+def test_v2_generic_embedded_rtsp_defaults_to_hikvision_channel_path(tmp_path, monkeypatch):
     from database.camera_db import CameraDB
     from database.device_db import DeviceDB
 
@@ -461,11 +461,11 @@ def test_v2_unknown_rtsp_defaults_to_hikvision_channel_path(tmp_path, monkeypatc
     )
 
     device = device_db.upsert_device_from_discovery(
-        name="Unknown RTSP Camera",
+        name="Generic embedded RTSP Camera",
         host="8.8.8.8",
         result={
             "reachable": True,
-            "fingerprint": {"vendor": None, "device_type": "ip_camera", "banners": {}},
+            "fingerprint": {"vendor": "generic-embedded", "device_type": "ip_camera", "banners": {}},
             "services": [
                 {"protocol": "RTSP", "port": 554, "status": "available", "requires_auth": False}
             ],

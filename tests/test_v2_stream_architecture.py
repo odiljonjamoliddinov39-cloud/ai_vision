@@ -1,4 +1,5 @@
 import time
+import types
 from pathlib import Path
 
 import cv2
@@ -203,6 +204,19 @@ def test_stream_manager_ffmpeg_outputs_scaled_preview_jpegs():
     assert "-flags" not in command
     # Decode every frame for smooth motion, not just keyframes.
     assert "-skip_frame" not in command
+
+
+def test_stream_manager_uses_imageio_ffmpeg_when_system_binary_is_missing(monkeypatch):
+    import sys
+    import streams.manager as manager
+
+    fake_imageio = types.SimpleNamespace(get_ffmpeg_exe=lambda: "bundled-ffmpeg")
+    monkeypatch.setattr(manager.shutil, "which", lambda _name: None)
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake_imageio)
+
+    command = _ffmpeg_command("rtsp://example.test/Streaming/Channels/101")
+
+    assert command[0] == "bundled-ffmpeg"
 
 
 def test_stream_manager_rejects_grey_decoder_concealment_and_keeps_clean_frame(tmp_path):

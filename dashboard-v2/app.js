@@ -3697,11 +3697,18 @@ function renderAccountModule() {
                     ? t("status.waiting_free_slot")
                     : t("status.not_connected");
                 const detail = stream?.last_error || channel.message || "";
+                const health = [];
+                const frameAge = stream ? cameraInfoFrameAge(stream) : null;
+                if (frameAge != null) health.push(`${uiText("Last frame", "Последний кадр")}: ${cameraInfoDuration(frameAge)} ${uiText("ago", "назад")}`);
+                if (Number(stream?.reconnect_count || 0) > 0) health.push(`${uiText("Reconnects", "Переподключений")}: ${Number(stream.reconnect_count).toLocaleString()}`);
+                if (Number(stream?.decode_errors || 0) > 0) health.push(`${uiText("Decode errors", "Ошибок декодирования")}: ${Number(stream.decode_errors).toLocaleString()}`);
+                const detailLine = [detail, ...health].filter(Boolean).join(" · ");
                 const slotLabel = channel.slot_number != null ? `${t("table.slot")} ${channel.slot_number}` : t("table.not_assigned");
                 return `
-                  <li class="nvr-channel ${stateClass}" title="${escapeHtml(detail)}">
+                  <li class="nvr-channel ${stateClass}" title="${escapeHtml(detailLine)}">
                     <span>${escapeHtml(t("table.channel_short"))} ${channel.channel} · ${escapeHtml(slotLabel)}</span>
                     <span class="nvr-channel-status">${label}</span>
+                    ${detailLine ? `<small class="nvr-channel-detail">${escapeHtml(detailLine)}</small>` : ""}
                   </li>
                 `;
               })

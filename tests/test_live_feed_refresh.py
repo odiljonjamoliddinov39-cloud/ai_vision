@@ -165,6 +165,8 @@ def test_camera_control_rows_use_stream_health_for_live_slots():
     assert 'const isLive = stream?.status === "online";' in source
     assert 'const label = isLive' in source
     assert '? t("status.live")' in source
+    assert "nvr-channel-detail" in source
+    assert "stream?.decode_errors" in source
 
 
 def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
@@ -178,8 +180,8 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=65" in html
-    assert "/dashboard-v2/assets/styles.css?v=46" in html
+    assert "/dashboard-v2/assets/app.js?v=66" in html
+    assert "/dashboard-v2/assets/styles.css?v=47" in html
 
 
 def test_dashboard_has_ai_modules_page_from_video_analytics_spec():

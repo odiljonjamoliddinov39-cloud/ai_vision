@@ -434,17 +434,23 @@ class _ManagedStreamSession:
         source = _rtsp_source_for_attempt(
             self.config.source, self.status_data.reconnect_count
         )
-        process = subprocess.Popen(
-            _ffmpeg_command(
-                source,
-                width=self.config.width,
-                jpeg_quality=self.config.jpeg_quality,
-                fps=self.config.preview_fps,
-                media_route=self.config.media_route,
-            ),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            process = subprocess.Popen(
+                _ffmpeg_command(
+                    source,
+                    width=self.config.width,
+                    jpeg_quality=self.config.jpeg_quality,
+                    fps=self.config.preview_fps,
+                    media_route=self.config.media_route,
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise ConnectionError(
+                "ffmpeg executable not found. Install FFmpeg or run "
+                "`python -m pip install imageio-ffmpeg`, then restart the server."
+            ) from exc
         self._process = process
         threading.Thread(
             target=self._drain_stderr,
@@ -591,6 +597,21 @@ class _RateLimitedWarnings:
         return True
 
 
+def _ffmpeg_executable() -> str:
+    configured = os.getenv("FFMPEG_BIN") or os.getenv("FFMPEG_BINARY")
+    if configured:
+        return configured
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+
+        return get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
 def _ffmpeg_command(
     source: str,
     width: int = 1280,
@@ -598,7 +619,7 @@ def _ffmpeg_command(
     fps: float = 12.0,
     media_route: MediaRoute | None = None,
 ) -> list[str]:
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    ffmpeg = _ffmpeg_executable()
     preview_width = max(240, min(int(width), 1280))
     # Decode every frame (no -skip_frame nokey) so the preview is smooth.
     # Keep a modest input probe/buffer: forcing nobuffer+low_delay can make

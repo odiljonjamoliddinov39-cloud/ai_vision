@@ -2,8 +2,8 @@ cameras:
 - name: Demo Camera
   source: dummy
   slot_number: 1
-- name: 87.192.242.82 Stream
-  source: rtsp://87.192.242.82:554/
+- name: 87.192.242.82 Channel 1
+  source: rtsp://87.192.242.82:554/Streaming/Channels/101
   slot_number: 2
 detection:
   model_path: yoloe-26s-seg.pt

@@ -1267,6 +1267,7 @@ input {
 
 .nvr-channel {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -1274,6 +1275,14 @@ input {
   border-radius: 6px;
   background: var(--panel-strong);
   color: var(--muted);
+}
+
+.nvr-channel-detail {
+  flex: 1 0 100%;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .nvr-channel.ok .nvr-channel-status {
