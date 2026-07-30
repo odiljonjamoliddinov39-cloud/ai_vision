@@ -129,8 +129,8 @@ def test_camera_info_page_lists_connected_camera_models():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
     assert 'if (menu.id === "camera_info")' in source
-    assert 'accountsApi("/api/v2/devices")' in source
-    assert "function renderCameraInfo(container)" in source
+    assert 'accountsApi("/api/v2/devices", { force })' in source
+    assert "function renderCameraInfo(container, force = false)" in source
     assert 't("table.camera")' in source
     assert 't("table.model")' in source
     assert 't("table.ai_slot")' in source
@@ -180,15 +180,28 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=67" in html
+    assert "/dashboard-v2/assets/app.js?v=68" in html
     assert "/dashboard-v2/assets/styles.css?v=48" in html
+
+
+def test_dashboard_navigation_uses_cached_data_until_refresh():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "const readCache = new Map();" in source
+    assert "function cachedRead(key, loader, force = false)" in source
+    assert 'return cachedRead(readCacheKey("api", path)' in source
+    assert 'return cachedRead(readCacheKey("accounts", path)' in source
+    assert 'return cachedRead(readCacheKey("catalog", path)' in source
+    assert "invalidateDashboardReads();" in source
+    assert "if (accountModule === accButton.dataset.accModule) return;" in source
+    assert "if (state.activeModule === button.dataset.module) return;" in source
 
 
 def test_dashboard_settings_page_edits_system_config_dynamically():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
 
-    assert 'api("/api/config")' in source
+    assert 'api("/api/config", { force })' in source
     assert 'data-settings-form="system-config"' in source
     assert "function systemSettingsHtml(config)" in source
     assert "function readSystemSettingsForm(form)" in source
@@ -234,10 +247,10 @@ def test_dashboard_exposes_operator_platform_pages_from_spec():
         assert f'menu.{module_id}' in source
 
     assert "function renderEnterprisePage(container)" in source
-    assert "function renderEventsPage(container)" in source
+    assert "function renderEventsPage(container, force = false)" in source
     assert "function renderSafetyZonesPage(container)" in source
-    assert "function renderAiModelsPage(container)" in source
-    assert "function renderIntegrationsPage(container)" in source
+    assert "function renderAiModelsPage(container, force = false)" in source
+    assert "function renderIntegrationsPage(container, force = false)" in source
     assert "feedGroupRecords(config)" in source
     assert "eventRowsFromPayloads(enginePayload, auditPayload, logPayload)" in source
     assert ".platform-summary" in styles

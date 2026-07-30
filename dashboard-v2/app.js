@@ -44,6 +44,49 @@ const state = {
   systemConfig: null,
 };
 
+const readCache = new Map();
+
+function readCacheKey(scope, path) {
+  return `${scope}:${path}`;
+}
+
+function clearReadCache(...prefixes) {
+  if (!prefixes.length) {
+    readCache.clear();
+    return;
+  }
+  for (const key of Array.from(readCache.keys())) {
+    if (prefixes.some((prefix) => key.startsWith(prefix))) {
+      readCache.delete(key);
+    }
+  }
+}
+
+function cachedRead(key, loader, force = false) {
+  if (!force && readCache.has(key)) {
+    const cached = readCache.get(key);
+    return cached instanceof Promise ? cached : Promise.resolve(cached);
+  }
+  const request = loader()
+    .then((value) => {
+      readCache.set(key, value);
+      return value;
+    })
+    .catch((error) => {
+      readCache.delete(key);
+      throw error;
+    });
+  readCache.set(key, request);
+  return request;
+}
+
+function invalidateDashboardReads() {
+  clearReadCache();
+  ccCompaniesCache = null;
+  aiModulesCatalogCache = null;
+  state.systemConfig = null;
+}
+
 const LANGUAGE_KEY = "ai_vision_v2_language";
 const I18N = {
   en: {
@@ -748,24 +791,32 @@ const permissionLabels = {
 };
 
 async function api(path, options = {}) {
+  const { force = false, ...fetchOptions } = options;
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  if (!force && method === "GET" && !fetchOptions.body) {
+    return cachedRead(readCacheKey("api", path), () => api(path, { ...fetchOptions, force: true }), force);
+  }
   const headers = {
     "Content-Type": "application/json",
     "X-AI-Role": state.role,
     "X-AI-User-Name": "Dashboard V2 Preview",
     "X-AI-Company": "All Companies",
-    ...(options.headers || {}),
+    ...(fetchOptions.headers || {}),
   };
-  if (options.body instanceof FormData) delete headers["Content-Type"];
+  if (fetchOptions.body instanceof FormData) delete headers["Content-Type"];
   const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
+    ...fetchOptions,
     headers,
   });
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(detail || response.statusText);
   }
+  if (method !== "GET") clearReadCache();
   if (response.status === 204) return null;
-  return response.json();
+  const payload = await response.json();
+  if (method === "GET" && !fetchOptions.body) readCache.set(readCacheKey("api", path), payload);
+  return payload;
 }
 
 function escapeHtml(value) {
@@ -986,9 +1037,14 @@ const ACCESS_OPTIONS = [
 ];
 
 async function accountsApi(path, options = {}) {
+  const { force = false, ...fetchOptions } = options;
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  if (!force && method === "GET" && !fetchOptions.body) {
+    return cachedRead(readCacheKey("accounts", path), () => accountsApi(path, { ...fetchOptions, force: true }), force);
+  }
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
+    headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+    ...fetchOptions,
   });
   if (!response.ok) {
     let detail = response.statusText;
@@ -1000,8 +1056,11 @@ async function accountsApi(path, options = {}) {
     }
     throw new Error(detail || "Request failed.");
   }
+  if (method !== "GET") clearReadCache();
   if (response.status === 204) return null;
-  return response.json();
+  const payload = await response.json();
+  if (method === "GET" && !fetchOptions.body) readCache.set(readCacheKey("accounts", path), payload);
+  return payload;
 }
 
 let ccCompaniesCache = null;
@@ -1485,7 +1544,7 @@ async function ensureProfileLoaded() {
 async function ensureSystemConfigLoaded(force = false) {
   if (!force && state.systemConfig) return state.systemConfig;
   if (!force && systemConfigLoading) return systemConfigLoading;
-  systemConfigLoading = api("/api/config")
+  systemConfigLoading = api("/api/config", { force })
     .then((config) => {
       state.systemConfig = config || {};
       return state.systemConfig;
@@ -2409,13 +2468,13 @@ function renderCameraInfoTable(rows) {
   `;
 }
 
-async function renderCameraInfo(container) {
+async function renderCameraInfo(container, force = false) {
   const { company } = accountState;
   companyConfig(company);
   try {
     const [devicesPayload, streamsPayload] = await Promise.all([
-      accountsApi("/api/v2/devices").catch(() => ({ devices: [] })),
-      api("/api/v2/streams/health").catch(() => ({ streams: state.streams || [] })),
+      accountsApi("/api/v2/devices", { force }).catch(() => ({ devices: [] })),
+      api("/api/v2/streams/health", { force }).catch(() => ({ streams: state.streams || [] })),
     ]);
     if (!container.isConnected || accountModule !== "camera_info") return;
     state.streams = streamsPayload.streams || state.streams || [];
@@ -2446,7 +2505,7 @@ async function renderCameraInfo(container) {
     `;
     container.querySelector("[data-refresh-camera-info]")?.addEventListener("click", () => {
       container.innerHTML = `<p class="empty">${escapeHtml(t("camera_info.loading"))}</p>`;
-      void renderCameraInfo(container);
+      void renderCameraInfo(container, true);
     });
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
@@ -2869,12 +2928,12 @@ function eventsTableHtml(rows) {
   `;
 }
 
-async function renderEventsPage(container) {
+async function renderEventsPage(container, force = false) {
   try {
     const [enginePayload, auditPayload, logPayload] = await Promise.all([
-      catalogRequest("/api/warehouse-engine/events?limit=500").catch(() => ({ events: [] })),
-      catalogRequest("/api/security/audit?limit=200").catch(() => ({ events: [] })),
-      catalogRequest("/api/logs?limit=80").catch(() => ({ logs: [] })),
+      catalogRequest("/api/warehouse-engine/events?limit=500", { force }).catch(() => ({ events: [] })),
+      catalogRequest("/api/security/audit?limit=200", { force }).catch(() => ({ events: [] })),
+      catalogRequest("/api/logs?limit=80", { force }).catch(() => ({ logs: [] })),
     ]);
     if (!container.isConnected || accountModule !== "events") return;
     const rows = eventRowsFromPayloads(enginePayload, auditPayload, logPayload);
@@ -2899,7 +2958,7 @@ async function renderEventsPage(container) {
     `;
     container.querySelector("[data-refresh-events]")?.addEventListener("click", () => {
       container.innerHTML = `<p class="empty">${escapeHtml(uiText("Refreshing events...", "Обновление событий..."))}</p>`;
-      void renderEventsPage(container);
+      void renderEventsPage(container, true);
     });
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
@@ -2961,12 +3020,12 @@ function renderSafetyZonesPage(container) {
   `;
 }
 
-async function renderAiModelsPage(container) {
+async function renderAiModelsPage(container, force = false) {
   try {
     const [catalogPayload, statusPayload, healthPayload] = await Promise.all([
-      catalogRequest(catalogApiPath("/api/catalog/items")).catch(() => ({ items: [] })),
-      api("/api/status").catch(() => ({})),
-      api("/api/v2/analytics/health").catch(() => ({})),
+      catalogRequest(catalogApiPath("/api/catalog/items"), { force }).catch(() => ({ items: [] })),
+      api("/api/status", { force }).catch(() => ({})),
+      api("/api/v2/analytics/health", { force }).catch(() => ({})),
     ]);
     if (!container.isConnected || accountModule !== "ai_models") return;
     const items = catalogPayload.items || [];
@@ -3042,11 +3101,11 @@ async function renderAiModelsPage(container) {
   }
 }
 
-async function renderIntegrationsPage(container) {
+async function renderIntegrationsPage(container, force = false) {
   try {
     const [devicesPayload, streamsPayload] = await Promise.all([
-      accountsApi("/api/v2/devices").catch(() => ({ devices: [] })),
-      api("/api/v2/streams/health").catch(() => ({ streams: state.streams || [] })),
+      accountsApi("/api/v2/devices", { force }).catch(() => ({ devices: [] })),
+      api("/api/v2/streams/health", { force }).catch(() => ({ streams: state.streams || [] })),
     ]);
     if (!container.isConnected || accountModule !== "integrations") return;
     const devices = devicesPayload.devices || [];
@@ -3108,7 +3167,7 @@ async function renderIntegrationsPage(container) {
     `;
     container.querySelector("[data-refresh-integrations]")?.addEventListener("click", () => {
       container.innerHTML = `<p class="empty">${escapeHtml(uiText("Refreshing integrations...", "Обновление интеграций..."))}</p>`;
-      void renderIntegrationsPage(container);
+      void renderIntegrationsPage(container, true);
     });
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
@@ -3148,7 +3207,12 @@ function catalogApiPath(path) {
 }
 
 async function catalogRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options);
+  const { force = false, ...fetchOptions } = options;
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  if (!force && method === "GET" && !fetchOptions.body) {
+    return cachedRead(readCacheKey("catalog", path), () => catalogRequest(path, { ...fetchOptions, force: true }), force);
+  }
+  const response = await fetch(`${API_BASE}${path}`, fetchOptions);
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -3159,7 +3223,11 @@ async function catalogRequest(path, options = {}) {
     }
     throw new Error(detail || "Catalog request failed.");
   }
-  return response.json();
+  if (method !== "GET") clearReadCache();
+  if (response.status === 204) return null;
+  const payload = await response.json();
+  if (method === "GET" && !fetchOptions.body) readCache.set(readCacheKey("catalog", path), payload);
+  return payload;
 }
 
 function formatCatalogTime(value) {
@@ -3505,7 +3573,7 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
   });
   container.querySelector("[data-refresh-result-analytics]")?.addEventListener("click", () => {
     container.innerHTML = `<p class="empty">${escapeHtml(t("result.loading"))}</p>`;
-    void renderResultAnalytics(container);
+    void renderResultAnalytics(container, true);
   });
   container.querySelector("[data-run-result-recognition]")?.addEventListener("click", (event) => {
     void runResultAnalyticsRecognition(container, event.currentTarget, filters);
@@ -3559,9 +3627,9 @@ async function runResultAnalyticsRecognition(container, button, filters) {
   }
 }
 
-async function renderResultAnalytics(container) {
+async function renderResultAnalytics(container, force = false) {
   try {
-    const payload = await catalogRequest(catalogApiPath("/api/catalog/results/history?limit=500"));
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/results/history?limit=500"), { force });
     if (!container.isConnected || accountModule !== "result_analytics") return;
     renderResultAnalyticsBody(container, payload);
   } catch (error) {
@@ -3643,9 +3711,9 @@ async function startProductLearning(container, button, cameraName) {
   }
 }
 
-async function renderCatalogEnrollment(container) {
+async function renderCatalogEnrollment(container, force = false) {
   try {
-    const payload = await catalogRequest(catalogApiPath("/api/catalog/items"));
+    const payload = await catalogRequest(catalogApiPath("/api/catalog/items"), { force });
     if (!container.isConnected || accountModule !== "ai") return;
     const cameraOptions = (accountState?.company?.cameraConfig?.nvrs || [])
       .flatMap((nvr) => (nvr.channelsDetail || []).map((channel) => ({
@@ -3787,11 +3855,11 @@ function warehouseEngineOverviewHtml(engine) {
   `;
 }
 
-async function renderCatalogResults(container) {
+async function renderCatalogResults(container, force = false) {
   try {
     const [payload, engine] = await Promise.all([
-      catalogRequest(catalogApiPath("/api/catalog/results")),
-      catalogRequest("/api/warehouse-engine/overview?limit=100"),
+      catalogRequest(catalogApiPath("/api/catalog/results"), { force }),
+      catalogRequest("/api/warehouse-engine/overview?limit=100", { force }),
     ]);
     if (!container.isConnected || accountModule !== "analytics") return;
     container.innerHTML = `
@@ -3874,11 +3942,11 @@ async function startLiveCatalogRecognition(container, button) {
   }
 }
 
-async function renderCatalogDimensions(container) {
+async function renderCatalogDimensions(container, force = false) {
   try {
     const [catalog, recognition] = await Promise.all([
-      catalogRequest(catalogApiPath("/api/catalog/items")),
-      catalogRequest(catalogApiPath("/api/catalog/results")),
+      catalogRequest(catalogApiPath("/api/catalog/items"), { force }),
+      catalogRequest(catalogApiPath("/api/catalog/results"), { force }),
     ]);
     if (!container.isConnected || accountModule !== "dimension") return;
     const items = new Map(catalog.items.map((item) => [item.id, item]));
@@ -3942,9 +4010,9 @@ function warehouseLogsHtml(events) {
     </div>`;
 }
 
-async function renderWarehouseLogs(container) {
+async function renderWarehouseLogs(container, force = false) {
   try {
-    const payload = await catalogRequest("/api/warehouse-engine/events?limit=500");
+    const payload = await catalogRequest("/api/warehouse-engine/events?limit=500", { force });
     if (!container.isConnected || accountModule !== "logs") return;
     const events = payload.events || [];
     container.innerHTML = `
@@ -3958,7 +4026,7 @@ async function renderWarehouseLogs(container) {
       </section>`;
     container.querySelector("[data-refresh-warehouse-logs]")?.addEventListener("click", () => {
       container.innerHTML = `<p class="empty">Refreshing action logs…</p>`;
-      void renderWarehouseLogs(container);
+      void renderWarehouseLogs(container, true);
     });
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
@@ -5437,12 +5505,14 @@ els.sideCompanies.addEventListener("click", (event) => {
 els.moduleNav.addEventListener("click", (event) => {
   const accButton = event.target.closest("[data-acc-module]");
   if (accButton && accountState) {
+    if (accountModule === accButton.dataset.accModule) return;
     accountModule = accButton.dataset.accModule;
     renderAccountModule();
     return;
   }
   const button = event.target.closest("[data-module]");
   if (!button) return;
+  if (state.activeModule === button.dataset.module) return;
   state.activeModule = button.dataset.module;
   renderNavigation();
   renderModuleContent();
@@ -5489,6 +5559,7 @@ els.languageToggle.addEventListener("click", () => {
 });
 
 els.refreshBtn.addEventListener("click", () => {
+  invalidateDashboardReads();
   loadDashboard().then((loaded) => {
     if (loaded) toast(t("toast.dashboard_refreshed"));
   });
