@@ -21,7 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import yaml
 from fastapi import (
@@ -814,6 +814,13 @@ class CatalogPromptUpdate(BaseModel):
     prompts: list[str] = Field(default_factory=list, max_length=20)
 
 
+class CatalogCorrection(BaseModel):
+    correct_name: str = Field(min_length=1, max_length=60)
+    prompt: str | None = Field(default=None, max_length=500)
+    crop_url: str = Field(min_length=1, max_length=500)
+    predicted_name: str | None = Field(default=None, max_length=120)
+
+
 class ProductLearningStart(BaseModel):
     duration_seconds: int = Field(default=12, ge=10, le=20)
     camera_name: str = Field(min_length=1, max_length=200)
@@ -1573,6 +1580,25 @@ def _catalog_detection_payload(detection) -> dict[str, Any]:
             value = getattr(detection, field)
             payload[field] = list(value) if field == "quantity_grid" else value
     return payload
+
+
+def _catalog_snapshot_path(url: str) -> Path | None:
+    """Resolve a /snapshots/... URL to a file under SNAPSHOT_DIR, safely.
+
+    Guards against path traversal so a crafted crop_url cannot read files
+    outside the snapshots directory.
+    """
+    prefix = "/snapshots/"
+    if not url.startswith(prefix):
+        return None
+    relative = unquote(url[len(prefix):]).lstrip("/")
+    if not relative:
+        return None
+    candidate = (SNAPSHOT_DIR / relative).resolve()
+    root = SNAPSHOT_DIR.resolve()
+    if candidate != root and not candidate.is_relative_to(root):
+        return None
+    return candidate
 
 
 def _catalog_detection_prompts(
@@ -5107,6 +5133,92 @@ def update_catalog_item_prompts(
         {"scope_id": scope, "item_id": item_id, "prompts": prompts},
     )
     return {"item_id": item_id, "prompts": prompts}
+
+
+@app.post("/api/catalog/results/correct")
+async def correct_catalog_result(
+    scope_id: str, correction: CatalogCorrection
+) -> dict[str, Any]:
+    """Teach the catalog from a human correction on the Result Analytics page.
+
+    The operator confirms what an object really is; the corrected crop is saved
+    as a reference image for that item (creating the item if needed) and the
+    optional description is stored as a recognition prompt. Future recognition
+    then matches this object to the correct name instead of the mislabel.
+    """
+    import cv2
+    import numpy as np
+    from recognition.embedding import image_embedding
+
+    scope = _catalog_scope(scope_id)
+    correct_name = " ".join(correction.correct_name.split()).strip()
+    if not correct_name:
+        raise HTTPException(status_code=400, detail="A correct name is required.")
+
+    crop_path = _catalog_snapshot_path(correction.crop_url)
+    if crop_path is None or not crop_path.exists():
+        raise HTTPException(status_code=404, detail="Crop image not found for this result.")
+    contents = crop_path.read_bytes()
+    frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Crop image could not be decoded.")
+
+    db = _get_catalog_db()
+    item = next(
+        (
+            existing
+            for existing in db.list_items(scope)
+            if _catalog_normalize_name(existing["name"]) == _catalog_normalize_name(correct_name)
+        ),
+        None,
+    )
+    created = item is None
+    if item is None:
+        item = db.create_item(scope, correct_name)
+    item_id = str(item["id"])
+
+    item_dir = CATALOG_IMAGE_DIR / scope / item_id
+    item_dir.mkdir(parents=True, exist_ok=True)
+    existing_images = db.list_images(item_id)
+    filename = f"correction_{len(existing_images) + 1:02d}.jpg"
+    (item_dir / filename).write_bytes(contents)
+    url = f"/snapshots/catalog/{quote(scope)}/{quote(item_id)}/{quote(filename)}"
+    db.add_image(
+        item_id=item_id,
+        filename=filename,
+        url=url,
+        embedding=image_embedding(frame),
+        width_px=int(frame.shape[1]),
+        height_px=int(frame.shape[0]),
+    )
+
+    prompts = _catalog_item_prompts(scope, item_id)
+    if correction.prompt:
+        cleaned_prompt = " ".join(correction.prompt.split()).strip()
+        existing_norm = {_catalog_normalize_name(value) for value in prompts}
+        if cleaned_prompt and _catalog_normalize_name(cleaned_prompt) not in existing_norm:
+            prompts = _catalog_save_item_prompts(scope, item_id, [*prompts, cleaned_prompt])
+
+    global _catalog_yolo_detector, _catalog_yolo_detector_key
+    _catalog_yolo_detector = None
+    _catalog_yolo_detector_key = None
+
+    _audit(
+        "catalog_result_corrected",
+        {
+            "scope_id": scope,
+            "item_id": item_id,
+            "correct_name": correct_name,
+            "predicted_name": correction.predicted_name,
+            "item_created": created,
+        },
+    )
+    return {
+        "item": db.get_item(item_id),
+        "item_created": created,
+        "reference_count": len(db.list_images(item_id)),
+        "prompts": prompts,
+    }
 
 
 @app.post("/api/catalog/items")
