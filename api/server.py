@@ -1581,7 +1581,10 @@ def _catalog_detection_prompts(
     prompts = [str(item["name"]) for item in items]
     for item in items:
         prompts.extend(_catalog_item_prompts(scope_id, str(item["id"])))
-    prompts.extend(["cardboard box", "box", "carton box", "stack of boxes", "package"])
+    # NOTE: no generic "box"/"carton"/"package" fallback prompts. They made the
+    # detector hunt for any rectangular package, and every such box then matched
+    # a specific catalog item like "Baget Box". Exact inventory recognition is
+    # driven by the item's own name/prompts plus reference-image confirmation.
     seen: set[str] = set()
     unique = []
     for prompt in prompts:
@@ -1883,6 +1886,117 @@ def _catalog_box_iou(left: tuple[int, int, int, int], right: tuple[int, int, int
     left_area = max(1, (left[2] - left[0]) * (left[3] - left[1]))
     right_area = max(1, (right[2] - right[0]) * (right[3] - right[1]))
     return intersection / max(1, left_area + right_area - intersection)
+
+
+# Product families used to reject cross-family candidates during matching.
+# Box terms are checked first because "baget"/"baguette" contain the substring
+# "bag", which would otherwise be misread as a sack.
+_CATALOG_BOX_TERMS = ("box", "carton", "cardboard", "crate", "baget", "baguette", "package")
+_CATALOG_SACK_TERMS = ("sack", "bag")
+
+
+def _catalog_family(text: str) -> str | None:
+    normalized = _catalog_normalize_name(text)
+    if any(term in normalized for term in _CATALOG_BOX_TERMS):
+        return "box"
+    if any(term in normalized for term in _CATALOG_SACK_TERMS):
+        return "sack"
+    return None
+
+
+def _catalog_item_category(item_name: str, aliases: list[str] | None = None) -> str | None:
+    """Coarse product family ('box' or 'sack') for an enrolled item."""
+    return _catalog_family(" ".join([str(item_name), *(str(a) for a in aliases or [])]))
+
+
+def _catalog_detection_category(detection: dict[str, Any]) -> str | None:
+    return _catalog_family(
+        " ".join(
+            str(detection.get(field) or "")
+            for field in ("class_name", "object_type", "inventory_name")
+        )
+    )
+
+
+def _catalog_category_conflicts(item_category: str | None, detection: dict[str, Any]) -> bool:
+    """True when the candidate's family clearly differs from the enrolled item.
+
+    A sack/bag detection can never be a box catalog item (and vice versa), so it
+    is rejected before the visual check. Candidates with no recognisable family
+    (e.g. class-agnostic edge proposals) are allowed through for the reference
+    comparison to decide.
+    """
+    if not item_category:
+        return False
+    detection_category = _catalog_detection_category(detection)
+    if not detection_category:
+        return False
+    return detection_category != item_category
+
+
+def _catalog_detection_bbox(detection: dict[str, Any]) -> tuple[int, int, int, int] | None:
+    bbox = detection.get("bbox") or {}
+    try:
+        return (
+            int(float(bbox["x1"])),
+            int(float(bbox["y1"])),
+            int(float(bbox["x2"])),
+            int(float(bbox["y2"])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _catalog_boxes_overlap(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+    ratio: float = 0.6,
+) -> bool:
+    x1 = max(left[0], right[0])
+    y1 = max(left[1], right[1])
+    x2 = min(left[2], right[2])
+    y2 = min(left[3], right[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    if intersection <= 0:
+        return False
+    left_area = max(1, (left[2] - left[0]) * (left[3] - left[1]))
+    right_area = max(1, (right[2] - right[0]) * (right[3] - right[1]))
+    return intersection / min(left_area, right_area) >= ratio
+
+
+def _catalog_dedupe_candidate_matches(
+    matches: list[tuple[float, dict[str, Any]]]
+) -> list[tuple[float, dict[str, Any]]]:
+    """Collapse candidates that cover the same physical object.
+
+    A class-agnostic edge proposal and the detector box for the same object can
+    both pass the reference match, which would count one object twice. Prefer
+    real detections (they carry the 3D quantity estimate) over edge proposals,
+    then higher similarity, and drop later candidates that overlap a kept one.
+    """
+
+    def sort_key(entry: tuple[float, dict[str, Any]]):
+        score, candidate = entry
+        method = str((candidate.get("detection") or {}).get("method") or "")
+        is_proposal = method == "class-agnostic-edge-proposal"
+        return (1 if is_proposal else 0, -score)
+
+    kept: list[tuple[float, dict[str, Any]]] = []
+    for score, candidate in sorted(matches, key=sort_key):
+        box = _catalog_detection_bbox(candidate.get("detection") or {})
+        camera = candidate.get("camera_name")
+        duplicate = False
+        if box is not None:
+            for _, kept_candidate in kept:
+                if kept_candidate.get("camera_name") != camera:
+                    continue
+                kept_box = _catalog_detection_bbox(kept_candidate.get("detection") or {})
+                if kept_box is not None and _catalog_boxes_overlap(box, kept_box):
+                    duplicate = True
+                    break
+        if not duplicate:
+            kept.append((score, candidate))
+    return kept
 
 
 def _catalog_class_agnostic_boxes(frame) -> list[tuple[int, int, int, int]]:
@@ -2402,54 +2516,41 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
         visual_evidence = _catalog_spatial_visuals(health, matched_entries) if include_visuals and matched_entries else {}
 
         if not matched_entries:
-            if len(items) == 1:
-                prompt_matches = [
-                    candidate
-                    for candidate in crop_candidates
-                    if _catalog_detection_matches_item_prompt(
-                        candidate["detection"], str(item["name"]), aliases
-                    )
-                ]
-                if prompt_matches:
-                    min_confidence = float(
-                        os.getenv("CATALOG_SINGLE_ITEM_ACCEPTED_CONFIDENCE", "0.75")
-                    )
-                    confidence = max(
-                        min_confidence,
-                        max(
-                            _catalog_detection_confidence(candidate["detection"])
-                            for candidate in prompt_matches
-                        ),
-                    )
-                    quantity, camera_counts = _catalog_count_objects_by_camera(
-                        [
-                            (_catalog_camera_label(candidate.get("camera_name")), candidate["detection"])
-                            for candidate in prompt_matches
-                        ]
-                    )
-                    measurement = prompt_matches[0]["detection"]
-                    method = str(measurement.get("method") or "catalog-single-item-yolo-and-3d")
-                    if include_visuals:
-                        visual_evidence = _catalog_candidate_visuals(prompt_matches)
-
-            if quantity > 0:
-                match = {
-                    "item_id": str(item["id"]),
-                    "item_name": str(item["name"]),
-                    "quantity": quantity,
-                    "confidence": confidence,
-                    "dimensions_m": _catalog_dimensions(measurement),
-                    "measurement_method": method,
-                    "camera_counts": _catalog_camera_counts_payload(camera_counts),
-                }
-                if visual_evidence:
-                    match["_visual_evidence"] = visual_evidence
-                matches.append(match)
-                continue
-
+            # Manual-entry recognition is confirmed by the reference photos, not
+            # by the detector's class label. For each candidate object we:
+            #   1. reject candidates whose product family clearly differs from
+            #      the enrolled item (a sack/bag is never counted as a box), so
+            #      a mislabelled sack cannot be forced onto a box entry;
+            #   2. require the crop to match one of the item's reference images
+            #      above a visual-similarity threshold;
+            #   3. de-duplicate overlapping candidates (an edge proposal and the
+            #      detector box over the same object) so it is counted once.
+            # This replaces the old shortcut that counted any box-shaped
+            # detection for a single enrolled item by name alone.
+            item_category = _catalog_item_category(str(item["name"]), aliases)
+            # Regions occupied by a conflicting-family detection (e.g. sacks for
+            # a box item). Any candidate overlapping one of these - including
+            # label-less edge proposals - is rejected, so a sack cannot be
+            # counted as a box merely because its crop looks similar.
+            excluded_boxes: list[tuple[int, int, int, int]] = []
+            for candidate in crop_candidates:
+                detection = candidate.get("detection") or {}
+                if _catalog_category_conflicts(item_category, detection):
+                    box = _catalog_detection_bbox(detection)
+                    if box is not None:
+                        excluded_boxes.append(box)
             crop_matches: list[tuple[float, dict[str, Any]]] = []
             best_crop_score = 0.0
             for candidate in crop_candidates:
+                detection = candidate.get("detection") or {}
+                if _catalog_category_conflicts(item_category, detection):
+                    continue
+                candidate_box = _catalog_detection_bbox(detection)
+                if candidate_box is not None and any(
+                    _catalog_boxes_overlap(candidate_box, excluded)
+                    for excluded in excluded_boxes
+                ):
+                    continue
                 score = max(
                     (
                         cosine_similarity(candidate["embedding"], ref.get("embedding") or [])
@@ -2458,9 +2559,7 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                     default=0.0,
                 )
                 best_crop_score = max(best_crop_score, score)
-                candidate_method = str(
-                    (candidate.get("detection") or {}).get("method") or ""
-                )
+                candidate_method = str(detection.get("method") or "")
                 accepted_threshold = (
                     proposal_threshold
                     if candidate_method == "class-agnostic-edge-proposal"
@@ -2468,6 +2567,7 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                 )
                 if score >= accepted_threshold:
                     crop_matches.append((score, candidate))
+            crop_matches = _catalog_dedupe_candidate_matches(crop_matches)
             if scan is not None:
                 scan["catalog_scores"][str(item["name"])] = round(best_crop_score, 4)
 
