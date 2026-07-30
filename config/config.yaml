@@ -8,11 +8,11 @@ cameras:
 detection:
   model_path: yoloe-26s-seg.pt
   fallback_model_path: yolov8s-worldv2.pt
-  confidence_threshold: 0.18
+  confidence_threshold: 0.4
   iou_threshold: 0.55
   max_detections: 300
   image_size: 640
-  class_agnostic_nms: true
+  class_agnostic_nms: false
   device: auto
   target_fps: 2.0
   stale_after_ms: 3000
@@ -20,12 +20,13 @@ detection:
   classes: null
   class_prompts:
   - baget box
-  - baguette box
   - stack of baget boxes
-  - stack of cardboard boxes
   - cardboard box
-  - stack of sacks
+  - stack of cardboard boxes
   - sack of flour
+  - stack of flour sacks
+  - woven sack
+  - bag of flour
   - large bag
   - wrapped pallet
   - wooden pallet
