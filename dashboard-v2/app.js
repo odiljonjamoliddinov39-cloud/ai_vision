@@ -122,8 +122,31 @@ const I18N = {
     "menu.dimension": "3D Dimensioning",
     "menu.feed": "Camera Feed",
     "menu.logs": "Logs",
+    "menu.ai_modules": "AI Modules",
     "menu.result_analytics": "Result Analytics",
     "menu.settings": "Settings",
+    "modules.count": "{count} functions",
+    "modules.current_note": "Current baseline covers camera/NVR streaming, Stream Manager, catalog recognition, result analytics, exports and training tools. Remaining items are tracked as roadmap modules.",
+    "modules.empty": "No functions match these filters.",
+    "modules.feature": "Function",
+    "modules.functions": "Functions",
+    "modules.implemented": "Implemented",
+    "modules.loading": "Loading AI video analytics modules...",
+    "modules.partial": "Partial",
+    "modules.planned": "Planned",
+    "modules.search": "Search function",
+    "modules.section": "Section",
+    "modules.section_all": "All sections",
+    "modules.sections": "Sections",
+    "modules.source": "Spec version: 25 July 2026",
+    "modules.status": "Status",
+    "modules.status_all": "All statuses",
+    "modules.status_done": "Implemented",
+    "modules.status_partial": "Partial",
+    "modules.status_planned": "Planned",
+    "modules.shown": "Shown {visible} of {total}",
+    "modules.subtitle": "Specification-driven roadmap for factory, production line, machine and warehouse video analytics.",
+    "modules.title": "AI Video Analytics Modules",
     "profile.super_admin": "Super Admin",
     "quality.high.hint": "best picture",
     "quality.high.label": "High - 1080p",
@@ -328,8 +351,31 @@ const I18N = {
     "menu.dimension": "3D измерение",
     "menu.feed": "Видеопоток",
     "menu.logs": "Журнал действий",
+    "menu.ai_modules": "AI модули",
     "menu.result_analytics": "Аналитика результатов",
     "menu.settings": "Настройки",
+    "modules.count": "{count} функций",
+    "modules.current_note": "Текущая база уже покрывает камеры/NVR, Stream Manager, распознавание каталога, аналитику результатов, экспорт и инструменты обучения. Остальные пункты ведутся как roadmap-модули.",
+    "modules.empty": "По этим фильтрам функции не найдены.",
+    "modules.feature": "Функция",
+    "modules.functions": "Функции",
+    "modules.implemented": "Реализовано",
+    "modules.loading": "Загрузка AI модулей видеоаналитики...",
+    "modules.partial": "Частично",
+    "modules.planned": "План",
+    "modules.search": "Поиск функции",
+    "modules.section": "Раздел",
+    "modules.section_all": "Все разделы",
+    "modules.sections": "Разделы",
+    "modules.source": "Версия ТЗ: 25 июля 2026",
+    "modules.status": "Статус",
+    "modules.status_all": "Все статусы",
+    "modules.status_done": "Реализовано",
+    "modules.status_partial": "Частично",
+    "modules.status_planned": "План",
+    "modules.shown": "Показано {visible} из {total}",
+    "modules.subtitle": "Roadmap по ТЗ для завода, производственных линий, станков и складов.",
+    "modules.title": "AI модули видеоаналитики",
     "profile.super_admin": "Супер админ",
     "quality.high.hint": "лучшее изображение",
     "quality.high.label": "Высокое - 1080p",
@@ -712,6 +758,7 @@ const NAV_ICONS = {
   camera_info: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M12 18v2M8 8h8M8 12h5"/></svg>`,
   analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>`,
   result_analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
+  ai_modules: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M9 4v16M15 4v16M4 9h16M4 15h16"/></svg>`,
   feed: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`,
   ai: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V4M8 4h8M9 12h.01M15 12h.01M9 16h6"/></svg>`,
   dimension: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></svg>`,
@@ -1594,8 +1641,10 @@ function livePreviewHtml(summary, health) {
 
 const MAX_NVRS = 5;
 const MAX_NVR_SLOTS = 100;
+const FEATURE_CATALOG_PATH = "/dashboard-v2/assets/video-analytics-functions.json";
 let accountState = null;
 let accountModule = null;
+let aiModulesCatalogCache = null;
 
 function newId() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -1816,6 +1865,7 @@ function accountMenus(role) {
   if (role.access?.camera) menus.push({ id: "camera_info", label: "Camera Info", sub: "Device models" });
   if (role.access?.analytics) menus.push({ id: "analytics", label: "Analytics", sub: "Charts & trends" });
   if (role.access?.analytics) menus.push({ id: "result_analytics", label: "Result Analytics", sub: "Recognition results" });
+  if (role.access?.analytics) menus.push({ id: "ai_modules", label: "AI Modules", sub: "270-function roadmap" });
   if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
   menus.push({ id: "ai", label: "AI Check-in", sub: "Products to count" });
   menus.push({ id: "dimension", label: "3D Dimensioning", sub: "Item measurements" });
@@ -1992,6 +2042,219 @@ async function renderCameraInfo(container) {
       container.innerHTML = `<p class="empty">${escapeHtml(t("camera_info.loading"))}</p>`;
       void renderCameraInfo(container);
     });
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function localizedText(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  const lang = currentLanguage();
+  return value[lang] || value.en || value.ru || "";
+}
+
+async function loadAiModulesCatalog(force = false) {
+  if (aiModulesCatalogCache && !force) return aiModulesCatalogCache;
+  const response = await fetch(`${API_BASE}${FEATURE_CATALOG_PATH}`);
+  if (!response.ok) throw new Error(response.statusText || "Feature catalog request failed.");
+  aiModulesCatalogCache = await response.json();
+  return aiModulesCatalogCache;
+}
+
+function aiModulesRows(catalog) {
+  return (catalog.sections || []).flatMap((section) =>
+    (section.features || []).map((feature) => ({
+      id: feature.id,
+      sectionId: section.id,
+      sectionNumber: section.number,
+      sectionTitle: section.title,
+      featureTitle: feature.title,
+      status: feature.status || "planned",
+    }))
+  );
+}
+
+function aiModulesStatusCounts(rows) {
+  return (rows || []).reduce(
+    (counts, row) => {
+      const status = row.status || "planned";
+      counts[status] = (counts[status] || 0) + 1;
+      counts.total += 1;
+      return counts;
+    },
+    { total: 0, done: 0, partial: 0, planned: 0 }
+  );
+}
+
+function aiModuleStatusLabel(status) {
+  return t(`modules.status_${status || "planned"}`);
+}
+
+function aiModulesFilterRows(rows, filters = {}) {
+  const section = filters.section || "all";
+  const status = filters.status || "all";
+  const query = String(filters.search || "").trim().toLowerCase();
+  return (rows || []).filter((row) => {
+    if (section !== "all" && row.sectionId !== section) return false;
+    if (status !== "all" && row.status !== status) return false;
+    if (!query) return true;
+    return `${localizedText(row.sectionTitle)} ${localizedText(row.featureTitle)} ${row.status}`
+      .toLowerCase()
+      .includes(query);
+  });
+}
+
+function aiModulesFilterControlsHtml(catalog, filters, totalRows, visibleRows) {
+  return `
+    <form class="ai-modules-filters" data-ai-modules-filters>
+      <select name="section" aria-label="${escapeAttr(t("modules.section"))}">
+        <option value="all">${escapeHtml(t("modules.section_all"))}</option>
+        ${(catalog.sections || [])
+          .map(
+            (section) =>
+              `<option value="${escapeAttr(section.id)}" ${filters.section === section.id ? "selected" : ""}>${section.number}. ${escapeHtml(localizedText(section.title))}</option>`
+          )
+          .join("")}
+      </select>
+      <select name="status" aria-label="${escapeAttr(t("modules.status"))}">
+        <option value="all">${escapeHtml(t("modules.status_all"))}</option>
+        ${["done", "partial", "planned"]
+          .map(
+            (status) =>
+              `<option value="${status}" ${filters.status === status ? "selected" : ""}>${escapeHtml(aiModuleStatusLabel(status))}</option>`
+          )
+          .join("")}
+      </select>
+      <input name="search" value="${escapeAttr(filters.search || "")}" placeholder="${escapeAttr(t("modules.search"))}" autocomplete="off" />
+      <button type="submit" class="export-button">${escapeHtml(t("actions.apply"))}</button>
+      <button type="button" class="export-button muted-button" data-clear-ai-module-filters>${escapeHtml(t("actions.clear"))}</button>
+      <strong class="result-analytics-count">${escapeHtml(t("modules.shown", { visible: visibleRows.length.toLocaleString(), total: totalRows.toLocaleString() }))}</strong>
+    </form>
+  `;
+}
+
+function aiModulesSummaryHtml(catalog, rows) {
+  const counts = aiModulesStatusCounts(rows);
+  return `
+    <div class="ai-modules-summary">
+      <article><span>${escapeHtml(t("modules.sections"))}</span><strong>${Number(catalog.meta?.sections_total || catalog.sections?.length || 0).toLocaleString()}</strong></article>
+      <article><span>${escapeHtml(t("modules.functions"))}</span><strong>${Number(catalog.meta?.features_total || counts.total).toLocaleString()}</strong></article>
+      <article><span>${escapeHtml(t("modules.implemented"))}</span><strong>${counts.done.toLocaleString()}</strong></article>
+      <article><span>${escapeHtml(t("modules.partial"))}</span><strong>${counts.partial.toLocaleString()}</strong></article>
+      <article><span>${escapeHtml(t("modules.planned"))}</span><strong>${counts.planned.toLocaleString()}</strong></article>
+    </div>
+  `;
+}
+
+function aiModuleSectionCounts(section) {
+  return aiModulesStatusCounts(
+    (section.features || []).map((feature) => ({ status: feature.status || "planned" }))
+  );
+}
+
+function aiModuleSectionCardsHtml(catalog) {
+  return `
+    <div class="ai-module-section-grid">
+      ${(catalog.sections || [])
+        .map((section) => {
+          const counts = aiModuleSectionCounts(section);
+          const complete = counts.total ? Math.round(((counts.done + counts.partial * 0.5) / counts.total) * 100) : 0;
+          return `
+            <article class="ai-module-section-card">
+              <div>
+                <strong>${section.number}. ${escapeHtml(localizedText(section.title))}</strong>
+                <span>${escapeHtml(t("modules.count", { count: counts.total.toLocaleString() }))}</span>
+              </div>
+              <div class="ai-module-progress" aria-label="${escapeAttr(`${complete}%`)}"><span style="width: ${complete}%"></span></div>
+              <p>
+                <em class="ai-module-status done">${counts.done.toLocaleString()}</em>
+                <em class="ai-module-status partial">${counts.partial.toLocaleString()}</em>
+                <em class="ai-module-status planned">${counts.planned.toLocaleString()}</em>
+              </p>
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function aiModulesTableHtml(rows) {
+  if (!rows.length) return `<p class="empty">${escapeHtml(t("modules.empty"))}</p>`;
+  return `
+    <div class="detected-table-wrap">
+      <table class="detected-table ai-modules-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(t("modules.section"))}</th>
+            <th>${escapeHtml(t("modules.feature"))}</th>
+            <th>${escapeHtml(t("modules.status"))}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+                <tr>
+                  <td><strong>${row.sectionNumber}. ${escapeHtml(localizedText(row.sectionTitle))}</strong></td>
+                  <td>${escapeHtml(localizedText(row.featureTitle))}</td>
+                  <td><span class="ai-module-status ${escapeAttr(row.status)}">${escapeHtml(aiModuleStatusLabel(row.status))}</span></td>
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAiModulesBody(container, catalog, filters = { section: "all", status: "all", search: "" }) {
+  const rows = aiModulesRows(catalog);
+  const visibleRows = aiModulesFilterRows(rows, filters);
+  container.innerHTML = `
+    <section class="detected-list ai-modules">
+      <header class="detected-list-head">
+        <div>
+          <h3>${escapeHtml(t("modules.title"))}</h3>
+          <p>${escapeHtml(t("modules.subtitle"))} ${escapeHtml(t("modules.source"))}</p>
+        </div>
+        <div class="detected-list-actions">
+          <button type="button" class="export-button" data-refresh-ai-modules>${escapeHtml(t("actions.refresh"))}</button>
+        </div>
+      </header>
+      ${aiModulesFilterControlsHtml(catalog, filters, rows.length, visibleRows)}
+      ${aiModulesSummaryHtml(catalog, rows)}
+      <p class="ai-modules-note">${escapeHtml(t("modules.current_note"))}</p>
+      ${aiModuleSectionCardsHtml(catalog)}
+      ${aiModulesTableHtml(visibleRows)}
+    </section>
+  `;
+  container.querySelector("[data-ai-modules-filters]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    renderAiModulesBody(container, catalog, {
+      section: form.section.value,
+      status: form.status.value,
+      search: form.search.value,
+    });
+  });
+  container.querySelector("[data-clear-ai-module-filters]")?.addEventListener("click", () => {
+    renderAiModulesBody(container, catalog, { section: "all", status: "all", search: "" });
+  });
+  container.querySelector("[data-refresh-ai-modules]")?.addEventListener("click", async () => {
+    aiModulesCatalogCache = null;
+    container.innerHTML = `<p class="empty">${escapeHtml(t("modules.loading"))}</p>`;
+    await renderAiModules(container, filters);
+  });
+}
+
+async function renderAiModules(container, filters = { section: "all", status: "all", search: "" }) {
+  try {
+    const catalog = await loadAiModulesCatalog();
+    if (!container.isConnected || accountModule !== "ai_modules") return;
+    renderAiModulesBody(container, catalog, filters);
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }
@@ -2953,6 +3216,12 @@ function renderAccountModule() {
   if (menu.id === "ai") {
     els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("ai.loading"))}</p>`;
     void renderCatalogEnrollment(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "ai_modules") {
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("modules.loading"))}</p>`;
+    void renderAiModules(els.moduleContent);
     return;
   }
 

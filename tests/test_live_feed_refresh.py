@@ -173,8 +173,31 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=58" in html
-    assert "/dashboard-v2/assets/styles.css?v=43" in html
+    assert "/dashboard-v2/assets/app.js?v=63" in html
+    assert "/dashboard-v2/assets/styles.css?v=44" in html
+
+
+def test_dashboard_has_ai_modules_page_from_video_analytics_spec():
+    import json
+
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+    catalog = json.loads((ROOT / "dashboard-v2" / "video-analytics-functions.json").read_text(encoding="utf-8"))
+
+    assert 'menus.push({ id: "ai_modules", label: "AI Modules"' in source
+    assert 'FEATURE_CATALOG_PATH = "/dashboard-v2/assets/video-analytics-functions.json"' in source
+    assert "function renderAiModules(container" in source
+    assert "data-ai-modules-filters" in source
+    assert "aiModulesSummaryHtml(catalog, rows)" in source
+    assert "aiModuleSectionCardsHtml(catalog)" in source
+    assert "aiModulesTableHtml(visibleRows)" in source
+    assert ".ai-modules-filters" in styles
+    assert ".ai-module-section-grid" in styles
+    assert ".ai-modules-table" in styles
+    assert catalog["meta"]["sections_total"] == 18
+    assert catalog["meta"]["features_total"] == 270
+    assert len(catalog["sections"]) == 18
+    assert sum(len(section["features"]) for section in catalog["sections"]) == 270
 
 
 def test_dashboard_startup_retries_and_exposes_a_visible_failure_state():
