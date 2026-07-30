@@ -829,7 +829,7 @@ class ProductLearningStart(BaseModel):
 class ProductLearningSave(BaseModel):
     session_id: str = Field(min_length=8, max_length=120)
     product_name: str = Field(min_length=1, max_length=60)
-    view_indices: list[int] = Field(min_length=2, max_length=8)
+    view_indices: list[int] = Field(min_length=1, max_length=8)
     existing_item_id: str | None = Field(default=None, max_length=120)
 
 
@@ -5017,7 +5017,7 @@ def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[st
     session = _product_learning_sessions.get(request.session_id)
     if not session or session.get("scope_id") != scope:
         raise HTTPException(status_code=404, detail="Product learning session not found.")
-    if session.get("status") != "ready" or len(session.get("_views") or []) < 2:
+    if session.get("status") != "ready" or len(session.get("_views") or []) < 1:
         raise HTTPException(status_code=409, detail="Product learning has not completed.")
     product_name = " ".join(request.product_name.split()).strip()
     db = _get_catalog_db()
@@ -5026,8 +5026,8 @@ def save_learned_product(scope_id: str, request: ProductLearningSave) -> dict[st
     if any(index < 0 or index >= len(all_views) for index in indices):
         raise HTTPException(status_code=400, detail="One or more selected views are invalid.")
     views = [all_views[index] for index in indices]
-    if len(views) < 2:
-        raise HTTPException(status_code=400, detail="Select at least two product views.")
+    if len(views) < 1:
+        raise HTTPException(status_code=400, detail="Select at least one product view.")
     if request.existing_item_id:
         item = db.get_item(request.existing_item_id)
         if not item or str(item.get("scope_id")) != scope:

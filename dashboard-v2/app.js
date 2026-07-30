@@ -3330,7 +3330,7 @@ function productLearningPanelHtml(session) {
           <div style="display:flex;gap:10px;align-items:end">
           <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:5px">Product Name</span><input name="name" required maxlength="60" placeholder="Baget Box" value="${escapeAttr(existing?.name || "")}" autocomplete="off" style="width:100%" /></label>
           <button type="button" data-acc-action="learn-product">Retake pictures</button>
-          <button type="submit">Save and start counting</button>
+          <button type="submit">Save to base</button>
           </div>
         </form>
       </div>`;
@@ -4215,13 +4215,13 @@ async function handleAccountSubmit(event) {
     const viewIndices = Array.from(form.querySelectorAll('input[name="learned-view"]:checked'))
       .map((input) => Number(input.value));
     const existingItemId = form.querySelector('input[name="use-existing-product"]:checked')?.value || null;
-    if (viewIndices.length < 2) {
-      toast("Select at least two clear pictures of the product.");
+    if (viewIndices.length < 1) {
+      toast("Select at least one clear picture of the product.");
       return;
     }
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
-    submit.textContent = "Saving fingerprint…";
+    submit.textContent = "Saving to base…";
     try {
       await catalogRequest(catalogApiPath("/api/catalog/learning/save"), {
         method: "POST",
@@ -4239,7 +4239,7 @@ async function handleAccountSubmit(event) {
     } catch (error) {
       toast(error.message);
       submit.disabled = false;
-      submit.textContent = "Save and start counting";
+      submit.textContent = "Save to base";
     }
     return;
   }

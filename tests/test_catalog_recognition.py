@@ -654,6 +654,48 @@ def test_result_correction_teaches_catalog_item_from_crop(tmp_path, monkeypatch)
     assert result_again["reference_count"] == 2
 
 
+def test_learned_product_save_accepts_single_view(tmp_path, monkeypatch):
+    # "Save to base" must not be blocked by a two-picture minimum: one clear
+    # view is enough to enroll the product and start counting.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db = CatalogDB(str(tmp_path / "catalog.db"))
+    snapshot_dir = tmp_path / "snapshots"
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "CATALOG_IMAGE_DIR", snapshot_dir / "catalog")
+    monkeypatch.setattr(server, "CATALOG_PROMPTS_PATH", tmp_path / "catalog_prompts.json")
+    monkeypatch.setattr(server, "PRODUCT_FINGERPRINTS_PATH", tmp_path / "fingerprints.json")
+
+    crop = _reference_image((200, 90, 30))
+    session_id = "sess-single-view"
+    server._product_learning_sessions[session_id] = {
+        "session_id": session_id,
+        "scope_id": "warehouse-a",
+        "status": "ready",
+        "duration_seconds": 12,
+        "camera_name": "NVR Camera 2",
+        "camera_count": 1,
+        "frames_seen": 3,
+        "proposal_count": 2,
+        "_views": [{"crop": crop, "embedding": image_embedding(crop)}],
+    }
+    try:
+        result = server.save_learned_product(
+            "warehouse-a",
+            server.ProductLearningSave(
+                session_id=session_id,
+                product_name="Baget Box",
+                view_indices=[0],
+            ),
+        )
+    finally:
+        server._product_learning_sessions.pop(session_id, None)
+
+    assert result["active"] is True
+    assert result["item"]["name"] == "Baget Box"
+    assert result["item"]["image_count"] == 1
+
+
 def test_result_correction_rejects_path_traversal(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     db = CatalogDB(str(tmp_path / "catalog.db"))
