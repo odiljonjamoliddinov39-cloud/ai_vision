@@ -2539,17 +2539,30 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                     box = _catalog_detection_bbox(detection)
                     if box is not None:
                         excluded_boxes.append(box)
+            rejected_family = 0
+            rejected_overlap = 0
+            rejected_similarity = 0
             crop_matches: list[tuple[float, dict[str, Any]]] = []
             best_crop_score = 0.0
             for candidate in crop_candidates:
                 detection = candidate.get("detection") or {}
                 if _catalog_category_conflicts(item_category, detection):
+                    rejected_family += 1
                     continue
                 candidate_box = _catalog_detection_bbox(detection)
-                if candidate_box is not None and any(
-                    _catalog_boxes_overlap(candidate_box, excluded)
-                    for excluded in excluded_boxes
+                # Only a label-less proposal inherits a conflicting region's
+                # exclusion. A candidate that is itself a recognised box is
+                # trusted by its own label even when it overlaps an adjacent
+                # sack - otherwise boxes stacked next to sacks are lost.
+                if (
+                    candidate_box is not None
+                    and _catalog_detection_category(detection) is None
+                    and any(
+                        _catalog_boxes_overlap(candidate_box, excluded)
+                        for excluded in excluded_boxes
+                    )
                 ):
+                    rejected_overlap += 1
                     continue
                 score = max(
                     (
@@ -2567,9 +2580,24 @@ def _catalog_match_current_frame(scope_id: str, include_visuals: bool = False) -
                 )
                 if score >= accepted_threshold:
                     crop_matches.append((score, candidate))
+                else:
+                    rejected_similarity += 1
             crop_matches = _catalog_dedupe_candidate_matches(crop_matches)
             if scan is not None:
                 scan["catalog_scores"][str(item["name"])] = round(best_crop_score, 4)
+                # Rejection breakdown so it is clear where boxes disappear:
+                # family mismatch, sack-overlap, or reference similarity.
+                scan.setdefault("diagnostics", {})[str(item["name"])] = {
+                    "candidates": len(crop_candidates),
+                    "accepted": len(crop_matches),
+                    "rejected_family": rejected_family,
+                    "rejected_overlap": rejected_overlap,
+                    "rejected_similarity": rejected_similarity,
+                    "best_score": round(best_crop_score, 4),
+                    "crop_threshold": crop_threshold,
+                    "proposal_threshold": proposal_threshold,
+                    "item_category": item_category,
+                }
 
             if crop_matches:
                 confidence = max(score for score, _ in crop_matches)
