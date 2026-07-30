@@ -53,6 +53,7 @@ from database.company_portal_db import CompanyPortalDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
+from streaming.media_engine import MediaEngine  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -1565,6 +1566,34 @@ def _status() -> dict[str, Any]:
     }
 
 
+def _media_engine() -> MediaEngine:
+    return MediaEngine.from_config(_read_yaml(CONFIG_PATH).get("media_engine"))
+
+
+def _media_engine_cameras() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": camera["name"],
+            "source": camera["stream_url"],
+            "slot_number": camera.get("slot_number"),
+        }
+        for camera in _get_camera_db().list_active_cameras(include_secret=True)
+    ]
+
+
+def _sync_media_engine_paths() -> dict[str, Any]:
+    engine = _media_engine()
+    if engine.enabled and not engine.wait_until_ready():
+        raise HTTPException(status_code=503, detail="Media engine control API is unavailable.")
+    result = engine.sync_paths(_media_engine_cameras())
+    if result["errors"]:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "One or more media-engine paths could not be synchronized.", **result},
+        )
+    return result
+
+
 def _should_autostart_detection() -> bool:
     if not _env_bool("AUTO_START_DETECTION", True):
         return False
@@ -1630,6 +1659,14 @@ async def _detection_watchdog() -> None:
 @app.on_event("startup")
 async def start_detection_watchdog() -> None:
     global _watchdog_task
+    try:
+        await asyncio.to_thread(_sync_media_engine_paths)
+    except HTTPException as exc:
+        _audit(
+            "media_engine_sync_failed",
+            {"status_code": exc.status_code, "detail": _redact_sensitive_text(str(exc.detail))},
+            actor="startup",
+        )
     if _watchdog_task is None or _watchdog_task.done():
         _watchdog_task = asyncio.create_task(_detection_watchdog())
 
@@ -2195,6 +2232,20 @@ def status() -> dict[str, Any]:
     return data
 
 
+@app.get("/api/streams")
+def streams() -> dict[str, Any]:
+    """Expose shared-stream discovery and health without leaking NVR credentials."""
+    engine = _media_engine()
+    cameras = _media_engine_cameras()
+    return {
+        "media_engine": {
+            "enabled": engine.enabled,
+            "ai_fps": engine.ai_fps,
+        },
+        "streams": engine.describe(cameras),
+    }
+
+
 @app.get("/api/security/audit")
 def security_audit(limit: int = 100) -> dict[str, Any]:
     db = _get_security_audit_db()
@@ -2575,6 +2626,7 @@ def start_detection(request: StartRequest | None = None) -> dict[str, Any]:
     if _detector_pid() is not None:
         raise HTTPException(status_code=409, detail="Detection is already running.")
     _validate_active_cameras_for_start()
+    _sync_media_engine_paths()
     _manual_stop_requested = False
     _clear_live_frames()
 
@@ -2839,34 +2891,67 @@ async def stream_logs():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+LIVE_FRAME_POLL_INTERVAL_SECONDS = 0.02
+LIVE_FRAME_IDLE_TIMEOUT_SECONDS = 3.0
+
+
+def _read_complete_jpeg(path: Path) -> bytes | None:
+    """Return a complete JPEG, ignoring a file while it is being replaced."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 4 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+        return None
+    return data
+
+
 @app.get("/api/live_mjpeg")
 async def live_mjpeg(slot: int | None = None, camera: str | None = None):
-    """Return a multipart/x-mixed-replace MJPEG stream by repeatedly
-    reading the latest frame written by the detector. Use ?slot=1, ?slot=2,
-    etc. to view individual active camera screens.
-    """
-
+    """Stream each complete detector snapshot once, immediately after it changes."""
     boundary = "frame"
     latest_paths = _live_feed_paths(slot=slot, camera=camera)
 
     async def frame_generator():
+        last_path: Path | None = None
+        last_mtime_ns = -1
+        last_frame_at = time.monotonic()
+
         while True:
             latest = next((path for path in latest_paths if path.exists()), None)
             if latest is not None:
                 try:
-                    data = latest.read_bytes()
-                    header = (
-                        f"--{boundary}\r\n"
-                        "Content-Type: image/jpeg\r\n"
-                        f"Content-Length: {len(data)}\r\n\r\n"
-                    ).encode("utf-8")
-                    yield header + data + b"\r\n"
-                except Exception:
-                    # ignore read errors
-                    pass
-            await asyncio.sleep(0.05)
+                    mtime_ns = latest.stat().st_mtime_ns
+                except OSError:
+                    mtime_ns = -1
 
-    return StreamingResponse(frame_generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
+                if latest != last_path or mtime_ns != last_mtime_ns:
+                    data = _read_complete_jpeg(latest)
+                    if data is not None:
+                        header = (
+                            f"--{boundary}\r\n"
+                            "Content-Type: image/jpeg\r\n"
+                            f"Content-Length: {len(data)}\r\n\r\n"
+                        ).encode("utf-8")
+                        last_path = latest
+                        last_mtime_ns = mtime_ns
+                        last_frame_at = time.monotonic()
+                        yield header + data + b"\r\n"
+                        continue
+
+            if time.monotonic() - last_frame_at >= LIVE_FRAME_IDLE_TIMEOUT_SECONDS:
+                break
+            await asyncio.sleep(LIVE_FRAME_POLL_INTERVAL_SECONDS)
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/live_frame")
@@ -2884,8 +2969,8 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
         raise HTTPException(status_code=404, detail="No live frame is available yet.")
 
     for _ in range(5):
-        data = latest.read_bytes()
-        if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
+        data = _read_complete_jpeg(latest)
+        if data is not None:
             return Response(
                 content=data,
                 media_type="image/jpeg",

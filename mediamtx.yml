@@ -1,0 +1,35 @@
+logLevel: info
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+        path:
+      - action: read
+        path:
+      - action: playback
+        path:
+  # Control access is anonymous only inside the private Compose network.
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: api
+      - action: metrics
+
+api: true
+apiAddress: :9997
+metrics: true
+metricsAddress: :9998
+hls: true
+hlsAddress: :8888
+webrtc: true
+webrtcAddress: :8889
+
+pathDefaults:
+  sourceOnDemand: false
+  record: false
+
+paths: {}

@@ -130,6 +130,169 @@ function toast(message) {
   window.setTimeout(() => els.toast.classList.remove("show"), 2600);
 }
 
+
+const LIVE_FRAME_REFRESH_MS = 150;
+const MAX_LIVE_STREAMS = 6;
+const LIVE_FALLBACK_REFRESH_MS = 900;
+const LIVE_STREAM_RECONNECT_MS = 60000;
+const LIVE_STREAM_ERROR_BACKOFF_MS = 4000;
+let liveFrameTimer = null;
+let liveFrameFocusedSlot = null;
+
+function liveStreamUrl(slot) {
+  const url = new URL(`${API_BASE}/api/live_mjpeg`);
+  url.searchParams.set("slot", slot);
+  return url.toString();
+}
+
+function liveFrameUrl(slot) {
+  const url = new URL(`${API_BASE}/api/live_frame`);
+  url.searchParams.set("slot", slot);
+  url.searchParams.set("v", Date.now());
+  return url.toString();
+}
+
+function liveFeedImages() {
+  return Array.from(els.moduleContent.querySelectorAll("img[data-live-frame][data-live-slot]"));
+}
+
+function liveFeedVisible(image) {
+  if (!image.isConnected) return false;
+  const rect = image.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 && rect.bottom >= -300 && rect.top <= window.innerHeight + 300;
+}
+
+function setFeedBadgeLive(image, isLive, label = null) {
+  const badge = image.parentElement?.querySelector(".feed-transmitting");
+  if (!badge) return;
+  badge.textContent = label || (isLive ? "Live" : "Preview");
+  badge.classList.toggle("feed-stale-badge", !isLive);
+}
+
+function stopLiveStream(image, clearSource = true) {
+  if (image.dataset.liveStreaming !== "true") return;
+  delete image.dataset.liveStreaming;
+  delete image.dataset.liveStreamUrl;
+  delete image.dataset.liveStreamStartedAt;
+  delete image.dataset.livePriming;
+  if (clearSource) image.removeAttribute("src");
+}
+
+function attachLiveFeedHandlers(image) {
+  if (image.dataset.liveHandlersAttached === "true") return;
+  image.dataset.liveHandlersAttached = "true";
+  image.addEventListener("load", () => {
+    const streaming = image.dataset.feedMode === "stream";
+    delete image.dataset.livePriming;
+    if (streaming) delete image.dataset.liveErrorUntil;
+    image.classList.remove("feed-stale");
+    image.removeAttribute("title");
+    image.dataset.liveLastUpdate = new Date().toISOString();
+    setFeedBadgeLive(image, streaming, streaming ? "Live" : "Preview");
+  });
+  image.addEventListener("error", () => {
+    const wasStreaming = image.dataset.feedMode === "stream" || image.dataset.liveStreaming === "true";
+    delete image.dataset.livePriming;
+    image.dataset.liveErrorUntil = String(Date.now() + LIVE_STREAM_ERROR_BACKOFF_MS);
+    image.classList.add("feed-stale");
+    if (wasStreaming) {
+      image.title = "Refreshing camera preview";
+      setFeedBadgeLive(image, false, "Refreshing");
+      refreshFallbackFrame(image, Date.now(), true);
+      return;
+    }
+    image.title = "Waiting for camera frame";
+    setFeedBadgeLive(image, false, "Waiting");
+  });
+}
+
+function startLiveStream(image, now) {
+  const slot = image.dataset.liveSlot;
+  if (!slot) return;
+  const backoffUntil = Number(image.dataset.liveErrorUntil || 0);
+  if (backoffUntil && now < backoffUntil) return;
+  const url = liveStreamUrl(slot);
+  const startedAt = Number(image.dataset.liveStreamStartedAt || 0);
+  if (startedAt && now - startedAt > LIVE_STREAM_RECONNECT_MS) stopLiveStream(image, false);
+  if (image.dataset.liveStreaming === "true" && image.dataset.liveStreamUrl === url) return;
+  image.dataset.feedMode = "stream";
+  image.dataset.liveStreaming = "true";
+  image.dataset.liveStreamUrl = url;
+  image.dataset.liveStreamStartedAt = String(now);
+  image.dataset.livePriming = "true";
+  setFeedBadgeLive(image, false, "Connecting");
+  image.src = url;
+}
+
+function refreshFallbackFrame(image, now, force = false) {
+  if (image.dataset.liveStreaming === "true") stopLiveStream(image, false);
+  image.dataset.feedMode = "fallback";
+  const refreshedAt = Number(image.dataset.liveFallbackAt || 0);
+  if (!force && refreshedAt && now - refreshedAt < LIVE_FALLBACK_REFRESH_MS) return;
+  image.dataset.liveFallbackAt = String(now);
+  setFeedBadgeLive(image, false, "Preview");
+  image.src = liveFrameUrl(image.dataset.liveSlot);
+}
+
+function priorityLiveFrameImages(visibleImages) {
+  const focused = liveFrameFocusedSlot
+    ? visibleImages.find((image) => image.dataset.liveSlot === liveFrameFocusedSlot)
+    : null;
+  const ordered = focused
+    ? [focused, ...visibleImages.filter((image) => image !== focused)]
+    : visibleImages;
+  return ordered.slice(0, MAX_LIVE_STREAMS);
+}
+
+function reconcileLiveStreams() {
+  if (document.hidden) return;
+  const images = liveFeedImages();
+  images.forEach(attachLiveFeedHandlers);
+  const visibleImages = images.filter(liveFeedVisible);
+  const now = Date.now();
+  const streaming = priorityLiveFrameImages(visibleImages);
+  const streamingSet = new Set(streaming);
+  streaming.forEach((image) => startLiveStream(image, now));
+  images.forEach((image) => {
+    if (streamingSet.has(image)) return;
+    if (visibleImages.includes(image)) refreshFallbackFrame(image, now);
+    else stopLiveStream(image);
+  });
+}
+
+function syncLiveFrameRefresh() {
+  if (!liveFeedImages().length) {
+    if (liveFrameTimer !== null) {
+      window.clearInterval(liveFrameTimer);
+      liveFrameTimer = null;
+    }
+    return;
+  }
+  reconcileLiveStreams();
+  if (liveFrameTimer === null) {
+    liveFrameTimer = window.setInterval(reconcileLiveStreams, LIVE_FRAME_REFRESH_MS);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const image = event.target.closest?.("img[data-live-frame][data-live-slot]");
+  if (!image) return;
+  liveFrameFocusedSlot = image.dataset.liveSlot;
+  reconcileLiveStreams();
+});
+
+document.addEventListener("visibilitychange", syncLiveFrameRefresh);
+window.addEventListener("scroll", reconcileLiveStreams, { passive: true });
+window.addEventListener("resize", reconcileLiveStreams);
+new MutationObserver((mutations) => {
+  const structuralChange = mutations.some((mutation) => {
+    const target = mutation.target;
+    return !(target instanceof Element && target.closest(".feed-transmitting"));
+  });
+  if (structuralChange) syncLiveFrameRefresh();
+}).observe(els.moduleContent, { childList: true, subtree: true });
+
+
 const NAV_ICONS = {
   overview: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`,
   users: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h1M9 13h1M14 9h1M14 13h1M10 21v-4h4v4"/></svg>`,
@@ -267,7 +430,7 @@ function renderModuleContent() {
       <div class="live-preview">
         ${Array.from({ length: Math.min(Number(summary.active_cameras || health.camera_count || 10), 10) }, (_, index) => {
           const slot = index + 1;
-          return `<figure><img src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+          return `<figure><img data-live-frame data-live-slot="${slot}" data-live-priming="true" loading="lazy" decoding="async" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
         }).join("")}
       </div>
     `;
@@ -800,7 +963,7 @@ function livePreviewHtml(summary, health) {
     <div class="live-preview">
       ${Array.from({ length: slots }, (_, index) => {
         const slot = index + 1;
-        return `<figure><img src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
+        return `<figure><img data-live-frame data-live-slot="${slot}" data-live-priming="true" loading="lazy" decoding="async" src="${API_BASE}/api/live_frame?slot=${slot}&v=${Date.now()}" alt="Camera slot ${slot}" /><figcaption>Slot ${slot}</figcaption></figure>`;
       }).join("")}
     </div>
   `;
@@ -980,7 +1143,7 @@ function renderAccountModule() {
           globalSlot += 1;
           if (globalSlot <= Math.max(Number(summary.active_cameras || health.camera_count || 1), 1)) {
             const count = 200 + Math.round(mulberry32(globalSlot * 97)() * 900);
-            return `<figure><span class="feed-count">Count: ${count}</span><img src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
+            return `<figure><span class="feed-count">Count: ${count}</span><img data-live-frame data-live-slot="${globalSlot}" data-live-priming="true" loading="lazy" decoding="async" src="${API_BASE}/api/live_frame?slot=${globalSlot}&v=${Date.now()}" alt="${escapeHtml(nvr.name)} slot ${index + 1}" /><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
           }
           return `<figure class="feed-empty"><div>No signal yet</div><figcaption>${escapeHtml(nvr.name)} · slot ${index + 1}</figcaption></figure>`;
         }).join("");

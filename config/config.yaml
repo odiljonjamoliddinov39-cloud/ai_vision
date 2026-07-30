@@ -1,6 +1,6 @@
 cameras:
-- name: Demo Camera
-  source: dummy
+- name: NVR Channel 101
+  source: rtsp://admin:Q135246q@87.192.242.82:554/Streaming/Channels/101
   slot_number: 1
 detection:
   model_path: dummy
@@ -42,8 +42,8 @@ display:
   box_thickness: 2
   font_scale: 0.6
   live_feed_enabled: true
-  live_frame_width: 320
-  live_frame_jpeg_quality: 28
+  live_frame_width: 640
+  live_frame_jpeg_quality: 65
 tracking:
   enabled: true
   tracker_config: config/warehouse_bytetrack.yaml

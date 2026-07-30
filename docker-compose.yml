@@ -1,4 +1,18 @@
 services:
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    restart: unless-stopped
+    environment:
+      MTX_PATHDEFAULTS_RECORD: "${MEDIA_ENGINE_RECORD:-false}"
+      MTX_PATHDEFAULTS_RECORDPATH: "/recordings/%path/%Y-%m-%d_%H-%M-%S-%f"
+    ports:
+      - "${MEDIA_ENGINE_RTSP_PORT:-8554}:8554"
+      - "${MEDIA_ENGINE_HLS_PORT:-8888}:8888"
+      - "${MEDIA_ENGINE_WEBRTC_PORT:-8889}:8889"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - ./recordings:/recordings
+
   backend:
     build:
       context: .
@@ -11,6 +25,14 @@ services:
       PORT: "8080"
       AUTO_START_DETECTION: "${AUTO_START_DETECTION:-true}"
       DETECTION_WATCHDOG_ENABLED: "${DETECTION_WATCHDOG_ENABLED:-true}"
+      MEDIA_ENGINE_ENABLED: "${MEDIA_ENGINE_ENABLED:-true}"
+      MEDIA_ENGINE_RTSP_URL: "rtsp://mediamtx:8554"
+      MEDIA_ENGINE_API_URL: "http://mediamtx:9997"
+      MEDIA_ENGINE_HLS_URL: "${MEDIA_ENGINE_PUBLIC_HLS_URL:-http://localhost:8888}"
+      MEDIA_ENGINE_WEBRTC_URL: "${MEDIA_ENGINE_PUBLIC_WEBRTC_URL:-http://localhost:8889}"
+      MEDIA_ENGINE_AI_FPS: "${MEDIA_ENGINE_AI_FPS:-5}"
+    depends_on:
+      - mediamtx
     ports:
       - "${AI_VISION_PORT:-8080}:8080"
     volumes:
@@ -33,10 +55,16 @@ services:
     env_file:
       - .env
     command: ["python", "main.py", "--config", "config/config.yaml", "--no-display"]
+    environment:
+      MEDIA_ENGINE_ENABLED: "${MEDIA_ENGINE_ENABLED:-true}"
+      MEDIA_ENGINE_RTSP_URL: "rtsp://mediamtx:8554"
+      MEDIA_ENGINE_API_URL: "http://mediamtx:9997"
+      MEDIA_ENGINE_AI_FPS: "${MEDIA_ENGINE_AI_FPS:-5}"
+    depends_on:
+      - mediamtx
     volumes:
       - ./models:/app/models
       - ./logs:/app/logs
       - ./snapshots:/app/snapshots
       - ./database:/app/database
       - ./config:/app/config
-

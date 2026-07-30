@@ -50,6 +50,7 @@ from tracking.line_counter import AppearanceCounter, LineCounter
 from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
+from streaming.media_engine import FrameRateLimiter, MediaEngine
 
 
 def load_config(path: str) -> dict:
@@ -93,7 +94,36 @@ def main():
     display_cfg = config.get("display", {})
 
     # --- Cameras (FR-1) ---
-    cameras = load_cameras(load_camera_configs_from_db())
+    # MediaMTX owns network-camera connections. The detector consumes its stable
+    # local RTSP paths, while USB cameras retain the existing direct behavior.
+    camera_configs = load_camera_configs_from_db()
+    media_engine = MediaEngine.from_config(config.get("media_engine"))
+    if media_engine.enabled:
+        if not media_engine.wait_until_ready():
+            _write_detection_health(
+                "logs/detection_health.json",
+                {
+                    "state": "error",
+                    "error": "Media engine is enabled but its control API is unavailable.",
+                    "frames_read": 0,
+                    "last_frame_at": None,
+                    "last_detection_count": 0,
+                    "model_loaded": False,
+                    "media_engine_enabled": True,
+                },
+            )
+            print("Media engine is enabled but unavailable. Exiting.")
+            return
+        sync_result = media_engine.sync_paths(camera_configs)
+        if sync_result["errors"]:
+            print(f"Media engine path sync warnings: {sync_result['errors']}")
+        camera_configs = media_engine.route_cameras(camera_configs)
+        print(
+            f"Media engine enabled: {sync_result['synced']} network streams routed "
+            f"through {media_engine.rtsp_base_url}; AI capped at {media_engine.ai_fps:g} FPS."
+        )
+
+    cameras = load_cameras(camera_configs)
     if not cameras:
         _write_detection_health(
             "logs/detection_health.json",
@@ -247,6 +277,7 @@ def main():
     prev_time = time.time()
     frame_number = 0
     dummy_positions = {cam.name: 0 for cam in cameras}
+    ai_limiter = FrameRateLimiter(media_engine.ai_fps) if media_engine.enabled else None
 
     try:
         while True:
@@ -263,6 +294,11 @@ def main():
                 any_frame = True
                 frames_read += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
+
+                # Keep draining the shared MediaMTX stream without sleeping, but
+                # run expensive inference at its own independent target FPS.
+                if ai_limiter is not None and not ai_limiter.ready(cam.name):
+                    continue
 
                 if object_tracker is not None:
                     detections = object_tracker.update(frame)
@@ -389,6 +425,8 @@ def main():
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
+                    "media_engine_enabled": media_engine.enabled,
+                    "media_engine_ai_fps": media_engine.ai_fps if media_engine.enabled else None,
                     "updated_at": datetime.now().isoformat(timespec="seconds"),
                 },
             )
