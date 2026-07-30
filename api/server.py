@@ -751,16 +751,44 @@ class ConfigPatch(BaseModel):
     max_detections: int | None = Field(default=None, ge=1, le=3000)
     image_size: int | None = Field(default=None, ge=320, le=1920)
     device: str | None = None
+    target_fps: float | None = Field(default=None, ge=0.1, le=60.0)
+    stale_after_ms: int | None = Field(default=None, ge=250, le=60000)
+    max_concurrent_cameras: int | None = Field(default=None, ge=0, le=MAX_CAMERA_SLOTS)
     classes: list[str] | None = None
     class_prompts: list[str] | None = None
     class_agnostic_nms: bool | None = None
+    show_fps: bool | None = None
+    live_feed_enabled: bool | None = None
+    live_frame_width: int | None = Field(default=None, ge=160, le=3840)
+    live_frame_jpeg_quality: int | None = Field(default=None, ge=30, le=100)
+    spatial_enabled: bool | None = None
+    horizontal_fov_degrees: float | None = Field(default=None, ge=20.0, le=160.0)
+    camera_height_m: float | None = Field(default=None, ge=0.1, le=20.0)
+    horizon_y_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_distance_m: float | None = Field(default=None, ge=0.1, le=100.0)
+    max_distance_m: float | None = Field(default=None, ge=0.1, le=500.0)
+    estimate_depth_layers: bool | None = None
+    max_units_per_detection: int | None = Field(default=None, ge=1, le=10000)
     tracking_enabled: bool | None = None
+    tracking_grace_period_seconds: float | None = Field(default=None, ge=0.0, le=600.0)
     warehouse_counting_enabled: bool | None = None
+    warehouse_confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    count_low_confidence_as_unknown: bool | None = None
     snapshots_enabled: bool | None = None
     snapshot_trigger_classes: list[str] | None = None
     snapshot_cooldown_seconds: int | None = Field(default=None, ge=0)
     logging_enabled: bool | None = None
+    recognition_enabled: bool | None = None
+    recognition_provider: str | None = Field(default=None, min_length=1)
     recognition_model: str | None = Field(default=None, min_length=1)
+    recognition_confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    recognition_similarity_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    recognition_cache_enabled: bool | None = None
+    recognition_cache_expiration: int | None = Field(default=None, ge=0)
+    recognition_timeout: int | None = Field(default=None, ge=1, le=300)
+    recognition_retries: int | None = Field(default=None, ge=0, le=10)
+    recognition_max_workers: int | None = Field(default=None, ge=1, le=32)
+    recognition_catalog_only: bool | None = None
 
 
 class CompanyCreate(BaseModel):
@@ -3772,6 +3800,8 @@ def get_config() -> dict[str, Any]:
 def update_config(patch: ConfigPatch) -> dict[str, Any]:
     data = _read_yaml(CONFIG_PATH)
     detection = data.setdefault("detection", {})
+    display = data.setdefault("display", {})
+    spatial = data.setdefault("spatial_analysis", {})
     snapshots = data.setdefault("snapshots", {})
     logging_cfg = data.setdefault("logging", {})
     tracking = data.setdefault("tracking", {})
@@ -3792,17 +3822,53 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
     if "image_size" in values:
         detection["image_size"] = values["image_size"]
     if "device" in values:
-        detection["device"] = values["device"]
+        detection["device"] = values["device"] or "auto"
+    if "target_fps" in values:
+        detection["target_fps"] = values["target_fps"]
+    if "stale_after_ms" in values:
+        detection["stale_after_ms"] = values["stale_after_ms"]
+    if "max_concurrent_cameras" in values:
+        detection["max_concurrent_cameras"] = values["max_concurrent_cameras"]
     if "classes" in values:
         detection["classes"] = values["classes"] or None
     if "class_prompts" in values:
         detection["class_prompts"] = values["class_prompts"] or None
     if "class_agnostic_nms" in values:
         detection["class_agnostic_nms"] = values["class_agnostic_nms"]
+    if "show_fps" in values:
+        display["show_fps"] = values["show_fps"]
+    if "live_feed_enabled" in values:
+        display["live_feed_enabled"] = values["live_feed_enabled"]
+    if "live_frame_width" in values:
+        display["live_frame_width"] = values["live_frame_width"]
+    if "live_frame_jpeg_quality" in values:
+        display["live_frame_jpeg_quality"] = values["live_frame_jpeg_quality"]
+    if "spatial_enabled" in values:
+        spatial["enabled"] = values["spatial_enabled"]
+    if "horizontal_fov_degrees" in values:
+        spatial["horizontal_fov_degrees"] = values["horizontal_fov_degrees"]
+    if "camera_height_m" in values:
+        spatial["camera_height_m"] = values["camera_height_m"]
+    if "horizon_y_ratio" in values:
+        spatial["horizon_y_ratio"] = values["horizon_y_ratio"]
+    if "min_distance_m" in values:
+        spatial["min_distance_m"] = values["min_distance_m"]
+    if "max_distance_m" in values:
+        spatial["max_distance_m"] = values["max_distance_m"]
+    if "estimate_depth_layers" in values:
+        spatial["estimate_depth_layers"] = values["estimate_depth_layers"]
+    if "max_units_per_detection" in values:
+        spatial["max_units_per_detection"] = values["max_units_per_detection"]
     if "tracking_enabled" in values:
         tracking["enabled"] = values["tracking_enabled"]
+    if "tracking_grace_period_seconds" in values:
+        tracking["grace_period_seconds"] = values["tracking_grace_period_seconds"]
     if "warehouse_counting_enabled" in values:
         warehouse_counting["enabled"] = values["warehouse_counting_enabled"]
+    if "warehouse_confidence_threshold" in values:
+        warehouse_counting["confidence_threshold"] = values["warehouse_confidence_threshold"]
+    if "count_low_confidence_as_unknown" in values:
+        warehouse_counting["count_low_confidence_as_unknown"] = values["count_low_confidence_as_unknown"]
     if "snapshots_enabled" in values:
         snapshots["enabled"] = values["snapshots_enabled"]
     if "snapshot_trigger_classes" in values:
@@ -3811,10 +3877,31 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
         snapshots["cooldown_seconds"] = values["snapshot_cooldown_seconds"]
     if "logging_enabled" in values:
         logging_cfg["enabled"] = values["logging_enabled"]
+    if "recognition_enabled" in values:
+        recognition["enabled"] = values["recognition_enabled"]
+    if "recognition_provider" in values:
+        recognition["provider"] = values["recognition_provider"]
     if "recognition_model" in values:
         recognition["model"] = values["recognition_model"]
+    if "recognition_confidence_threshold" in values:
+        recognition["confidence_threshold"] = values["recognition_confidence_threshold"]
+    if "recognition_similarity_threshold" in values:
+        recognition["similarity_threshold"] = values["recognition_similarity_threshold"]
+    if "recognition_cache_enabled" in values:
+        recognition["cache_enabled"] = values["recognition_cache_enabled"]
+    if "recognition_cache_expiration" in values:
+        recognition["cache_expiration"] = values["recognition_cache_expiration"]
+    if "recognition_timeout" in values:
+        recognition["timeout"] = values["recognition_timeout"]
+    if "recognition_retries" in values:
+        recognition["retries"] = values["recognition_retries"]
+    if "recognition_max_workers" in values:
+        recognition["max_workers"] = values["recognition_max_workers"]
+    if "recognition_catalog_only" in values:
+        recognition["catalog_only"] = values["recognition_catalog_only"]
 
     _write_yaml(CONFIG_PATH, data)
+    _audit("config_updated", {"fields": sorted(values.keys())})
     return _redact_config(data)
 
 

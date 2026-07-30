@@ -2447,6 +2447,120 @@ h3 .muted {
   color: var(--primary);
 }
 
+.settings-config-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.settings-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+}
+
+.settings-form-head h3,
+.settings-section h4 {
+  margin: 0;
+  color: var(--heading);
+}
+
+.settings-form-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.settings-section h4 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.settings-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.settings-field,
+.settings-check {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-field span,
+.settings-check span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-field input,
+.settings-field textarea {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.settings-field textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
+.settings-field-wide {
+  grid-column: span 2;
+}
+
+.settings-check {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+}
+
+.settings-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-actions button {
+  min-height: 42px;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 700;
+}
+
 .chart-note {
   margin: 0 0 14px;
   color: var(--muted);
@@ -2909,6 +3023,14 @@ h3 .muted {
 
   .cc-add-role {
     grid-template-columns: 1fr;
+  }
+
+  .settings-form-head {
+    flex-direction: column;
+  }
+
+  .settings-field-wide {
+    grid-column: auto;
   }
 
   .cc-edit-grid,

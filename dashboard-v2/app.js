@@ -41,6 +41,7 @@ const state = {
   session: null,
   overview: null,
   streams: [],
+  systemConfig: null,
 };
 
 const LANGUAGE_KEY = "ai_vision_v2_language";
@@ -746,18 +747,24 @@ const permissionLabels = {
   view_settings: "View settings",
 };
 
-async function api(path) {
+async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    "X-AI-Role": state.role,
+    "X-AI-User-Name": "Dashboard V2 Preview",
+    "X-AI-Company": "All Companies",
+    ...(options.headers || {}),
+  };
+  if (options.body instanceof FormData) delete headers["Content-Type"];
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "X-AI-Role": state.role,
-      "X-AI-User-Name": "Dashboard V2 Preview",
-      "X-AI-Company": "All Companies",
-    },
+    ...options,
+    headers,
   });
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(detail || response.statusText);
   }
+  if (response.status === 204) return null;
   return response.json();
 }
 
@@ -1467,11 +1474,26 @@ async function handleCompanyClick(event) {
 // Stored on the server (single admin profile row) so it follows you across devices.
 
 let ccProfileCache = null;
+let systemConfigLoading = null;
 
 async function ensureProfileLoaded() {
   if (ccProfileCache) return ccProfileCache;
   ccProfileCache = await accountsApi("/api/v2/admin/profile");
   return ccProfileCache;
+}
+
+async function ensureSystemConfigLoaded(force = false) {
+  if (!force && state.systemConfig) return state.systemConfig;
+  if (!force && systemConfigLoading) return systemConfigLoading;
+  systemConfigLoading = api("/api/config")
+    .then((config) => {
+      state.systemConfig = config || {};
+      return state.systemConfig;
+    })
+    .finally(() => {
+      systemConfigLoading = null;
+    });
+  return systemConfigLoading;
 }
 
 function updateBrandAvatarFromCache() {
@@ -1519,9 +1541,9 @@ function renderSideProfile(login, subtitle) {
 }
 
 function renderSettings(container) {
-  if (!ccProfileCache) {
-    container.innerHTML = `<p class="chart-note">${escapeHtml(t("settings.loading_profile"))}</p>`;
-    ensureProfileLoaded()
+  if (!ccProfileCache || !state.systemConfig) {
+    container.innerHTML = `<p class="chart-note">${escapeHtml(uiText("Loading settings...", "Загрузка настроек..."))}</p>`;
+    Promise.all([ensureProfileLoaded(), ensureSystemConfigLoaded()])
       .then(() => {
         if (state.activeModule === "settings") renderSettings(els.moduleContent);
       })
@@ -1534,6 +1556,7 @@ function renderSettings(container) {
   }
 
   const profile = ccProfileCache;
+  const config = state.systemConfig || {};
   container.innerHTML = `
     <p class="chart-note">${escapeHtml(t("settings.server_note"))}</p>
     <div class="settings-grid">
@@ -1565,13 +1588,253 @@ function renderSettings(container) {
         </form>
       </section>
     </div>
+    ${systemSettingsHtml(config)}
   `;
+}
+
+function configPathValue(config, path, fallback = "") {
+  let cursor = config || {};
+  for (const part of path.split(".")) {
+    if (!cursor || typeof cursor !== "object" || !(part in cursor)) return fallback;
+    cursor = cursor[part];
+  }
+  return cursor ?? fallback;
+}
+
+function configNumber(config, path, fallback) {
+  const value = Number(configPathValue(config, path, fallback));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function configBool(config, path, fallback = false) {
+  const value = configPathValue(config, path, fallback);
+  return value === true || value === "true" || value === 1;
+}
+
+function configListText(config, path) {
+  const value = configPathValue(config, path, []);
+  return Array.isArray(value) ? value.join("\n") : "";
+}
+
+function settingsInputHtml({ label, name, value, type = "text", min = "", max = "", step = "", required = true }) {
+  const attrs = [
+    `name="${escapeAttr(name)}"`,
+    `type="${escapeAttr(type)}"`,
+    `value="${escapeAttr(value)}"`,
+    min !== "" ? `min="${escapeAttr(min)}"` : "",
+    max !== "" ? `max="${escapeAttr(max)}"` : "",
+    step !== "" ? `step="${escapeAttr(step)}"` : "",
+    required ? "required" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `
+    <label class="settings-field">
+      <span>${escapeHtml(label)}</span>
+      <input ${attrs} />
+    </label>
+  `;
+}
+
+function settingsTextareaHtml(label, name, value) {
+  return `
+    <label class="settings-field settings-field-wide">
+      <span>${escapeHtml(label)}</span>
+      <textarea name="${escapeAttr(name)}" rows="4">${escapeHtml(value)}</textarea>
+    </label>
+  `;
+}
+
+function settingsCheckboxHtml(label, name, checked) {
+  return `
+    <label class="settings-check">
+      <input name="${escapeAttr(name)}" type="checkbox" ${checked ? "checked" : ""} />
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
+}
+
+function systemSettingsHtml(config) {
+  return `
+    <form class="settings-config-form" data-settings-form="system-config">
+      <div class="settings-form-head">
+        <div>
+          <h3>${escapeHtml(uiText("System / AI settings", "Системные / AI настройки"))}</h3>
+          <p>${escapeHtml(uiText("Saved to server config. Restart detector after changing model or YOLO runtime values.", "Сохраняется в конфиг сервера. После изменения модели или YOLO-параметров перезапустите детектор."))}</p>
+        </div>
+        <button type="button" class="cc-chip" data-settings-action="reload-config">${escapeHtml(uiText("Reload", "Обновить"))}</button>
+      </div>
+
+      <section class="settings-section">
+        <h4>${escapeHtml(uiText("YOLO detection", "YOLO детекция"))}</h4>
+        <div class="settings-field-grid">
+          ${settingsInputHtml({ label: uiText("Model path", "Путь модели"), name: "model_path", value: configPathValue(config, "detection.model_path", "yoloe-26s-seg.pt") })}
+          ${settingsInputHtml({ label: uiText("Fallback model", "Резервная модель"), name: "fallback_model_path", value: configPathValue(config, "detection.fallback_model_path", "yolov8s-worldv2.pt") })}
+          ${settingsInputHtml({ label: uiText("Device", "Устройство"), name: "device", value: configPathValue(config, "detection.device", "auto") })}
+          ${settingsInputHtml({ label: uiText("Confidence threshold", "Порог confidence"), name: "confidence_threshold", type: "number", value: configNumber(config, "detection.confidence_threshold", 0.4), min: 0, max: 1, step: 0.01 })}
+          ${settingsInputHtml({ label: uiText("IoU threshold", "Порог IoU"), name: "iou_threshold", type: "number", value: configNumber(config, "detection.iou_threshold", 0.55), min: 0, max: 1, step: 0.01 })}
+          ${settingsInputHtml({ label: uiText("Max detections", "Макс. детекций"), name: "max_detections", type: "number", value: configNumber(config, "detection.max_detections", 300), min: 1, max: 3000, step: 1 })}
+          ${settingsInputHtml({ label: uiText("Image size", "Размер кадра"), name: "image_size", type: "number", value: configNumber(config, "detection.image_size", 640), min: 320, max: 1920, step: 32 })}
+          ${settingsInputHtml({ label: uiText("Target FPS", "Целевой FPS"), name: "target_fps", type: "number", value: configNumber(config, "detection.target_fps", 2), min: 0.1, max: 60, step: 0.1 })}
+          ${settingsInputHtml({ label: uiText("Stale frame ms", "Устаревший кадр, ms"), name: "stale_after_ms", type: "number", value: configNumber(config, "detection.stale_after_ms", 3000), min: 250, max: 60000, step: 50 })}
+          ${settingsInputHtml({ label: uiText("Concurrent cameras", "Параллельные камеры"), name: "max_concurrent_cameras", type: "number", value: configNumber(config, "detection.max_concurrent_cameras", 0), min: 0, max: 100, step: 1 })}
+          ${settingsCheckboxHtml(uiText("Class-agnostic NMS", "Class-agnostic NMS"), "class_agnostic_nms", configBool(config, "detection.class_agnostic_nms", false))}
+          ${settingsTextareaHtml(uiText("Classes", "Классы"), "classes", configListText(config, "detection.classes"))}
+          ${settingsTextareaHtml(uiText("Class prompts", "Prompts классов"), "class_prompts", configListText(config, "detection.class_prompts"))}
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>${escapeHtml(uiText("Recognition", "Распознавание"))}</h4>
+        <div class="settings-field-grid">
+          ${settingsCheckboxHtml(uiText("Recognition enabled", "Распознавание включено"), "recognition_enabled", configBool(config, "recognition.enabled", true))}
+          ${settingsInputHtml({ label: uiText("Provider", "Провайдер"), name: "recognition_provider", value: configPathValue(config, "recognition.provider", "gemini") })}
+          ${settingsInputHtml({ label: uiText("Recognition model", "Модель распознавания"), name: "recognition_model", value: configPathValue(config, "recognition.model", "gemini-3.1-flash-lite") })}
+          ${settingsInputHtml({ label: uiText("Confidence threshold", "Порог confidence"), name: "recognition_confidence_threshold", type: "number", value: configNumber(config, "recognition.confidence_threshold", 0.9), min: 0, max: 1, step: 0.01 })}
+          ${settingsInputHtml({ label: uiText("Similarity threshold", "Порог similarity"), name: "recognition_similarity_threshold", type: "number", value: configNumber(config, "recognition.similarity_threshold", 0.62), min: 0, max: 1, step: 0.01 })}
+          ${settingsInputHtml({ label: uiText("Cache expiration, sec", "Кеш, секунд"), name: "recognition_cache_expiration", type: "number", value: configNumber(config, "recognition.cache_expiration", 1800), min: 0, max: 86400, step: 60 })}
+          ${settingsInputHtml({ label: uiText("Timeout, sec", "Таймаут, секунд"), name: "recognition_timeout", type: "number", value: configNumber(config, "recognition.timeout", 30), min: 1, max: 300, step: 1 })}
+          ${settingsInputHtml({ label: uiText("Retries", "Повторы"), name: "recognition_retries", type: "number", value: configNumber(config, "recognition.retries", 2), min: 0, max: 10, step: 1 })}
+          ${settingsInputHtml({ label: uiText("Max workers", "Max workers"), name: "recognition_max_workers", type: "number", value: configNumber(config, "recognition.max_workers", 2), min: 1, max: 32, step: 1 })}
+          ${settingsCheckboxHtml(uiText("Cache enabled", "Кеш включен"), "recognition_cache_enabled", configBool(config, "recognition.cache_enabled", true))}
+          ${settingsCheckboxHtml(uiText("Catalog only", "Только каталог"), "recognition_catalog_only", configBool(config, "recognition.catalog_only", true))}
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>${escapeHtml(uiText("Live video", "Live видео"))}</h4>
+        <div class="settings-field-grid">
+          ${settingsCheckboxHtml(uiText("Show FPS", "Показывать FPS"), "show_fps", configBool(config, "display.show_fps", true))}
+          ${settingsCheckboxHtml(uiText("Live feed enabled", "Live поток включен"), "live_feed_enabled", configBool(config, "display.live_feed_enabled", true))}
+          ${settingsInputHtml({ label: uiText("Frame width", "Ширина кадра"), name: "live_frame_width", type: "number", value: configNumber(config, "display.live_frame_width", 1280), min: 160, max: 3840, step: 16 })}
+          ${settingsInputHtml({ label: uiText("JPEG quality", "JPEG качество"), name: "live_frame_jpeg_quality", type: "number", value: configNumber(config, "display.live_frame_jpeg_quality", 85), min: 30, max: 100, step: 1 })}
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>${escapeHtml(uiText("Spatial / 3D", "Spatial / 3D"))}</h4>
+        <div class="settings-field-grid">
+          ${settingsCheckboxHtml(uiText("Spatial analysis enabled", "Spatial анализ включен"), "spatial_enabled", configBool(config, "spatial_analysis.enabled", true))}
+          ${settingsInputHtml({ label: uiText("Horizontal FOV", "Горизонтальный FOV"), name: "horizontal_fov_degrees", type: "number", value: configNumber(config, "spatial_analysis.horizontal_fov_degrees", 90), min: 20, max: 160, step: 0.1 })}
+          ${settingsInputHtml({ label: uiText("Camera height, m", "Высота камеры, м"), name: "camera_height_m", type: "number", value: configNumber(config, "spatial_analysis.camera_height_m", 1.2), min: 0.1, max: 20, step: 0.1 })}
+          ${settingsInputHtml({ label: uiText("Horizon Y ratio", "Горизонт Y ratio"), name: "horizon_y_ratio", type: "number", value: configNumber(config, "spatial_analysis.horizon_y_ratio", 0.28), min: 0, max: 1, step: 0.01 })}
+          ${settingsInputHtml({ label: uiText("Min distance, m", "Мин. дистанция, м"), name: "min_distance_m", type: "number", value: configNumber(config, "spatial_analysis.min_distance_m", 0.5), min: 0.1, max: 100, step: 0.1 })}
+          ${settingsInputHtml({ label: uiText("Max distance, m", "Макс. дистанция, м"), name: "max_distance_m", type: "number", value: configNumber(config, "spatial_analysis.max_distance_m", 50), min: 0.1, max: 500, step: 0.1 })}
+          ${settingsInputHtml({ label: uiText("Max units per detection", "Макс. единиц на детекцию"), name: "max_units_per_detection", type: "number", value: configNumber(config, "spatial_analysis.max_units_per_detection", 200), min: 1, max: 10000, step: 1 })}
+          ${settingsCheckboxHtml(uiText("Estimate depth layers", "Оценивать слои глубины"), "estimate_depth_layers", configBool(config, "spatial_analysis.estimate_depth_layers", false))}
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>${escapeHtml(uiText("Tracking / counting", "Tracking / counting"))}</h4>
+        <div class="settings-field-grid">
+          ${settingsCheckboxHtml(uiText("Tracking enabled", "Tracking включен"), "tracking_enabled", configBool(config, "tracking.enabled", true))}
+          ${settingsInputHtml({ label: uiText("Grace period, sec", "Grace period, секунд"), name: "tracking_grace_period_seconds", type: "number", value: configNumber(config, "tracking.grace_period_seconds", 5), min: 0, max: 600, step: 0.1 })}
+          ${settingsCheckboxHtml(uiText("Warehouse counting enabled", "Складской подсчет включен"), "warehouse_counting_enabled", configBool(config, "warehouse_counting.enabled", true))}
+          ${settingsInputHtml({ label: uiText("Counting confidence", "Confidence подсчета"), name: "warehouse_confidence_threshold", type: "number", value: configNumber(config, "warehouse_counting.confidence_threshold", 0.55), min: 0, max: 1, step: 0.01 })}
+          ${settingsCheckboxHtml(uiText("Low confidence as unknown", "Низкий confidence как unknown"), "count_low_confidence_as_unknown", configBool(config, "warehouse_counting.count_low_confidence_as_unknown", false))}
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>${escapeHtml(uiText("Snapshots / logging", "Snapshots / logging"))}</h4>
+        <div class="settings-field-grid">
+          ${settingsCheckboxHtml(uiText("Snapshots enabled", "Snapshots включены"), "snapshots_enabled", configBool(config, "snapshots.enabled", true))}
+          ${settingsInputHtml({ label: uiText("Snapshot cooldown, sec", "Cooldown snapshots, секунд"), name: "snapshot_cooldown_seconds", type: "number", value: configNumber(config, "snapshots.cooldown_seconds", 5), min: 0, max: 86400, step: 1 })}
+          ${settingsCheckboxHtml(uiText("Logging enabled", "Логи включены"), "logging_enabled", configBool(config, "logging.enabled", true))}
+          ${settingsTextareaHtml(uiText("Snapshot trigger classes", "Классы для snapshots"), "snapshot_trigger_classes", configListText(config, "snapshots.trigger_classes"))}
+        </div>
+      </section>
+
+      <div class="settings-actions">
+        <button type="submit">${escapeHtml(uiText("Save system settings", "Сохранить системные настройки"))}</button>
+      </div>
+    </form>
+  `;
+}
+
+function settingsNumber(form, name) {
+  return Number(form.elements[name]?.value || 0);
+}
+
+function settingsList(form, name) {
+  return String(form.elements[name]?.value || "")
+    .split(/\n|,/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function readSystemSettingsForm(form) {
+  return {
+    model_path: form.elements.model_path.value.trim(),
+    fallback_model_path: form.elements.fallback_model_path.value.trim(),
+    device: form.elements.device.value.trim() || "auto",
+    confidence_threshold: settingsNumber(form, "confidence_threshold"),
+    iou_threshold: settingsNumber(form, "iou_threshold"),
+    max_detections: settingsNumber(form, "max_detections"),
+    image_size: settingsNumber(form, "image_size"),
+    target_fps: settingsNumber(form, "target_fps"),
+    stale_after_ms: settingsNumber(form, "stale_after_ms"),
+    max_concurrent_cameras: settingsNumber(form, "max_concurrent_cameras"),
+    class_agnostic_nms: form.elements.class_agnostic_nms.checked,
+    classes: settingsList(form, "classes"),
+    class_prompts: settingsList(form, "class_prompts"),
+    recognition_enabled: form.elements.recognition_enabled.checked,
+    recognition_provider: form.elements.recognition_provider.value.trim(),
+    recognition_model: form.elements.recognition_model.value.trim(),
+    recognition_confidence_threshold: settingsNumber(form, "recognition_confidence_threshold"),
+    recognition_similarity_threshold: settingsNumber(form, "recognition_similarity_threshold"),
+    recognition_cache_expiration: settingsNumber(form, "recognition_cache_expiration"),
+    recognition_timeout: settingsNumber(form, "recognition_timeout"),
+    recognition_retries: settingsNumber(form, "recognition_retries"),
+    recognition_max_workers: settingsNumber(form, "recognition_max_workers"),
+    recognition_cache_enabled: form.elements.recognition_cache_enabled.checked,
+    recognition_catalog_only: form.elements.recognition_catalog_only.checked,
+    show_fps: form.elements.show_fps.checked,
+    live_feed_enabled: form.elements.live_feed_enabled.checked,
+    live_frame_width: settingsNumber(form, "live_frame_width"),
+    live_frame_jpeg_quality: settingsNumber(form, "live_frame_jpeg_quality"),
+    spatial_enabled: form.elements.spatial_enabled.checked,
+    horizontal_fov_degrees: settingsNumber(form, "horizontal_fov_degrees"),
+    camera_height_m: settingsNumber(form, "camera_height_m"),
+    horizon_y_ratio: settingsNumber(form, "horizon_y_ratio"),
+    min_distance_m: settingsNumber(form, "min_distance_m"),
+    max_distance_m: settingsNumber(form, "max_distance_m"),
+    max_units_per_detection: settingsNumber(form, "max_units_per_detection"),
+    estimate_depth_layers: form.elements.estimate_depth_layers.checked,
+    tracking_enabled: form.elements.tracking_enabled.checked,
+    tracking_grace_period_seconds: settingsNumber(form, "tracking_grace_period_seconds"),
+    warehouse_counting_enabled: form.elements.warehouse_counting_enabled.checked,
+    warehouse_confidence_threshold: settingsNumber(form, "warehouse_confidence_threshold"),
+    count_low_confidence_as_unknown: form.elements.count_low_confidence_as_unknown.checked,
+    snapshots_enabled: form.elements.snapshots_enabled.checked,
+    snapshot_cooldown_seconds: settingsNumber(form, "snapshot_cooldown_seconds"),
+    logging_enabled: form.elements.logging_enabled.checked,
+    snapshot_trigger_classes: settingsList(form, "snapshot_trigger_classes"),
+  };
 }
 
 async function handleSettingsSubmit(event) {
   const form = event.target.closest("[data-settings-form]");
   if (!form) return;
   event.preventDefault();
+  if (form.dataset.settingsForm === "system-config") {
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      state.systemConfig = await api("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify(readSystemSettingsForm(form)),
+      });
+      toast(uiText("System settings saved.", "Системные настройки сохранены."));
+      renderSettings(els.moduleContent);
+    } catch (error) {
+      toast(error.message);
+      submit.disabled = false;
+    }
+    return;
+  }
+  if (form.dataset.settingsForm !== "security") return;
   const login = form.elements.login.value.trim();
   const password = form.elements.password.value;
   const confirm = form.elements.confirm.value;
@@ -1624,6 +1887,18 @@ async function handleSettingsChange(event) {
 async function handleSettingsClick(event) {
   const button = event.target.closest("[data-settings-action]");
   if (!button) return;
+  if (button.dataset.settingsAction === "reload-config") {
+    button.disabled = true;
+    try {
+      await ensureSystemConfigLoaded(true);
+      renderSettings(els.moduleContent);
+      toast(uiText("Settings reloaded.", "Настройки обновлены."));
+    } catch (error) {
+      toast(error.message);
+      button.disabled = false;
+    }
+    return;
+  }
   if (button.dataset.settingsAction === "remove-avatar") {
     try {
       ccProfileCache = await accountsApi("/api/v2/admin/profile", {

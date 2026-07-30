@@ -180,8 +180,26 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=66" in html
-    assert "/dashboard-v2/assets/styles.css?v=47" in html
+    assert "/dashboard-v2/assets/app.js?v=67" in html
+    assert "/dashboard-v2/assets/styles.css?v=48" in html
+
+
+def test_dashboard_settings_page_edits_system_config_dynamically():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'api("/api/config")' in source
+    assert 'data-settings-form="system-config"' in source
+    assert "function systemSettingsHtml(config)" in source
+    assert "function readSystemSettingsForm(form)" in source
+    assert 'method: "PATCH"' in source
+    assert "confidence_threshold" in source
+    assert "recognition_similarity_threshold" in source
+    assert "live_frame_jpeg_quality" in source
+    assert "spatial_enabled" in source
+    assert "warehouse_confidence_threshold" in source
+    assert ".settings-config-form" in styles
+    assert ".settings-field-grid" in styles
 
 
 def test_dashboard_has_ai_modules_page_from_video_analytics_spec():

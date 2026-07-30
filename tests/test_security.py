@@ -96,12 +96,72 @@ def test_config_redaction_masks_camera_sources():
     assert config["cameras"][0]["source"].startswith("rtsp://admin:secret@")
 
 
+def test_config_patch_updates_dynamic_system_sections(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+detection:
+  confidence_threshold: 0.4
+display:
+  live_frame_jpeg_quality: 85
+spatial_analysis:
+  enabled: true
+recognition:
+  model: old-model
+tracking:
+  enabled: true
+warehouse_counting:
+  confidence_threshold: 0.55
+snapshots:
+  trigger_classes:
+  - person
+logging:
+  enabled: true
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(server, "_audit", lambda *args, **kwargs: None)
+
+    result = server.update_config(
+        server.ConfigPatch(
+            confidence_threshold=0.52,
+            target_fps=5,
+            live_frame_jpeg_quality=72,
+            spatial_enabled=False,
+            recognition_model="gemini-test",
+            recognition_similarity_threshold=0.71,
+            tracking_grace_period_seconds=9,
+            warehouse_confidence_threshold=0.63,
+            snapshot_trigger_classes=["box", "sack"],
+            logging_enabled=False,
+        )
+    )
+    saved = server._read_yaml(config_path)
+
+    assert saved["detection"]["confidence_threshold"] == 0.52
+    assert saved["detection"]["target_fps"] == 5
+    assert saved["display"]["live_frame_jpeg_quality"] == 72
+    assert saved["spatial_analysis"]["enabled"] is False
+    assert saved["recognition"]["model"] == "gemini-test"
+    assert saved["recognition"]["similarity_threshold"] == 0.71
+    assert saved["tracking"]["grace_period_seconds"] == 9
+    assert saved["warehouse_counting"]["confidence_threshold"] == 0.63
+    assert saved["snapshots"]["trigger_classes"] == ["box", "sack"]
+    assert saved["logging"]["enabled"] is False
+    assert result["recognition"]["model"] == "gemini-test"
+
+
 def test_live_frame_returns_stable_jpeg_bytes(tmp_path, monkeypatch):
-    snapshot_dir = tmp_path / "snapshots"
-    snapshot_dir.mkdir()
     jpeg = b"\xff\xd8stable-frame\xff\xd9"
-    (snapshot_dir / "latest_slot_6.jpg").write_bytes(jpeg)
-    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+
+    class FakeStreamManager:
+        def latest_frame_bytes(self, slot_number=None, name=None):
+            assert slot_number == 6
+            assert name is None
+            return jpeg
+
+    monkeypatch.setattr(server, "_get_stream_manager", lambda: FakeStreamManager())
 
     response = asyncio.run(live_frame(slot=6))
 
