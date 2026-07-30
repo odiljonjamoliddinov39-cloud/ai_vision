@@ -120,10 +120,15 @@ const I18N = {
     "menu.camera": "Camera Control",
     "menu.camera_info": "Camera Info",
     "menu.dimension": "3D Dimensioning",
+    "menu.enterprise": "Enterprise Map",
+    "menu.events": "Events",
     "menu.feed": "Camera Feed",
+    "menu.ai_models": "AI Models",
+    "menu.integrations": "Integrations",
     "menu.logs": "Logs",
     "menu.ai_modules": "AI Modules",
     "menu.result_analytics": "Result Analytics",
+    "menu.zones": "Zones & Safety",
     "menu.settings": "Settings",
     "modules.count": "{count} functions",
     "modules.current_note": "Current baseline covers camera/NVR streaming, Stream Manager, catalog recognition, result analytics, exports and training tools. Remaining items are tracked as roadmap modules.",
@@ -349,10 +354,15 @@ const I18N = {
     "menu.camera": "Управление камерами",
     "menu.camera_info": "Инфо камер",
     "menu.dimension": "3D измерение",
+    "menu.enterprise": "Структура",
+    "menu.events": "События",
     "menu.feed": "Видеопоток",
+    "menu.ai_models": "AI модели",
+    "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
     "menu.ai_modules": "AI модули",
     "menu.result_analytics": "Аналитика результатов",
+    "menu.zones": "Зоны и безопасность",
     "menu.settings": "Настройки",
     "modules.count": "{count} функций",
     "modules.current_note": "Текущая база уже покрывает камеры/NVR, Stream Manager, распознавание каталога, аналитику результатов, экспорт и инструменты обучения. Остальные пункты ведутся как roadmap-модули.",
@@ -756,9 +766,14 @@ const NAV_ICONS = {
   settings: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
   camera: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`,
   camera_info: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M12 18v2M8 8h8M8 12h5"/></svg>`,
+  enterprise: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h1M9 13h1M14 9h1M14 13h1M10 21v-4h4v4"/></svg>`,
   analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>`,
+  events: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>`,
   result_analytics: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
   ai_modules: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M9 4v16M15 4v16M4 9h16M4 15h16"/></svg>`,
+  ai_models: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3M10 10h4v4h-4z"/></svg>`,
+  integrations: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7H7a5 5 0 0 0 0 10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/></svg>`,
+  zones: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6z"/><path d="M9 3v15M15 6v15"/></svg>`,
   feed: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`,
   ai: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V4M8 4h8M9 12h.01M15 12h.01M9 16h6"/></svg>`,
   dimension: `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></svg>`,
@@ -1863,12 +1878,17 @@ function accountMenus(role) {
   const menus = [];
   if (role.access?.camera) menus.push({ id: "camera", label: "Camera Control", sub: "NVR & vision quality" });
   if (role.access?.camera) menus.push({ id: "camera_info", label: "Camera Info", sub: "Device models" });
-  if (role.access?.analytics) menus.push({ id: "analytics", label: "Analytics", sub: "Charts & trends" });
-  if (role.access?.analytics) menus.push({ id: "result_analytics", label: "Result Analytics", sub: "Recognition results" });
-  if (role.access?.analytics) menus.push({ id: "ai_modules", label: "AI Modules", sub: "270-function roadmap" });
+  if (role.access?.camera) menus.push({ id: "enterprise", label: "Enterprise Map", sub: "Blocks, zones & cameras" });
   if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
   menus.push({ id: "ai", label: "AI Check-in", sub: "Products to count" });
+  menus.push({ id: "ai_models", label: "AI Models", sub: "YOLOE & training" });
+  if (role.access?.analytics) menus.push({ id: "analytics", label: "Analytics", sub: "Charts & trends" });
+  if (role.access?.analytics) menus.push({ id: "result_analytics", label: "Result Analytics", sub: "Recognition results" });
+  if (role.access?.analytics) menus.push({ id: "events", label: "Events", sub: "Incidents & alerts" });
+  if (role.access?.analytics) menus.push({ id: "zones", label: "Zones & Safety", sub: "Rules by camera group" });
   menus.push({ id: "dimension", label: "3D Dimensioning", sub: "Item measurements" });
+  if (role.access?.analytics) menus.push({ id: "integrations", label: "Integrations", sub: "NVR, API & systems" });
+  if (role.access?.analytics) menus.push({ id: "ai_modules", label: "AI Modules", sub: "270-function roadmap" });
   if (role.access?.analytics) menus.push({ id: "logs", label: "Logs", sub: "Engine actions" });
   return menus;
 }
@@ -2255,6 +2275,455 @@ async function renderAiModules(container, filters = { section: "all", status: "a
     const catalog = await loadAiModulesCatalog();
     if (!container.isConnected || accountModule !== "ai_modules") return;
     renderAiModulesBody(container, catalog, filters);
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function uiText(en, ru) {
+  return currentLanguage() === "ru" ? ru : en;
+}
+
+function platformStatusHtml(status, label) {
+  const normalized = status || "planned";
+  return `<span class="platform-status ${escapeAttr(normalized)}">${escapeHtml(label)}</span>`;
+}
+
+function platformSummaryHtml(cards) {
+  return `
+    <div class="platform-summary">
+      ${cards
+        .map(
+          (card) => `
+            <article>
+              <span>${escapeHtml(card.label)}</span>
+              <strong>${escapeHtml(card.value)}</strong>
+              ${card.note ? `<em>${escapeHtml(card.note)}</em>` : ""}
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function feedGroupRecords(config) {
+  const groups = new Map();
+  const nvrs = config.nvrs || [];
+  nvrs.forEach((nvr, nvrIndex) => {
+    const channels = nvr.channelsDetail?.length
+      ? nvr.channelsDetail
+      : Array.from({ length: Number(nvr.channels || 0) }, (_, index) => ({
+          channel: index + 1,
+          slot_number: null,
+          status: "registered",
+        }));
+    channels.forEach((channel, channelIndex) => {
+      const channelNumber = Number(channel?.channel);
+      const normalizedIndex = Number.isFinite(channelNumber) && channelNumber > 0 ? channelNumber - 1 : channelIndex;
+      const meta = inferFeedGroup(nvr, nvrIndex, channel, normalizedIndex, nvrs.length);
+      const name = config.feedGroups?.[meta.id] || meta.name;
+      if (!groups.has(meta.id)) {
+        groups.set(meta.id, { id: meta.id, name, cameras: [], nvrs: new Set() });
+      }
+      const group = groups.get(meta.id);
+      group.nvrs.add(nvr.name || "NVR");
+      group.cameras.push({
+        nvrName: nvr.name || "NVR",
+        cameraName: channel?.name || channel?.camera_name || `${t("table.camera")} ${channel?.channel || channelIndex + 1}`,
+        channel: channel?.channel || channelIndex + 1,
+        slotNumber: channel?.slot_number ?? null,
+        active: channel?.active !== false && channel?.slot_number != null,
+        status: channel?.status || "registered",
+      });
+    });
+  });
+  return Array.from(groups.values()).map((group) => ({
+    ...group,
+    nvrCount: group.nvrs.size,
+  }));
+}
+
+function renderEnterprisePage(container) {
+  const { company } = accountState;
+  companyConfig(company);
+  const config = company.cameraConfig;
+  const groups = feedGroupRecords(config);
+  const cameraRows = cameraInfoChannelRows(config, []);
+  const assignedSlots = cameraRows.filter((row) => row.slotNumber != null).length;
+  const groupRows = groups
+    .flatMap((group) =>
+      group.cameras.map((camera) => ({ ...camera, groupName: group.name, nvrCount: group.nvrCount }))
+    )
+    .map(
+      (row) => `
+        <tr>
+          <td><strong>${escapeHtml(row.groupName)}</strong></td>
+          <td>${escapeHtml(row.nvrName)}</td>
+          <td>${escapeHtml(row.cameraName)}</td>
+          <td>${row.slotNumber != null ? `${escapeHtml(t("table.slot"))} ${row.slotNumber}` : escapeHtml(t("table.not_assigned"))}</td>
+          <td>${platformStatusHtml(row.active ? "done" : "partial", row.active ? t("status.live") : t("status.pending"))}</td>
+        </tr>
+      `
+    )
+    .join("");
+  const groupCards = groups
+    .map(
+      (group) => `
+        <article class="platform-card">
+          <div>
+            <strong>${escapeHtml(group.name)}</strong>
+            <span>${escapeHtml(uiText("Camera group", "Группа камер"))}</span>
+          </div>
+          <p>${escapeHtml(uiText("NVR devices", "NVR устройств"))}: ${group.nvrCount.toLocaleString()}</p>
+          <p>${escapeHtml(t("table.camera"))}: ${group.cameras.length.toLocaleString()}</p>
+          <div class="platform-flow">${group.cameras
+            .slice(0, 6)
+            .map((camera) => `<span>${escapeHtml(camera.cameraName)}</span>`)
+            .join("")}</div>
+        </article>
+      `
+    )
+    .join("");
+  container.innerHTML = `
+    <section class="detected-list platform-page">
+      <header class="detected-list-head">
+        <div>
+          <h3>${escapeHtml(uiText("Enterprise Structure", "Структура предприятия"))}</h3>
+          <p>${escapeHtml(uiText("Company, NVR, camera groups and live slot coverage in one place.", "Компания, NVR, группы камер и live-слоты в одном месте."))}</p>
+        </div>
+      </header>
+      ${platformSummaryHtml([
+        { label: uiText("Company", "Компания"), value: company.name || "AI Vision" },
+        { label: uiText("NVR devices", "NVR устройств"), value: config.nvrs.length.toLocaleString() },
+        { label: t("table.camera"), value: cameraRows.length.toLocaleString() },
+        { label: uiText("Groups / blocks", "Группы / блоки"), value: groups.length.toLocaleString() },
+        { label: uiText("Assigned slots", "Назначено слотов"), value: assignedSlots.toLocaleString() },
+      ])}
+      <div class="platform-flow platform-chain">
+        <span>${escapeHtml(company.name || "Company")}</span>
+        <span>${escapeHtml(uiText("Warehouse / site", "Склад / объект"))}</span>
+        <span>${escapeHtml(uiText("Blocks and zones", "Блоки и зоны"))}</span>
+        <span>${escapeHtml(uiText("NVR / cameras", "NVR / камеры"))}</span>
+        <span>Stream Manager</span>
+        <span>YOLOE</span>
+      </div>
+      <div class="platform-card-grid">${groupCards || `<p class="empty">${escapeHtml(t("feed.empty"))}</p>`}</div>
+      <div class="detected-table-wrap">
+        <table class="detected-table platform-table">
+          <thead><tr><th>${escapeHtml(uiText("Block / room", "Блок / комната"))}</th><th>NVR</th><th>${escapeHtml(t("table.camera"))}</th><th>${escapeHtml(t("table.slot"))}</th><th>${escapeHtml(t("table.status"))}</th></tr></thead>
+          <tbody>${groupRows || `<tr><td colspan="5">${escapeHtml(t("feed.empty"))}</td></tr>`}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function eventSeverity(event) {
+  const text = `${event.event_type || ""} ${event.action || ""} ${event.level || ""}`.toLowerCase();
+  if (text.includes("violation") || text.includes("failed") || text.includes("error") || text.includes("alarm")) return "bad";
+  if (Number(event.inventory_delta || 0) !== 0 || text.includes("warn") || text.includes("zone")) return "partial";
+  return "done";
+}
+
+function eventRowsFromPayloads(enginePayload, auditPayload, logPayload) {
+  const engineRows = (enginePayload.events || []).map((event) => ({
+    time: event.timestamp,
+    source: "AI Engine",
+    type: String(event.event_type || "event").replaceAll("_", " "),
+    camera: event.camera_id || "-",
+    object: event.product_name || event.object_id || "-",
+    status: Number(event.inventory_delta || 0) !== 0 ? uiText("Action", "Действие") : uiText("Recorded", "Записано"),
+    severity: eventSeverity(event),
+  }));
+  const auditRows = (auditPayload.events || []).map((event) => ({
+    time: event.created_at || event.timestamp,
+    source: "Security Audit",
+    type: String(event.action || event.event_type || "audit").replaceAll("_", " "),
+    camera: event.path || "-",
+    object: event.actor || event.user || "-",
+    status: String(event.status_code || event.status || "OK"),
+    severity: eventSeverity(event),
+  }));
+  const logRows = (logPayload.logs || []).slice(0, 80).map((line) => ({
+    time: "",
+    source: "Server Log",
+    type: String(line).slice(0, 80),
+    camera: "-",
+    object: "-",
+    status: uiText("Log", "Лог"),
+    severity: String(line).toLowerCase().includes("error") ? "bad" : "done",
+  }));
+  return [...engineRows, ...auditRows, ...logRows].sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
+}
+
+function eventsTableHtml(rows) {
+  if (!rows.length) return `<p class="empty">${escapeHtml(uiText("No events recorded yet.", "Событий пока нет."))}</p>`;
+  return `
+    <div class="detected-table-wrap">
+      <table class="detected-table platform-table">
+        <thead><tr><th>${escapeHtml(uiText("Time", "Время"))}</th><th>${escapeHtml(uiText("Source", "Источник"))}</th><th>${escapeHtml(uiText("Event", "Событие"))}</th><th>${escapeHtml(t("table.camera"))}</th><th>${escapeHtml(uiText("Object / actor", "Объект / пользователь"))}</th><th>${escapeHtml(t("table.status"))}</th></tr></thead>
+        <tbody>${rows
+          .slice(0, 250)
+          .map(
+            (row) => `
+              <tr>
+                <td>${escapeHtml(row.time ? formatCatalogTime(row.time) : "-")}</td>
+                <td><strong>${escapeHtml(row.source)}</strong></td>
+                <td>${escapeHtml(row.type)}</td>
+                <td>${escapeHtml(row.camera)}</td>
+                <td>${escapeHtml(row.object)}</td>
+                <td>${platformStatusHtml(row.severity, row.status)}</td>
+              </tr>
+            `
+          )
+          .join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function renderEventsPage(container) {
+  try {
+    const [enginePayload, auditPayload, logPayload] = await Promise.all([
+      catalogRequest("/api/warehouse-engine/events?limit=500").catch(() => ({ events: [] })),
+      catalogRequest("/api/security/audit?limit=200").catch(() => ({ events: [] })),
+      catalogRequest("/api/logs?limit=80").catch(() => ({ logs: [] })),
+    ]);
+    if (!container.isConnected || accountModule !== "events") return;
+    const rows = eventRowsFromPayloads(enginePayload, auditPayload, logPayload);
+    const high = rows.filter((row) => row.severity === "bad").length;
+    container.innerHTML = `
+      <section class="detected-list platform-page">
+        <header class="detected-list-head">
+          <div>
+            <h3>${escapeHtml(uiText("Events and Incidents", "События и инциденты"))}</h3>
+            <p>${escapeHtml(uiText("A single journal for AI actions, camera events, security audit and server logs.", "Единый журнал для AI действий, камер, аудита безопасности и логов сервера."))}</p>
+          </div>
+          <button type="button" class="export-button" data-refresh-events>${escapeHtml(t("actions.refresh"))}</button>
+        </header>
+        ${platformSummaryHtml([
+          { label: uiText("Total records", "Всего записей"), value: rows.length.toLocaleString() },
+          { label: uiText("Critical", "Критические"), value: high.toLocaleString() },
+          { label: uiText("AI engine", "AI engine"), value: (enginePayload.events || []).length.toLocaleString() },
+          { label: uiText("Audit", "Аудит"), value: (auditPayload.events || []).length.toLocaleString() },
+        ])}
+        ${eventsTableHtml(rows)}
+      </section>
+    `;
+    container.querySelector("[data-refresh-events]")?.addEventListener("click", () => {
+      container.innerHTML = `<p class="empty">${escapeHtml(uiText("Refreshing events...", "Обновление событий..."))}</p>`;
+      void renderEventsPage(container);
+    });
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function renderSafetyZonesPage(container) {
+  const { company } = accountState;
+  companyConfig(company);
+  const groups = feedGroupRecords(company.cameraConfig);
+  const ruleCards = [
+    { name: uiText("Person in danger zone", "Человек в опасной зоне"), status: groups.length ? "partial" : "planned", note: uiText("Needs zone polygon per group", "Нужен контур зоны для группы") },
+    { name: uiText("Line crossing", "Пересечение линии"), status: groups.length ? "partial" : "planned", note: uiText("Ready for camera calibration", "Готово к калибровке камеры") },
+    { name: uiText("PPE control", "Контроль СИЗ"), status: "planned", note: uiText("Requires PPE model weights", "Нужны веса PPE модели") },
+    { name: uiText("Blocked exits", "Заблокированные выходы"), status: "planned", note: uiText("Use safety camera groups", "Использовать группы камер безопасности") },
+  ];
+  const groupRows = groups
+    .map(
+      (group) => `
+        <tr>
+          <td><strong>${escapeHtml(group.name)}</strong></td>
+          <td>${group.cameras.length.toLocaleString()}</td>
+          <td>${group.cameras.filter((camera) => camera.active).length.toLocaleString()}</td>
+          <td>${platformStatusHtml(group.cameras.some((camera) => camera.active) ? "partial" : "planned", group.cameras.some((camera) => camera.active) ? uiText("Ready for rules", "Готово для правил") : uiText("Needs live camera", "Нужна live камера"))}</td>
+        </tr>
+      `
+    )
+    .join("");
+  container.innerHTML = `
+    <section class="detected-list platform-page">
+      <header class="detected-list-head">
+        <div>
+          <h3>${escapeHtml(uiText("Zones and Safety", "Зоны и безопасность"))}</h3>
+          <p>${escapeHtml(uiText("Safety rules are organized by editable camera groups and blocks.", "Правила безопасности организованы по редактируемым группам камер и блокам."))}</p>
+        </div>
+      </header>
+      ${platformSummaryHtml([
+        { label: uiText("Controlled zones", "Контролируемые зоны"), value: groups.length.toLocaleString() },
+        { label: uiText("Cameras in zones", "Камер в зонах"), value: groups.reduce((sum, group) => sum + group.cameras.length, 0).toLocaleString() },
+        { label: uiText("Safety rules", "Правила безопасности"), value: ruleCards.length.toLocaleString() },
+      ])}
+      <div class="platform-card-grid">${ruleCards
+        .map(
+          (rule) => `
+            <article class="platform-card">
+              <div><strong>${escapeHtml(rule.name)}</strong>${platformStatusHtml(rule.status, rule.status === "planned" ? t("modules.status_planned") : t("modules.status_partial"))}</div>
+              <p>${escapeHtml(rule.note)}</p>
+            </article>
+          `
+        )
+        .join("")}</div>
+      <div class="detected-table-wrap">
+        <table class="detected-table platform-table">
+          <thead><tr><th>${escapeHtml(uiText("Zone / block", "Зона / блок"))}</th><th>${escapeHtml(t("table.camera"))}</th><th>Live</th><th>${escapeHtml(t("table.status"))}</th></tr></thead>
+          <tbody>${groupRows || `<tr><td colspan="4">${escapeHtml(t("feed.empty"))}</td></tr>`}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+async function renderAiModelsPage(container) {
+  try {
+    const [catalogPayload, statusPayload, healthPayload] = await Promise.all([
+      catalogRequest(catalogApiPath("/api/catalog/items")).catch(() => ({ items: [] })),
+      api("/api/status").catch(() => ({})),
+      api("/api/v2/analytics/health").catch(() => ({})),
+    ]);
+    if (!container.isConnected || accountModule !== "ai_models") return;
+    const items = catalogPayload.items || [];
+    const promptCount = items.reduce((sum, item) => sum + Number(item.detection_prompts?.length || 0), 0);
+    const detectorRunning = Boolean(statusPayload.detector_running || healthPayload.running || healthPayload.status === "running");
+    const models = [
+      { name: "YOLOE Detector", status: detectorRunning ? "done" : "partial", note: uiText("Live object proposals from Stream Manager frames.", "Live object proposals из кадров Stream Manager.") },
+      { name: "Catalog Matcher", status: items.length ? "done" : "partial", note: uiText("Reference images and prompts for exact products.", "Эталонные фото и prompts для точных товаров.") },
+      { name: "Product Learning", status: "partial", note: uiText("One-click learning from a live camera is available in AI Check-in.", "One-click обучение с live камеры доступно в AI Check-in.") },
+      { name: "3D Spatial Measurement", status: "partial", note: uiText("Uses recognized catalog items with spatial calibration.", "Использует распознанные товары с пространственной калибровкой.") },
+    ];
+    const itemRows = items
+      .map(
+        (item) => `
+          <tr>
+            <td><strong>${escapeHtml(item.name)}</strong></td>
+            <td>${Number(item.image_count || item.images?.length || 0).toLocaleString()}</td>
+            <td>${escapeHtml((item.detection_prompts || []).join(", ") || uiText("No prompts", "Нет prompts"))}</td>
+            <td>${platformStatusHtml("done", t("ai.catalog_enabled"))}</td>
+          </tr>
+        `
+      )
+      .join("");
+    container.innerHTML = `
+      <section class="detected-list platform-page">
+        <header class="detected-list-head">
+          <div>
+            <h3>${escapeHtml(uiText("AI Models", "AI модели"))}</h3>
+            <p>${escapeHtml(uiText("Detector, catalog matching, training readiness and product prompts.", "Детектор, catalog matching, готовность обучения и product prompts."))}</p>
+          </div>
+          <button type="button" class="export-button" data-run-ai-model-recognition>${escapeHtml(t("actions.run_recognition"))}</button>
+        </header>
+        ${platformSummaryHtml([
+          { label: uiText("Detector", "Детектор"), value: detectorRunning ? t("status.detector_running") : t("status.detector_stopped") },
+          { label: uiText("Catalog items", "Товаров в каталоге"), value: items.length.toLocaleString() },
+          { label: "YOLO prompts", value: promptCount.toLocaleString() },
+          { label: uiText("Model family", "Семейство модели"), value: "YOLOE" },
+        ])}
+        <div class="platform-card-grid">${models
+          .map(
+            (model) => `
+              <article class="platform-card">
+                <div><strong>${escapeHtml(model.name)}</strong>${platformStatusHtml(model.status, model.status === "done" ? t("modules.status_done") : t("modules.status_partial"))}</div>
+                <p>${escapeHtml(model.note)}</p>
+              </article>
+            `
+          )
+          .join("")}</div>
+        <div class="detected-table-wrap">
+          <table class="detected-table platform-table">
+            <thead><tr><th>${escapeHtml(t("table.item"))}</th><th>${escapeHtml(t("ai.reference_images"))}</th><th>YOLO prompts</th><th>${escapeHtml(t("table.status"))}</th></tr></thead>
+            <tbody>${itemRows || `<tr><td colspan="4">${escapeHtml(t("ai.empty_catalog"))}</td></tr>`}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+    container.querySelector("[data-run-ai-model-recognition]")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = t("actions.recognizing");
+      try {
+        await catalogRequest(catalogApiPath("/api/catalog/recognition/run"), { method: "POST" });
+        toast(t("toast.recognition_complete"));
+        await renderAiModelsPage(container);
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+        button.textContent = t("actions.run_recognition");
+      }
+    });
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function renderIntegrationsPage(container) {
+  try {
+    const [devicesPayload, streamsPayload] = await Promise.all([
+      accountsApi("/api/v2/devices").catch(() => ({ devices: [] })),
+      api("/api/v2/streams/health").catch(() => ({ streams: state.streams || [] })),
+    ]);
+    if (!container.isConnected || accountModule !== "integrations") return;
+    const devices = devicesPayload.devices || [];
+    const streams = streamsPayload.streams || [];
+    const liveStreams = streams.filter((stream) => stream.status === "online").length;
+    const connectors = [
+      { name: "RTSP", status: devices.length ? "done" : "partial", note: uiText("Camera transport through Stream Manager.", "Транспорт камер через Stream Manager.") },
+      { name: "ONVIF", status: "partial", note: uiText("Discovery and vendor fingerprinting layer.", "Слой discovery и vendor fingerprinting.") },
+      { name: "Hikvision / Dahua", status: devices.some((device) => /hikvision|dahua/i.test(`${device.vendor || ""}`)) ? "done" : "partial", note: uiText("Vendor-aware discovery is enabled.", "Vendor-aware discovery включен.") },
+      { name: "REST API", status: "done", note: "/api/*" },
+      { name: "WebSocket / SSE", status: "done", note: "/api/logs/stream" },
+      { name: "WMS / ERP / 1C", status: "planned", note: uiText("Roadmap integration connector.", "Roadmap-коннектор интеграции.") },
+      { name: "Webhook", status: "planned", note: uiText("External incident delivery.", "Передача инцидентов во внешние системы.") },
+    ];
+    const deviceRows = devices
+      .map(
+        (device) => `
+          <tr>
+            <td><strong>${escapeHtml(device.name || device.host || "Device")}</strong></td>
+            <td>${escapeHtml(device.host || "-")}</td>
+            <td>${escapeHtml(device.vendor || t("device_type.unknown"))}</td>
+            <td>${escapeHtml(device.model || "-")}</td>
+            <td>${platformStatusHtml("done", t("status.registered"))}</td>
+          </tr>
+        `
+      )
+      .join("");
+    container.innerHTML = `
+      <section class="detected-list platform-page">
+        <header class="detected-list-head">
+          <div>
+            <h3>${escapeHtml(uiText("Integrations", "Интеграции"))}</h3>
+            <p>${escapeHtml(uiText("Camera vendors, internal APIs and external system connectors.", "Вендоры камер, внутренние API и коннекторы внешних систем."))}</p>
+          </div>
+          <button type="button" class="export-button" data-refresh-integrations>${escapeHtml(t("actions.refresh"))}</button>
+        </header>
+        ${platformSummaryHtml([
+          { label: uiText("Connected devices", "Подключено устройств"), value: devices.length.toLocaleString() },
+          { label: uiText("Live streams", "Live потоков"), value: liveStreams.toLocaleString() },
+          { label: uiText("Connectors", "Коннекторы"), value: connectors.length.toLocaleString() },
+        ])}
+        <div class="platform-card-grid">${connectors
+          .map(
+            (connector) => `
+              <article class="platform-card">
+                <div><strong>${escapeHtml(connector.name)}</strong>${platformStatusHtml(connector.status, connector.status === "done" ? t("modules.status_done") : connector.status === "planned" ? t("modules.status_planned") : t("modules.status_partial"))}</div>
+                <p>${escapeHtml(connector.note)}</p>
+              </article>
+            `
+          )
+          .join("")}</div>
+        <div class="detected-table-wrap">
+          <table class="detected-table platform-table">
+            <thead><tr><th>${escapeHtml(uiText("Device", "Устройство"))}</th><th>${escapeHtml(t("table.host"))}</th><th>${escapeHtml(t("table.vendor"))}</th><th>${escapeHtml(t("table.model"))}</th><th>${escapeHtml(t("table.status"))}</th></tr></thead>
+            <tbody>${deviceRows || `<tr><td colspan="5">${escapeHtml(t("camera.no_devices"))}</td></tr>`}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+    container.querySelector("[data-refresh-integrations]")?.addEventListener("click", () => {
+      container.innerHTML = `<p class="empty">${escapeHtml(uiText("Refreshing integrations...", "Обновление интеграций..."))}</p>`;
+      void renderIntegrationsPage(container);
+    });
   } catch (error) {
     if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
   }
@@ -3187,6 +3656,11 @@ function renderAccountModule() {
     return;
   }
 
+  if (menu.id === "enterprise") {
+    renderEnterprisePage(els.moduleContent);
+    return;
+  }
+
   if (menu.id === "analytics") {
     els.moduleContent.innerHTML = `<div id="accCharts"></div><div id="catalogResults" class="catalog-results-loading"><p class="empty">${escapeHtml(t("analytics.loading_detected"))}</p></div>`;
     renderAnalytics(els.moduleContent.querySelector("#accCharts"), true);
@@ -3197,6 +3671,17 @@ function renderAccountModule() {
   if (menu.id === "result_analytics") {
     els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("result.loading"))}</p>`;
     void renderResultAnalytics(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "events") {
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(uiText("Loading events...", "Загрузка событий..."))}</p>`;
+    void renderEventsPage(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "zones") {
+    renderSafetyZonesPage(els.moduleContent);
     return;
   }
 
@@ -3219,6 +3704,12 @@ function renderAccountModule() {
     return;
   }
 
+  if (menu.id === "ai_models") {
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(uiText("Loading AI models...", "Загрузка AI моделей..."))}</p>`;
+    void renderAiModelsPage(els.moduleContent);
+    return;
+  }
+
   if (menu.id === "ai_modules") {
     els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("modules.loading"))}</p>`;
     void renderAiModules(els.moduleContent);
@@ -3228,6 +3719,12 @@ function renderAccountModule() {
   if (menu.id === "dimension") {
     els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(t("dimension.loading"))}</p>`;
     void renderCatalogDimensions(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "integrations") {
+    els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(uiText("Loading integrations...", "Загрузка интеграций..."))}</p>`;
+    void renderIntegrationsPage(els.moduleContent);
     return;
   }
 

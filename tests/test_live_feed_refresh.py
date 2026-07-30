@@ -173,8 +173,8 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=63" in html
-    assert "/dashboard-v2/assets/styles.css?v=44" in html
+    assert "/dashboard-v2/assets/app.js?v=64" in html
+    assert "/dashboard-v2/assets/styles.css?v=45" in html
 
 
 def test_dashboard_has_ai_modules_page_from_video_analytics_spec():
@@ -198,6 +198,26 @@ def test_dashboard_has_ai_modules_page_from_video_analytics_spec():
     assert catalog["meta"]["features_total"] == 270
     assert len(catalog["sections"]) == 18
     assert sum(len(section["features"]) for section in catalog["sections"]) == 270
+
+
+def test_dashboard_exposes_operator_platform_pages_from_spec():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    for module_id in ["enterprise", "events", "zones", "ai_models", "integrations"]:
+        assert f'id: "{module_id}"' in source
+        assert f'menu.{module_id}' in source
+
+    assert "function renderEnterprisePage(container)" in source
+    assert "function renderEventsPage(container)" in source
+    assert "function renderSafetyZonesPage(container)" in source
+    assert "function renderAiModelsPage(container)" in source
+    assert "function renderIntegrationsPage(container)" in source
+    assert "feedGroupRecords(config)" in source
+    assert "eventRowsFromPayloads(enginePayload, auditPayload, logPayload)" in source
+    assert ".platform-summary" in styles
+    assert ".platform-card-grid" in styles
+    assert ".platform-status" in styles
 
 
 def test_dashboard_startup_retries_and_exposes_a_visible_failure_state():
