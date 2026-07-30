@@ -616,6 +616,107 @@ def test_box_next_to_overlapping_sack_is_still_counted(tmp_path, monkeypatch):
     assert matches[0]["quantity"] == 2
 
 
+def test_result_correction_teaches_catalog_item_from_crop(tmp_path, monkeypatch):
+    # A human correction on the Result Analytics page enrolls the crop under the
+    # correct name (creating the item) and stores the description as a prompt, so
+    # future recognition matches the real product instead of the mislabel.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db = CatalogDB(str(tmp_path / "catalog.db"))
+    snapshot_dir = tmp_path / "snapshots"
+    crop_dir = snapshot_dir / "catalog-recognition" / "warehouse-a" / "run1"
+    crop_dir.mkdir(parents=True)
+    cv2.imwrite(str(crop_dir / "crop.jpg"), _reference_image((200, 90, 30)))
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "CATALOG_IMAGE_DIR", snapshot_dir / "catalog")
+    monkeypatch.setattr(server, "CATALOG_PROMPTS_PATH", tmp_path / "catalog_prompts.json")
+
+    correction = server.CatalogCorrection(
+        correct_name="Baget Box",
+        prompt="stacked baget boxes on a pallet",
+        crop_url="/snapshots/catalog-recognition/warehouse-a/run1/crop.jpg",
+        predicted_name="White Box",
+    )
+    result = asyncio.run(server.correct_catalog_result("warehouse-a", correction))
+
+    assert result["item_created"] is True
+    assert result["item"]["name"] == "Baget Box"
+    assert result["reference_count"] == 1
+    assert "stacked baget boxes on a pallet" in result["prompts"]
+
+    # A second correction for the same name reuses the item and adds a reference.
+    again = server.CatalogCorrection(
+        correct_name="Baget Box",
+        crop_url="/snapshots/catalog-recognition/warehouse-a/run1/crop.jpg",
+    )
+    result_again = asyncio.run(server.correct_catalog_result("warehouse-a", again))
+    assert result_again["item_created"] is False
+    assert result_again["reference_count"] == 2
+
+
+def test_learned_product_save_accepts_single_view(tmp_path, monkeypatch):
+    # "Save to base" must not be blocked by a two-picture minimum: one clear
+    # view is enough to enroll the product and start counting.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db = CatalogDB(str(tmp_path / "catalog.db"))
+    snapshot_dir = tmp_path / "snapshots"
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(server, "CATALOG_IMAGE_DIR", snapshot_dir / "catalog")
+    monkeypatch.setattr(server, "CATALOG_PROMPTS_PATH", tmp_path / "catalog_prompts.json")
+    monkeypatch.setattr(server, "PRODUCT_FINGERPRINTS_PATH", tmp_path / "fingerprints.json")
+
+    crop = _reference_image((200, 90, 30))
+    session_id = "sess-single-view"
+    server._product_learning_sessions[session_id] = {
+        "session_id": session_id,
+        "scope_id": "warehouse-a",
+        "status": "ready",
+        "duration_seconds": 12,
+        "camera_name": "NVR Camera 2",
+        "camera_count": 1,
+        "frames_seen": 3,
+        "proposal_count": 2,
+        "_views": [{"crop": crop, "embedding": image_embedding(crop)}],
+    }
+    try:
+        result = server.save_learned_product(
+            "warehouse-a",
+            server.ProductLearningSave(
+                session_id=session_id,
+                product_name="Baget Box",
+                view_indices=[0],
+            ),
+        )
+    finally:
+        server._product_learning_sessions.pop(session_id, None)
+
+    assert result["active"] is True
+    assert result["item"]["name"] == "Baget Box"
+    assert result["item"]["image_count"] == 1
+
+
+def test_result_correction_rejects_path_traversal(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    db = CatalogDB(str(tmp_path / "catalog.db"))
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    monkeypatch.setattr(server, "_catalog_db", db)
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", snapshot_dir)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            server.correct_catalog_result(
+                "warehouse-a",
+                server.CatalogCorrection(
+                    correct_name="X",
+                    crop_url="/snapshots/../../../etc/passwd",
+                ),
+            )
+        )
+    assert excinfo.value.status_code == 404
+
+
 def test_catalog_recognition_samples_multiple_frames_and_keeps_best_camera_count(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("CATALOG_RECOGNITION_SAMPLES", "2")

@@ -163,6 +163,14 @@ const I18N = {
     "result.camera_filter": "NVR or camera",
     "result.cameras_with_results": "Cameras with results",
     "result.confidence": "Confidence",
+    "result.ai_prediction": "AI prediction",
+    "result.correct_name": "Correct name",
+    "result.correct_name_ph": "What is it really?",
+    "result.prompt_label": "Prompt",
+    "result.prompt_ph": "Describe this object...",
+    "result.save_correction": "Save",
+    "result.correction_saved": "Saved - the system will learn this object.",
+    "result.correct_name_required": "Enter the correct name first.",
     "result.empty": "No recognition results are saved yet. Run AI Check-in first.",
     "result.item_filter": "Item",
     "result.last_hour": "Last hour",
@@ -397,6 +405,14 @@ const I18N = {
     "result.camera_filter": "NVR или камера",
     "result.cameras_with_results": "Камер с результатами",
     "result.confidence": "Уверенность",
+    "result.ai_prediction": "Прогноз ИИ",
+    "result.correct_name": "Правильное название",
+    "result.correct_name_ph": "Что это на самом деле?",
+    "result.prompt_label": "Подсказка",
+    "result.prompt_ph": "Опишите этот объект...",
+    "result.save_correction": "Сохранить",
+    "result.correction_saved": "Сохранено - система запомнит этот объект.",
+    "result.correct_name_required": "Сначала введите правильное название.",
     "result.empty": "Сохраненных результатов распознавания пока нет. Сначала запустите AI Check-in.",
     "result.item_filter": "Товар",
     "result.last_hour": "За последний час",
@@ -3134,6 +3150,17 @@ function resultAnalyticsVisualsHtml(rows) {
                     ${row.cropUrl ? `<img src="${escapeAttr(`${API_BASE}${row.cropUrl}`)}" alt="${escapeAttr(`${title} ${t("result.object_crop")}`)}" loading="lazy" decoding="async" />` : `<div class="result-visual-missing">${escapeHtml(t("result.visual_empty"))}</div>`}
                   </figure>
                 </div>
+                ${row.cropUrl ? `
+                <form class="result-correction" data-correct-form data-crop-url="${escapeAttr(row.cropUrl)}" data-predicted="${escapeAttr(row.itemName || "")}">
+                  <p class="result-correction-ai">${escapeHtml(t("result.ai_prediction"))}: <strong>${escapeHtml(row.itemName)} (${Math.round(row.confidence * 100)}%)</strong></p>
+                  <label>${escapeHtml(t("result.correct_name"))}
+                    <input type="text" name="correct_name" maxlength="60" autocomplete="off" placeholder="${escapeAttr(t("result.correct_name_ph"))}" />
+                  </label>
+                  <label>${escapeHtml(t("result.prompt_label"))}
+                    <textarea name="prompt" rows="2" maxlength="500" placeholder="${escapeAttr(t("result.prompt_ph"))}"></textarea>
+                  </label>
+                  <button type="submit" class="result-correction-save">${escapeHtml(t("result.save_correction"))}</button>
+                </form>` : ""}
               </article>
             `;
           })
@@ -3208,6 +3235,36 @@ function renderResultAnalyticsBody(container, payload, filters = { period: "late
   container.querySelector("[data-run-result-recognition]")?.addEventListener("click", (event) => {
     void runResultAnalyticsRecognition(container, event.currentTarget, filters);
   });
+  container.querySelectorAll("[data-correct-form]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const correctName = form.querySelector("[name=correct_name]").value.trim();
+      if (!correctName) {
+        toast(t("result.correct_name_required"));
+        return;
+      }
+      const button = form.querySelector("button[type=submit]");
+      button.disabled = true;
+      try {
+        await catalogRequest(catalogApiPath("/api/catalog/results/correct"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            correct_name: correctName,
+            prompt: form.querySelector("[name=prompt]").value.trim() || null,
+            crop_url: form.dataset.cropUrl,
+            predicted_name: form.dataset.predicted || null,
+          }),
+        });
+        toast(t("result.correction_saved"));
+        container.innerHTML = `<p class="empty">${escapeHtml(t("result.loading"))}</p>`;
+        void renderResultAnalytics(container);
+      } catch (error) {
+        toast(error.message || "Failed to save correction.");
+        button.disabled = false;
+      }
+    });
+  });
 }
 
 async function runResultAnalyticsRecognition(container, button, filters) {
@@ -3273,7 +3330,7 @@ function productLearningPanelHtml(session) {
           <div style="display:flex;gap:10px;align-items:end">
           <label style="flex:1"><span style="display:block;font-weight:700;margin-bottom:5px">Product Name</span><input name="name" required maxlength="60" placeholder="Baget Box" value="${escapeAttr(existing?.name || "")}" autocomplete="off" style="width:100%" /></label>
           <button type="button" data-acc-action="learn-product">Retake pictures</button>
-          <button type="submit">Save and start counting</button>
+          <button type="submit">Save to base</button>
           </div>
         </form>
       </div>`;
@@ -4158,13 +4215,13 @@ async function handleAccountSubmit(event) {
     const viewIndices = Array.from(form.querySelectorAll('input[name="learned-view"]:checked'))
       .map((input) => Number(input.value));
     const existingItemId = form.querySelector('input[name="use-existing-product"]:checked')?.value || null;
-    if (viewIndices.length < 2) {
-      toast("Select at least two clear pictures of the product.");
+    if (viewIndices.length < 1) {
+      toast("Select at least one clear picture of the product.");
       return;
     }
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
-    submit.textContent = "Saving fingerprint…";
+    submit.textContent = "Saving to base…";
     try {
       await catalogRequest(catalogApiPath("/api/catalog/learning/save"), {
         method: "POST",
@@ -4182,7 +4239,7 @@ async function handleAccountSubmit(event) {
     } catch (error) {
       toast(error.message);
       submit.disabled = false;
-      submit.textContent = "Save and start counting";
+      submit.textContent = "Save to base";
     }
     return;
   }
