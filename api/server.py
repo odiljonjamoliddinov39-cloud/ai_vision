@@ -390,6 +390,13 @@ def _seed_cameras_from_environment(db: CameraDB) -> None:
         channel_count = int(os.getenv("CAMERA_CONTROLLER_CHANNEL_COUNT", "10"))
         channel_start = int(os.getenv("CAMERA_CONTROLLER_CHANNEL_START", "1"))
         start_slot = int(os.getenv("CAMERA_CONTROLLER_START_SLOT", "1"))
+        # Optional explicit, non-contiguous channel list, e.g. "2,5,6,16,20,23,25".
+        channels_env = os.getenv("CAMERA_CONTROLLER_CHANNELS", "").strip()
+        channels = (
+            [int(part) for part in re.split(r"[,\s]+", channels_env) if part.strip()]
+            if channels_env
+            else None
+        )
     except ValueError:
         return
 
@@ -400,8 +407,9 @@ def _seed_cameras_from_environment(db: CameraDB) -> None:
         port=port,
         username=os.getenv("CAMERA_CONTROLLER_USERNAME") or None,
         password=os.getenv("CAMERA_CONTROLLER_PASSWORD") or None,
-        channel_count=max(1, min(channel_count, MAX_CAMERA_SLOTS)),
+        channel_count=max(1, min(len(channels) if channels else channel_count, MAX_CAMERA_SLOTS)),
         channel_start=max(1, channel_start),
+        channels=channels,
         start_slot=max(1, min(start_slot, MAX_CAMERA_SLOTS)),
         stream_path_template=os.getenv(
             "CAMERA_CONTROLLER_STREAM_TEMPLATE",
@@ -952,6 +960,10 @@ class CameraControllerCreate(BaseModel):
     password: str | None = None
     channel_count: int = Field(default=4, ge=1, le=MAX_CAMERA_SLOTS)
     channel_start: int = Field(default=1, ge=1)
+    # Optional explicit, possibly non-contiguous channel numbers (e.g. Block A/B
+    # = 2,5,6,16,...). When set it overrides channel_start/channel_count so a
+    # controller can register only the specific channels we want.
+    channels: list[int] | None = Field(default=None)
     start_slot: int = Field(default=1, ge=1, le=MAX_CAMERA_SLOTS)
     stream_path_template: str = Field(default="/Streaming/Channels/{channel}01", min_length=1)
     camera_name_template: str = Field(default="{controller} Camera {channel}", min_length=1)
@@ -4003,9 +4015,13 @@ def _register_controller_channels(
     # free slots right now still saves and tests every channel - it just
     # leaves the channels beyond the free-slot budget registered but
     # inactive instead of rejecting the whole request.
+    channel_numbers = (
+        [int(channel) for channel in controller.channels]
+        if controller.channels
+        else [controller.channel_start + index for index in range(controller.channel_count)]
+    )
     controller_stream_urls = [
-        _controller_stream_url(controller, controller.channel_start + index)
-        for index in range(controller.channel_count)
+        _controller_stream_url(controller, channel) for channel in channel_numbers
     ]
     controller_stream_url_set = set(controller_stream_urls)
     all_cameras = db.list_cameras(include_secret=True)
@@ -4020,7 +4036,7 @@ def _register_controller_channels(
         next_slot += 1
 
     for index, stream_url in enumerate(controller_stream_urls):
-        channel = controller.channel_start + index
+        channel = channel_numbers[index]
 
         if controller.test_streams and controller_reachable:
             test_result = _test_camera_stream(stream_url)
@@ -5306,6 +5322,121 @@ async def correct_catalog_result(
         "item_created": created,
         "reference_count": len(db.list_images(item_id)),
         "prompts": prompts,
+    }
+
+
+TRAINING_DATASET_ROOT = ROOT / "datasets" / "baget_box"
+TRAINING_DATASET_YAML = TRAINING_DATASET_ROOT / "data.yaml"
+TRAINING_PROMPTS_PATH = TRAINING_DATASET_ROOT / "prompts.json"
+TRAINING_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def _training_dataset_stats() -> dict[str, Any]:
+    import yaml as _yaml
+
+    names: dict[Any, Any] = {}
+    if TRAINING_DATASET_YAML.exists():
+        data = _yaml.safe_load(TRAINING_DATASET_YAML.read_text(encoding="utf-8")) or {}
+        names = data.get("names") or {}
+    splits: dict[str, Any] = {}
+    class_instances: dict[str, int] = {}
+    for split in ("train", "val"):
+        img_dir = TRAINING_DATASET_ROOT / "images" / split
+        lbl_dir = TRAINING_DATASET_ROOT / "labels" / split
+        images = (
+            [p for p in img_dir.iterdir() if p.suffix.lower() in TRAINING_IMAGE_EXTS]
+            if img_dir.exists()
+            else []
+        )
+        labeled = negatives = 0
+        for image in images:
+            label = lbl_dir / f"{image.stem}.txt"
+            if not label.exists():
+                continue
+            content = label.read_text(encoding="utf-8").strip()
+            if not content:
+                negatives += 1
+                continue
+            labeled += 1
+            for line in content.splitlines():
+                parts = line.split()
+                if parts:
+                    class_instances[parts[0]] = class_instances.get(parts[0], 0) + 1
+        splits[split] = {
+            "images": len(images),
+            "labeled": labeled,
+            "negatives": negatives,
+            "unlabeled": len(images) - labeled - negatives,
+        }
+    store = _read_json(TRAINING_PROMPTS_PATH) or {}
+    prompts = store.get("prompts") if isinstance(store, dict) else []
+    return {
+        "classes": names,
+        "splits": splits,
+        "class_instances": class_instances,
+        "prompts": prompts if isinstance(prompts, list) else [],
+    }
+
+
+@app.get("/api/training/dataset")
+def training_dataset() -> dict[str, Any]:
+    return _training_dataset_stats()
+
+
+@app.post("/api/training/inject")
+async def training_inject(
+    split: str = Form("train"),
+    prompts: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
+) -> dict[str, Any]:
+    """Save-and-Inject: drop images + prompts straight into the YOLO dataset."""
+    import cv2
+    import numpy as np
+
+    split = "val" if str(split).strip().lower().startswith("v") else "train"
+    img_dir = TRAINING_DATASET_ROOT / "images" / split
+    img_dir.mkdir(parents=True, exist_ok=True)
+    (TRAINING_DATASET_ROOT / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    saved = 0
+    stamp = int(time.time())
+    for index, upload in enumerate(files or [], start=1):
+        if not (upload.content_type or "").startswith("image/"):
+            continue
+        contents = await upload.read()
+        if not contents or len(contents) > 12 * 1024 * 1024:
+            continue
+        frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+        suffix = Path(upload.filename or "").suffix.lower()
+        if suffix not in TRAINING_IMAGE_EXTS:
+            suffix = ".jpg"
+        (img_dir / f"inject_{stamp}_{index:03d}{suffix}").write_bytes(contents)
+        saved += 1
+
+    store = _read_json(TRAINING_PROMPTS_PATH) or {}
+    existing = store.get("prompts") if isinstance(store, dict) else []
+    if not isinstance(existing, list):
+        existing = []
+    added: list[str] = []
+    seen = {str(value).lower() for value in existing}
+    for part in re.split(r"[,\n]+", prompts or ""):
+        cleaned = " ".join(part.split()).strip()
+        if cleaned and cleaned.lower() not in seen:
+            existing.append(cleaned)
+            added.append(cleaned)
+            seen.add(cleaned.lower())
+    TRAINING_PROMPTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TRAINING_PROMPTS_PATH.write_text(
+        json.dumps({"prompts": existing}, indent=2), encoding="utf-8"
+    )
+
+    _audit("training_inject", {"split": split, "images_saved": saved, "prompts_added": added})
+    return {
+        "images_saved": saved,
+        "prompts_added": added,
+        "dataset": _training_dataset_stats(),
     }
 
 

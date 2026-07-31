@@ -1,10 +1,27 @@
 cameras:
-- name: Demo Camera
-  source: dummy
+# Training deployment: only the selected Zavod channels, main stream (higher
+# quality). All other cameras are intentionally left out.
+- name: Block A - Zavod Channel 5
+  source: rtsp://87.192.242.82:554/Streaming/Channels/501
   slot_number: 1
-- name: 87.192.242.82 Channel 1
-  source: rtsp://87.192.242.82:554/Streaming/Channels/101
+- name: Block A - Zavod Channel 6
+  source: rtsp://87.192.242.82:554/Streaming/Channels/601
   slot_number: 2
+- name: Block A - Zavod Channel 2
+  source: rtsp://87.192.242.82:554/Streaming/Channels/201
+  slot_number: 3
+- name: Block B - Zavod Channel 16
+  source: rtsp://87.192.242.82:554/Streaming/Channels/1601
+  slot_number: 4
+- name: Block C - Zavod Channel 20
+  source: rtsp://87.192.242.82:554/Streaming/Channels/2001
+  slot_number: 5
+- name: Block C - Zavod Channel 23
+  source: rtsp://87.192.242.82:554/Streaming/Channels/2301
+  slot_number: 6
+- name: Block D - Zavod Channel 25
+  source: rtsp://87.192.242.82:554/Streaming/Channels/2501
+  slot_number: 7
 detection:
   model_path: yoloe-26s-seg.pt
   fallback_model_path: yolov8s-worldv2.pt
@@ -32,7 +49,7 @@ detection:
   - wooden pallet
   - warehouse package
 spatial_analysis:
-  enabled: true
+  enabled: false
   horizontal_fov_degrees: 90.0
   camera_height_m: 1.2
   horizon_y_ratio: 0.28
@@ -62,13 +79,13 @@ display:
   live_frame_width: 1280
   live_frame_jpeg_quality: 85
 tracking:
-  enabled: true
+  enabled: false
   tracker_config: config/warehouse_bytetrack.yaml
   classes: null
   grace_period_seconds: 5.0
   db_path: database/tracking.db
 warehouse_counting:
-  enabled: true
+  enabled: false
   mode: line
   db_path: database/warehouse.db
   confidence_threshold: 0.55
@@ -79,7 +96,7 @@ warehouse_counting:
     x2: 900
     y2: 300
 warehouse_engine:
-  enabled: true
+  enabled: false
   engine_db_path: database/warehouse_engine.db
   minimum_confidence: 0.8
   identity_recovery_seconds: 30
@@ -91,7 +108,7 @@ warehouse_engine:
   - name: Storage
     polygon: [[0, 360], [1280, 360], [1280, 720], [0, 720]]
 recognition:
-  enabled: true
+  enabled: false
   provider: gemini
   model: gemini-3.1-flash-lite
   db_path: database/products.db
