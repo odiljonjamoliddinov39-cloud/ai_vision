@@ -5642,6 +5642,15 @@ class TrainingApply(BaseModel):
     name: str = Field(default="", max_length=80)
     keep: bool = True
     split: str = "train"
+    count: int | None = Field(default=None, ge=0, le=100000)
+
+
+class TrainingSearch(BaseModel):
+    query: str = Field(default="", max_length=120)
+
+
+class TrainingRecount(BaseModel):
+    group_id: str = Field(min_length=1, max_length=120)
 
 
 def _training_gemini_name(crop) -> str | None:
@@ -5668,6 +5677,237 @@ async def training_analytics_run(gemini: bool = True) -> dict[str, Any]:
     return await asyncio.to_thread(_training_analytics_run_sync, gemini)
 
 
+def _training_camera_map(health: dict[str, Any]) -> dict[int, str]:
+    """Every camera we can reach, keyed by slot with a friendly name: whatever
+    detection-health knows about, plus every live-frame file on disk so all
+    channels are covered even when health is empty (kiosk mode)."""
+    import re as _re
+
+    cameras: dict[int, str] = {}
+    for camera in health.get("cameras") or []:
+        slot = camera.get("slot_number")
+        if slot is None:
+            continue
+        cameras[int(slot)] = str(camera.get("name") or f"slot-{slot}")
+    for pattern in ("latest_stream_slot_*.jpg", "latest_slot_*.jpg"):
+        for path in sorted(SNAPSHOT_DIR.glob(pattern)):
+            match = _re.search(r"(\d+)", path.stem)
+            if match:
+                cameras.setdefault(int(match.group(1)), f"slot-{match.group(1)}")
+    return cameras
+
+
+# --- Dataset-centered recognition -------------------------------------------
+# The Recognition button compares live crops against the trained dataset (not
+# Gemini): per-class mean embeddings built from the dataset's own labeled crops.
+_training_refs_obj: dict[str, list[float]] | None = None
+_training_refs_key: tuple[int, float] | None = None
+
+
+def _training_dataset_signature() -> tuple[int, float]:
+    count = 0
+    latest = 0.0
+    for split in ("train", "val"):
+        img_dir = TRAINING_DATASET_ROOT / "images" / split
+        if not img_dir.exists():
+            continue
+        for path in img_dir.glob("*.*"):
+            if path.suffix.lower() in TRAINING_IMAGE_EXTS:
+                count += 1
+                latest = max(latest, path.stat().st_mtime)
+    return count, latest
+
+
+def _training_dataset_reference_embeddings() -> dict[str, list[float]]:
+    """Mean color/shape embedding per dataset class, cached until the dataset
+    changes. Empty labels (negatives) are skipped."""
+    global _training_refs_obj, _training_refs_key
+    try:
+        import cv2
+        import numpy as np
+
+        from recognition.embedding import image_embedding
+    except Exception:  # noqa: BLE001
+        return {}
+
+    signature = _training_dataset_signature()
+    if _training_refs_obj is not None and _training_refs_key == signature:
+        return _training_refs_obj
+
+    names: dict[Any, Any] = {}
+    if TRAINING_DATASET_YAML.exists():
+        import yaml as _yaml
+
+        data = _yaml.safe_load(TRAINING_DATASET_YAML.read_text(encoding="utf-8")) or {}
+        names = data.get("names") or {}
+
+    accum: dict[str, list[list[float]]] = {}
+    for split in ("train", "val"):
+        img_dir = TRAINING_DATASET_ROOT / "images" / split
+        lbl_dir = TRAINING_DATASET_ROOT / "labels" / split
+        if not img_dir.exists():
+            continue
+        for img_path in img_dir.glob("*.*"):
+            if img_path.suffix.lower() not in TRAINING_IMAGE_EXTS:
+                continue
+            label_path = lbl_dir / (img_path.stem + ".txt")
+            lines = (
+                [ln for ln in label_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+                if label_path.exists()
+                else []
+            )
+            if not lines:
+                continue  # negative example, no class to learn
+            image = cv2.imread(str(img_path))
+            if image is None:
+                continue
+            h, w = image.shape[:2]
+            for line in lines[:8]:
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                try:
+                    cid = int(float(parts[0]))
+                    cx, cy, bw, bh = (float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]))
+                except ValueError:
+                    continue
+                name = str(names.get(cid, names.get(str(cid), cid)))
+                if bw >= 0.99 and bh >= 0.99:
+                    crop = image
+                else:
+                    x1 = max(0, int((cx - bw / 2) * w))
+                    y1 = max(0, int((cy - bh / 2) * h))
+                    x2 = min(w, int((cx + bw / 2) * w))
+                    y2 = min(h, int((cy + bh / 2) * h))
+                    crop = image[y1:y2, x1:x2] if x2 > x1 and y2 > y1 else image
+                try:
+                    accum.setdefault(name, []).append(image_embedding(crop))
+                except Exception:  # noqa: BLE001
+                    continue
+
+    refs: dict[str, list[float]] = {}
+    for name, vectors in accum.items():
+        arr = np.array(vectors, dtype="float32")
+        mean = arr.mean(axis=0)
+        norm = float(np.linalg.norm(mean))
+        refs[name] = [float(v) for v in (mean / norm if norm > 0 else mean)]
+
+    _training_refs_obj = refs
+    _training_refs_key = signature
+    return refs
+
+
+def _training_match_dataset(crop, refs: dict[str, list[float]]) -> tuple[str | None, float]:
+    """Best-matching dataset class name and cosine similarity for a crop."""
+    if not refs or crop is None or getattr(crop, "size", 0) == 0:
+        return None, 0.0
+    try:
+        import numpy as np
+
+        from recognition.embedding import image_embedding
+
+        vector = np.array(image_embedding(crop), dtype="float32")
+    except Exception:  # noqa: BLE001
+        return None, 0.0
+    best_name: str | None = None
+    best_score = -1.0
+    for name, ref in refs.items():
+        ref_arr = np.array(ref, dtype="float32")
+        if ref_arr.shape != vector.shape:
+            continue
+        score = float(np.dot(vector, ref_arr))
+        if score > best_score:
+            best_score = score
+            best_name = name
+    return best_name, max(0.0, best_score)
+
+
+# --- Per-location clustering + box counting ---------------------------------
+def _training_box_iou_gap(a, b) -> float:
+    """0 = overlapping/touching, grows with the normalized gap between boxes."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    dx = max(0, max(ax1, bx1) - min(ax2, bx2))
+    dy = max(0, max(ay1, by1) - min(ay2, by2))
+    scale = max(1.0, (ax2 - ax1 + bx2 - bx1 + ay2 - ay1 + by2 - by1) / 4.0)
+    return (dx + dy) / scale
+
+
+def _training_cluster_boxes(boxes: list[tuple[int, int, int, int]], gap: float = 0.6) -> list[list[int]]:
+    """Union-find grouping of boxes that touch or sit close together (one stack
+    at one place). Returns lists of member indices."""
+    n = len(boxes)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _training_box_iou_gap(boxes[i], boxes[j]) <= gap:
+                parent[find(i)] = find(j)
+    clusters: dict[int, list[int]] = {}
+    for i in range(n):
+        clusters.setdefault(find(i), []).append(i)
+    return list(clusters.values())
+
+
+def _training_tiled_count(crop, detector, base_count: int = 0) -> int:
+    """Stronger recount for a dense stack: slice the crop into overlapping tiles,
+    detect in each at higher resolution, merge with NMS. Returns the larger of
+    the tiled count and the original so a recount never lowers a good count."""
+    try:
+        import numpy as np
+    except Exception:  # noqa: BLE001
+        return base_count
+    if detector is None or crop is None or getattr(crop, "size", 0) == 0:
+        return base_count
+    h, w = crop.shape[:2]
+    tiles_x = 2 if w >= 260 else 1
+    tiles_y = 2 if h >= 260 else 1
+    overlap = 0.2
+    merged: list[tuple[float, float, float, float]] = []
+    step_x = w / tiles_x
+    step_y = h / tiles_y
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            x0 = int(max(0, step_x * tx - step_x * overlap))
+            y0 = int(max(0, step_y * ty - step_y * overlap))
+            x1 = int(min(w, step_x * (tx + 1) + step_x * overlap))
+            y1 = int(min(h, step_y * (ty + 1) + step_y * overlap))
+            tile = crop[y0:y1, x0:x1]
+            if tile.size == 0:
+                continue
+            try:
+                dets = detector.detect(tile)
+            except Exception:  # noqa: BLE001
+                continue
+            for det in dets or []:
+                box = getattr(det, "box", None)
+                if not box or len(box) < 4:
+                    continue
+                merged.append((box[0] + x0, box[1] + y0, box[2] + x0, box[3] + y0))
+    # Greedy NMS to drop tile-overlap duplicates.
+    merged.sort(key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), reverse=True)
+    kept: list[tuple[float, float, float, float]] = []
+    for box in merged:
+        keep = True
+        for k in kept:
+            ix1, iy1 = max(box[0], k[0]), max(box[1], k[1])
+            ix2, iy2 = min(box[2], k[2]), min(box[3], k[3])
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            area_b = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+            if inter / area_b > 0.45:
+                keep = False
+                break
+        if keep:
+            kept.append(box)
+    return max(base_count, len(kept))
+
+
 def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
     """Instant test: sweep every camera one-by-one, run the light detector on
     each live frame, group the results by type, with a sample crop, a count and
@@ -5678,30 +5918,10 @@ def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
     engines are off in kiosk mode). If a model cannot be loaded in the web
     process (TRAINING_USE_MODEL=0 or too little memory), it falls back to the
     running detector's last published detections."""
-    import re as _re
-
     import cv2
 
     health = _catalog_health_snapshot()
-
-    # Build the full camera list: whatever detection-health knows about, plus
-    # every live-frame file on disk so we cover all channels even when health is
-    # empty (kiosk mode). Keyed by slot to de-dupe, with a friendly name.
-    cameras: dict[int, str] = {}
-    fallback_order: list[tuple[int | None, str]] = []
-    for camera in health.get("cameras") or []:
-        slot = camera.get("slot_number")
-        name = str(camera.get("name") or (f"slot-{slot}" if slot is not None else "camera"))
-        if slot is not None:
-            cameras[int(slot)] = name
-        fallback_order.append((int(slot) if slot is not None else None, name))
-    for pattern in ("latest_stream_slot_*.jpg", "latest_slot_*.jpg"):
-        for path in sorted(SNAPSHOT_DIR.glob(pattern)):
-            match = _re.search(r"(\d+)", path.stem)
-            if not match:
-                continue
-            slot = int(match.group(1))
-            cameras.setdefault(slot, f"slot-{slot}")
+    cameras = _training_camera_map(health)
 
     detector = _training_detector()
     groups: dict[str, dict[str, Any]] = {}
@@ -5849,11 +6069,145 @@ async def training_analytics_apply(payload: TrainingApply) -> dict[str, Any]:
     applied[group_id] = written
     TRAINING_APPLIED_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRAINING_APPLIED_PATH.write_text(json.dumps(applied, indent=2), encoding="utf-8")
+
+    # Persist the human-confirmed box count for this item as inventory metadata,
+    # so the exact number survives even though YOLO labels can't carry a count.
+    if payload.count is not None:
+        counts_path = TRAINING_DATASET_ROOT / "counts.json"
+        counts = _read_json(counts_path) or {}
+        if not isinstance(counts, dict):
+            counts = {}
+        if keep:
+            counts[group_id] = {"name": name, "count": int(payload.count)}
+        else:
+            counts.pop(group_id, None)
+        counts_path.write_text(json.dumps(counts, indent=2), encoding="utf-8")
+
     _audit(
         "training_analytics_apply",
-        {"group_id": group_id, "name": name, "keep": keep, "count": len(written)},
+        {"group_id": group_id, "name": name, "keep": keep, "count": len(written), "boxes": payload.count},
     )
     return {"applied": len(written), "keep": keep, "dataset": _training_dataset_stats()}
+
+
+@app.post("/api/training/search")
+async def training_search(payload: TrainingSearch) -> dict[str, Any]:
+    """Dataset-centered recognition: sweep every camera, group detections into
+    per-location stacks, count the boxes at each spot, label each stack by
+    comparing its crop to the trained dataset (not Gemini), and (if a query is
+    given) return only the stacks whose name matches what you typed."""
+    return await asyncio.to_thread(_training_search_sync, payload.query)
+
+
+def _training_search_sync(query: str) -> dict[str, Any]:
+    import cv2
+
+    term = _catalog_normalize_name(query)
+    health = _catalog_health_snapshot()
+    cameras = _training_camera_map(health)
+    detector = _training_detector()
+    refs = _training_dataset_reference_embeddings()
+    diag = {"cameras": len(cameras), "frames_read": 0, "clusters": 0, "model": detector is not None}
+
+    if detector is None:
+        return {"rows": [], "diagnostics": diag}
+
+    TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    seq = 0
+    for slot, cam_name in sorted(cameras.items()):
+        frame = _catalog_live_frame_image(slot=slot, camera=cam_name)
+        if frame is None:
+            continue
+        diag["frames_read"] += 1
+        try:
+            detections = detector.detect(frame)
+        except Exception as exc:  # noqa: BLE001
+            _audit("training_search_detect_failed", {"slot": slot, "error": str(exc)})
+            continue
+        boxes: list[tuple[int, int, int, int]] = []
+        labels: list[str] = []
+        for det in detections or []:
+            box = getattr(det, "box", None)
+            if not box or len(box) < 4:
+                continue
+            boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+            labels.append(str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object"))
+        if not boxes:
+            continue
+        for members in _training_cluster_boxes(boxes):
+            diag["clusters"] += 1
+            xs1 = min(boxes[i][0] for i in members)
+            ys1 = min(boxes[i][1] for i in members)
+            xs2 = max(boxes[i][2] for i in members)
+            ys2 = max(boxes[i][3] for i in members)
+            crop = _catalog_detection_crop(frame, {"x1": xs1, "y1": ys1, "x2": xs2, "y2": ys2})
+            if crop is None or crop.size == 0:
+                continue
+            matched, score = _training_match_dataset(crop, refs)
+            # Prefer the dataset label when the match is confident; else the
+            # detector's own label for the biggest box in the stack.
+            biggest = max(members, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
+            name = matched if (matched and score >= 0.6) else labels[biggest]
+            norm_name = _catalog_normalize_name(name)
+            norm_label = _catalog_normalize_name(labels[biggest])
+            if term and term not in norm_name and term not in norm_label:
+                continue
+            seq += 1
+            group_id = _catalog_visual_slug(f"search-{slot}-{seq}")
+            stage = TRAINING_STAGING_DIR / group_id
+            if stage.exists():
+                for old in stage.glob("*.jpg"):
+                    old.unlink()
+            stage.mkdir(parents=True, exist_ok=True)
+            ok, buffer = cv2.imencode(".jpg", crop)
+            if ok:
+                (stage / "crop_00.jpg").write_bytes(buffer.tobytes())
+            rows.append(
+                {
+                    "group_id": group_id,
+                    "name": name,
+                    "count": len(members),
+                    "camera": cam_name,
+                    "slot": slot,
+                    "similarity": round(score, 3),
+                    "crop_url": f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg"
+                    if ok
+                    else "",
+                    "keep": True,
+                }
+            )
+    rows.sort(key=lambda r: -r["count"])
+    return {"rows": rows, "diagnostics": diag}
+
+
+@app.post("/api/training/recount")
+async def training_recount(payload: TrainingRecount) -> dict[str, Any]:
+    """Re-count one stack harder (tiled high-res re-detection) - used when the
+    user marks a count as wrong. Never lowers a good count."""
+    return await asyncio.to_thread(_training_recount_sync, payload.group_id)
+
+
+def _training_recount_sync(group_id: str) -> dict[str, Any]:
+    import cv2
+
+    group_id = _catalog_visual_slug(group_id)
+    crop_path = TRAINING_STAGING_DIR / group_id / "crop_00.jpg"
+    if not crop_path.exists():
+        raise HTTPException(status_code=404, detail="No staged crop; run the search again.")
+    crop = cv2.imread(str(crop_path))
+    if crop is None:
+        raise HTTPException(status_code=404, detail="Could not read staged crop.")
+    detector = _training_detector()
+    if detector is None:
+        raise HTTPException(status_code=503, detail="No model available to recount.")
+    try:
+        base = detector.detect(crop)
+        base_count = len([d for d in (base or []) if getattr(d, "box", None)])
+    except Exception:  # noqa: BLE001
+        base_count = 0
+    count = _training_tiled_count(crop, detector, base_count=base_count)
+    return {"group_id": group_id, "count": count}
 
 
 @app.post("/api/catalog/items")
