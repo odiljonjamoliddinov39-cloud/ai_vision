@@ -208,6 +208,19 @@ const I18N = {
     "test.keep": "Keep",
     "test.saved": "Saved to dataset.",
     "test.need_name": "Name the item before keeping it.",
+    "search.title": "Recognition search",
+    "search.note": "Type what you want found (e.g. \"baget boxes\"). Recognition compares each stack against your dataset — not Gemini — and lists every location: name, boxes at that spot, crop and which camera. Uncheck a wrong count to recount it harder, edit the number to set the exact value, then Keep and Save.",
+    "search.placeholder": "Type an item, e.g. baget boxes",
+    "search.recognize": "Recognize",
+    "search.recognizing": "Recognizing...",
+    "search.empty": "Type an item and press Recognize to find it across the cameras.",
+    "search.name": "Name (from dataset)",
+    "search.count": "Boxes here",
+    "search.camera": "Camera",
+    "search.save_all": "Save all",
+    "search.saved_n": "Saved {n} item(s) to the dataset.",
+    "search.nothing_kept": "Nothing is kept to save.",
+    "search.recounted": "Recounted: {n} boxes.",
     "menu.ai_models": "AI Models",
     "menu.integrations": "Integrations",
     "menu.logs": "Logs",
@@ -491,6 +504,19 @@ const I18N = {
     "test.keep": "Оставить",
     "test.saved": "Сохранено в набор данных.",
     "test.need_name": "Сначала назовите объект.",
+    "search.title": "Поиск с распознаванием",
+    "search.note": "Введите, что нужно найти (например, «багетные коробки»). Распознавание сравнивает каждую стопку с вашим набором данных — не с Gemini — и выводит каждое место: название, количество коробок в этом месте, кадр и с какой камеры. Снимите отметку у неверного количества, чтобы пересчитать точнее, отредактируйте число для точного значения, затем «Оставить» и «Сохранить».",
+    "search.placeholder": "Введите объект, напр. багетные коробки",
+    "search.recognize": "Распознать",
+    "search.recognizing": "Распознавание...",
+    "search.empty": "Введите объект и нажмите «Распознать», чтобы найти его на камерах.",
+    "search.name": "Название (из набора данных)",
+    "search.count": "Коробок здесь",
+    "search.camera": "Камера",
+    "search.save_all": "Сохранить все",
+    "search.saved_n": "Сохранено {n} объект(ов) в набор данных.",
+    "search.nothing_kept": "Нечего сохранять.",
+    "search.recounted": "Пересчитано: {n} коробок.",
     "menu.ai_models": "AI модели",
     "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
@@ -4583,12 +4609,87 @@ async function renderTrainingAnalytics(container) {
   container.innerHTML = `
     <div class="training-page">
       <section class="acc-block">
+        <h3>${escapeHtml(t("search.title"))}</h3>
+        <p class="chart-note">${escapeHtml(t("search.note"))}</p>
+        <div class="search-bar">
+          <input type="text" data-search-input placeholder="${escapeAttr(t("search.placeholder"))}" />
+          <button type="button" class="export-button" data-recognize>${escapeHtml(t("search.recognize"))}</button>
+          <button type="button" class="ghost-button" data-save-all hidden>${escapeHtml(t("search.save_all"))}</button>
+        </div>
+        <div data-search-results><p class="chart-note">${escapeHtml(t("search.empty"))}</p></div>
+      </section>
+      <section class="acc-block">
         <h3>${escapeHtml(t("test.title"))}</h3>
         <p class="chart-note">${escapeHtml(t("test.note"))}</p>
         <button type="button" class="export-button" data-run-test>${escapeHtml(t("test.run"))}</button>
         <div data-test-results><p class="chart-note">${escapeHtml(t("test.empty"))}</p></div>
       </section>
     </div>`;
+
+  // --- Recognition search (dataset-centered, per-location counting) ---
+  const searchInput = container.querySelector("[data-search-input]");
+  const recognizeBtn = container.querySelector("[data-recognize]");
+  const saveAllBtn = container.querySelector("[data-save-all]");
+  const searchResults = container.querySelector("[data-search-results]");
+  const runSearch = async () => {
+    recognizeBtn.disabled = true;
+    recognizeBtn.textContent = t("search.recognizing");
+    try {
+      const data = await catalogRequest("/api/training/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: searchInput.value.trim() }),
+      });
+      const rows = data.rows || [];
+      if (!rows.length) {
+        const d = data.diagnostics || {};
+        let why = t("search.empty");
+        if (d.model === false) why = "No model loaded (set TRAINING_USE_MODEL=1 with enough memory).";
+        else if (!d.cameras) why = "No cameras found. Start the streams first.";
+        else if (!d.frames_read) why = `Swept ${d.cameras} camera(s) but read 0 live frames.`;
+        else why = `Swept ${d.cameras} camera(s), found ${d.clusters || 0} stack(s), 0 matched your search.`;
+        searchResults.innerHTML = `<p class="chart-note">${escapeHtml(why)}</p>`;
+        saveAllBtn.hidden = true;
+      } else {
+        searchResults.innerHTML = trainingSearchRowsHtml(rows);
+        saveAllBtn.hidden = false;
+      }
+    } catch (error) {
+      searchResults.innerHTML = `<p class="empty">${escapeHtml(error.message || "Search failed")}</p>`;
+      saveAllBtn.hidden = true;
+    } finally {
+      recognizeBtn.disabled = false;
+      recognizeBtn.textContent = t("search.recognize");
+    }
+  };
+  recognizeBtn?.addEventListener("click", () => void runSearch());
+  searchInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") void runSearch();
+  });
+  // Unchecking a stack means "this count is wrong" -> recount it harder.
+  searchResults?.addEventListener("change", (event) => {
+    const row = event.target.closest("[data-search-row]");
+    if (row && event.target.matches("[data-search-keep]") && !event.target.checked) {
+      void recountSearchRow(row);
+    }
+  });
+  saveAllBtn?.addEventListener("click", async () => {
+    const rows = [...searchResults.querySelectorAll("[data-search-row]")];
+    const kept = rows.filter((row) => row.querySelector("[data-search-keep]").checked);
+    if (!kept.length) {
+      toast(t("search.nothing_kept"));
+      return;
+    }
+    saveAllBtn.disabled = true;
+    let saved = 0;
+    for (const row of kept) {
+      if (await applySearchRow(row, true)) saved += 1;
+    }
+    saveAllBtn.disabled = false;
+    toast(t("search.saved_n").replace("{n}", String(saved)));
+  });
+
+  // --- Instant detection test (existing) ---
   const runBtn = container.querySelector("[data-run-test]");
   const results = container.querySelector("[data-test-results]");
   runBtn?.addEventListener("click", async () => {
@@ -4625,6 +4726,79 @@ async function renderTrainingAnalytics(container) {
     const row = event.target.closest("[data-test-row]");
     if (row) void applyTestRow(row);
   });
+}
+
+function trainingSearchRowsHtml(rows) {
+  return `
+    <div style="overflow-x:auto">
+      <table class="result-table">
+        <thead><tr>
+          <th>${escapeHtml(t("search.name"))}</th>
+          <th>${escapeHtml(t("search.count"))}</th>
+          <th>${escapeHtml(t("test.image"))}</th>
+          <th>${escapeHtml(t("search.camera"))}</th>
+          <th>${escapeHtml(t("test.keep_ignore"))}</th>
+        </tr></thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+              <tr data-search-row data-group="${escapeAttr(row.group_id)}">
+                <td><input type="text" data-search-name value="${escapeAttr(row.name || "")}" placeholder="${escapeAttr(t("training.item_name_ph"))}" /></td>
+                <td><input type="number" min="0" class="count-input" data-search-count value="${Number(row.count) || 0}" /></td>
+                <td>${row.crop_url ? `<img class="test-crop" src="${escapeAttr(`${API_BASE}${row.crop_url}`)}" alt="" />` : "—"}</td>
+                <td>${escapeHtml(row.camera || "—")}</td>
+                <td><label class="training-necessary"><input type="checkbox" data-search-keep checked /> ${escapeHtml(t("test.keep"))}</label></td>
+              </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function recountSearchRow(row) {
+  const groupId = row.dataset.group;
+  const countInput = row.querySelector("[data-search-count]");
+  const prev = countInput.value;
+  countInput.value = "…";
+  try {
+    const data = await catalogRequest("/api/training/recount", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: groupId }),
+    });
+    countInput.value = Number(data.count) || 0;
+    // Re-check the box: the recount produced a fresh number to confirm.
+    const keep = row.querySelector("[data-search-keep]");
+    if (keep) keep.checked = true;
+    toast(t("search.recounted").replace("{n}", String(countInput.value)));
+  } catch (error) {
+    countInput.value = prev;
+    toast(error.message || "Recount failed");
+  }
+}
+
+async function applySearchRow(row, silent) {
+  const groupId = row.dataset.group;
+  const name = row.querySelector("[data-search-name]").value.trim();
+  const count = Number(row.querySelector("[data-search-count]").value) || 0;
+  if (!name) {
+    if (!silent) toast(t("test.need_name"));
+    return false;
+  }
+  try {
+    await catalogRequest("/api/training/analytics/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: groupId, name, keep: true, split: "train", count }),
+    });
+    if (!silent) toast(t("test.saved"));
+    return true;
+  } catch (error) {
+    if (!silent) toast(error.message || "Save failed");
+    return false;
+  }
 }
 
 function renderAccountModule() {

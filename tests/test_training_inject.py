@@ -143,3 +143,48 @@ def test_training_analytics_apply_writes_and_replaces(tmp_path, monkeypatch):
     images = sorted((root / "images" / "train").glob("*.jpg"))
     assert len(images) == 2  # not duplicated
     assert all(p.read_text(encoding="utf-8").strip() == "" for p in (root / "labels" / "train").glob("*.txt"))
+
+
+def test_training_cluster_boxes_groups_adjacent():
+    # Two boxes touching form one stack; a far-away box is its own cluster.
+    boxes = [(0, 0, 10, 10), (10, 0, 20, 10), (200, 200, 210, 210)]
+    clusters = server._training_cluster_boxes(boxes)
+    sizes = sorted(len(c) for c in clusters)
+    assert sizes == [1, 2]
+
+
+def test_training_box_iou_gap_zero_when_overlapping():
+    assert server._training_box_iou_gap((0, 0, 10, 10), (5, 5, 15, 15)) == 0.0
+    assert server._training_box_iou_gap((0, 0, 10, 10), (100, 100, 110, 110)) > 1.0
+
+
+def test_training_apply_persists_count(tmp_path, monkeypatch):
+    root = tmp_path / "baget_box"
+    _point_dataset(monkeypatch, root)
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(server, "TRAINING_STAGING_DIR", staging)
+    monkeypatch.setattr(server, "TRAINING_APPLIED_PATH", root / "applied.json")
+
+    stage = staging / "search-1-1"
+    stage.mkdir(parents=True)
+    cv2.imwrite(str(stage / "crop_00.jpg"), _image((7, 7, 7)))
+
+    asyncio.run(
+        server.training_analytics_apply(
+            server.TrainingApply(group_id="search-1-1", name="Stack of baget boxes", keep=True, count=56)
+        )
+    )
+    counts = json.loads((root / "counts.json").read_text(encoding="utf-8"))
+    assert counts["search-1-1"]["count"] == 56
+    assert counts["search-1-1"]["name"] == "Stack of baget boxes"
+
+
+def test_training_search_reports_diagnostics_without_model(tmp_path, monkeypatch):
+    _point_dataset(monkeypatch, tmp_path / "baget_box")
+    monkeypatch.setattr(server, "_training_detector", lambda: None)
+    monkeypatch.setattr(server, "_catalog_health_snapshot", lambda: {"cameras": []})
+    monkeypatch.setattr(server, "SNAPSHOT_DIR", tmp_path / "snaps")
+    (tmp_path / "snaps").mkdir()
+    out = server._training_search_sync("baget boxes")
+    assert out["rows"] == []
+    assert out["diagnostics"]["model"] is False
