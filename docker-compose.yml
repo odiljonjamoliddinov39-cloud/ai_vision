@@ -53,6 +53,9 @@ services:
       - ./database:/app/database
       - ./config:/app/config
       - ./recordings:/recordings
+      # Persistent named volume: the labeled training dataset must survive
+      # container rebuilds/recreates and `git reset --hard` in deploy.sh.
+      - ai-vision-datasets:/app/datasets
 
   # Optional: enable with `docker compose --profile worker up -d --build ai-worker`
   # only if you want a separate detector process instead of backend autostart.
@@ -79,3 +82,7 @@ services:
       - ./database:/app/database
       - ./config:/app/config
       - ./recordings:/recordings
+      - ai-vision-datasets:/app/datasets
+
+volumes:
+  ai-vision-datasets:
