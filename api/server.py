@@ -5339,12 +5339,12 @@ def _training_detector():
     """Light, cached detector for the training tools - uses config detection
     settings (conf/imgsz) instead of the heavy 1280px/0.01-conf catalog one.
 
-    Disabled by default: loading a second YOLO model inside the web process
-    hangs the small CPU droplet. Enable with TRAINING_USE_MODEL=1 on a box that
-    has the headroom (e.g. the GPU server). When off, the training tools fall
-    back to edge proposals (uploads) and the running detector's output (live).
+    Uses the light config settings and runs off the event loop, so it stays
+    responsive. Set TRAINING_USE_MODEL=0 to force the model-free fallback (edge
+    proposals for uploads, running-detector output for live) if the box is too
+    small to hold a second model copy.
     """
-    if os.getenv("TRAINING_USE_MODEL", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    if os.getenv("TRAINING_USE_MODEL", "1").strip().lower() not in {"1", "true", "yes", "on"}:
         return None
     global _training_detector_obj, _training_detector_key
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
@@ -5669,39 +5669,87 @@ async def training_analytics_run(gemini: bool = True) -> dict[str, Any]:
 
 
 def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
-    """Instant test: reuse the already-running detector's latest detections
-    (from detection health), grouped by type, with a sample crop, a count and a
-    Gemini-suggested real name. No model is loaded in the web process."""
+    """Instant test: sweep every camera one-by-one, run the light detector on
+    each live frame, group the results by type, with a sample crop, a count and
+    a Gemini-suggested real name.
+
+    Detecting per-camera here means the test does not depend on the running
+    worker publishing anything to detection health (which is empty when the
+    engines are off in kiosk mode). If a model cannot be loaded in the web
+    process (TRAINING_USE_MODEL=0 or too little memory), it falls back to the
+    running detector's last published detections."""
+    import re as _re
+
     import cv2
 
     health = _catalog_health_snapshot()
-    slots_by_camera = {
-        str(camera.get("name") or f"slot-{camera.get('slot_number')}"): camera.get("slot_number")
-        for camera in (health.get("cameras") or [])
-    }
-    by_camera = health.get("last_detections_by_camera") or {}
 
-    groups: dict[str, dict[str, Any]] = {}
-    frame_cache: dict[str, Any] = {}
-    for camera_name, detections in by_camera.items():
-        for detection in detections or []:
-            if not isinstance(detection, dict):
+    # Build the full camera list: whatever detection-health knows about, plus
+    # every live-frame file on disk so we cover all channels even when health is
+    # empty (kiosk mode). Keyed by slot to de-dupe, with a friendly name.
+    cameras: dict[int, str] = {}
+    fallback_order: list[tuple[int | None, str]] = []
+    for camera in health.get("cameras") or []:
+        slot = camera.get("slot_number")
+        name = str(camera.get("name") or (f"slot-{slot}" if slot is not None else "camera"))
+        if slot is not None:
+            cameras[int(slot)] = name
+        fallback_order.append((int(slot) if slot is not None else None, name))
+    for pattern in ("latest_stream_slot_*.jpg", "latest_slot_*.jpg"):
+        for path in sorted(SNAPSHOT_DIR.glob(pattern)):
+            match = _re.search(r"(\d+)", path.stem)
+            if not match:
                 continue
-            label = str(detection.get("class_name") or detection.get("inventory_name") or "object")
-            key = _catalog_normalize_name(label) or "object"
-            group = groups.setdefault(key, {"label": label, "count": 0, "crops": []})
-            group["count"] += max(1, int(detection.get("quantity") or 1))
-            if len(group["crops"]) < 6:
+            slot = int(match.group(1))
+            cameras.setdefault(slot, f"slot-{slot}")
+
+    detector = _training_detector()
+    groups: dict[str, dict[str, Any]] = {}
+
+    def _add(label: str, count: int, frame, box: dict[str, Any]) -> None:
+        key = _catalog_normalize_name(label) or "object"
+        group = groups.setdefault(key, {"label": label, "count": 0, "crops": []})
+        group["count"] += max(1, int(count or 1))
+        if frame is not None and len(group["crops"]) < 6:
+            crop = _catalog_detection_crop(frame, box or {})
+            if crop is not None and crop.size:
+                group["crops"].append(crop)
+
+    if detector is not None:
+        # Model available: detect on each camera's current frame, one at a time.
+        for slot, name in sorted(cameras.items()):
+            frame = _catalog_live_frame_image(slot=slot, camera=name)
+            if frame is None:
+                continue
+            try:
+                detections = detector.detect(frame)
+            except Exception as exc:  # noqa: BLE001 - one bad frame must not stop the sweep
+                _audit("training_analytics_detect_failed", {"slot": slot, "error": str(exc)})
+                continue
+            for det in detections or []:
+                box = getattr(det, "box", None)
+                bbox = (
+                    {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}
+                    if box is not None and len(box) >= 4
+                    else {}
+                )
+                label = str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object")
+                _add(label, int(getattr(det, "quantity", 1) or 1), frame, bbox)
+    else:
+        # No model in this process: fall back to the running detector's output.
+        slots_by_camera = {name: slot for slot, name in cameras.items()}
+        frame_cache: dict[str, Any] = {}
+        for camera_name, detections in (health.get("last_detections_by_camera") or {}).items():
+            for detection in detections or []:
+                if not isinstance(detection, dict):
+                    continue
+                label = str(detection.get("class_name") or detection.get("inventory_name") or "object")
                 if camera_name not in frame_cache:
                     slot = slots_by_camera.get(str(camera_name))
                     frame_cache[camera_name] = _catalog_live_frame_image(
-                        slot=int(slot) if slot else None, camera=str(camera_name)
+                        slot=int(slot) if slot is not None else None, camera=str(camera_name)
                     )
-                frame = frame_cache[camera_name]
-                if frame is not None:
-                    crop = _catalog_detection_crop(frame, detection.get("bbox") or {})
-                    if crop is not None and crop.size:
-                        group["crops"].append(crop)
+                _add(label, int(detection.get("quantity") or 1), frame_cache[camera_name], detection.get("bbox") or {})
 
     TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
     ordered = sorted(groups.items(), key=lambda kv: -kv[1]["count"])
