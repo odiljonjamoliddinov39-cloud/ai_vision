@@ -108,3 +108,38 @@ def test_training_resolve_class_adds_new_class(tmp_path, monkeypatch):
     assert server._training_resolve_class("Pallet") == 2  # new class appended
     data = yaml.safe_load((root / "data.yaml").read_text(encoding="utf-8"))
     assert data["names"][2] == "Pallet"
+
+
+def test_training_analytics_apply_writes_and_replaces(tmp_path, monkeypatch):
+    root = tmp_path / "baget_box"
+    _point_dataset(monkeypatch, root)
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(server, "TRAINING_STAGING_DIR", staging)
+    monkeypatch.setattr(server, "TRAINING_APPLIED_PATH", root / "applied.json")
+
+    stage = staging / "sack"
+    stage.mkdir(parents=True)
+    for i in range(2):
+        cv2.imwrite(str(stage / f"crop_{i:02d}.jpg"), _image((5, 5, 5)))
+
+    kept = asyncio.run(
+        server.training_analytics_apply(
+            server.TrainingApply(group_id="sack", name="Sack", keep=True, split="train")
+        )
+    )
+    assert kept["applied"] == 2
+    labels = sorted((root / "labels" / "train").glob("*.txt"))
+    assert len(labels) == 2
+    assert labels[0].read_text(encoding="utf-8").strip().endswith("0.5 0.5 1.000000 1.000000") or \
+        labels[0].read_text(encoding="utf-8").strip().endswith("0.5 0.5 1.0 1.0")
+
+    # Re-apply as ignore: replaces (no duplicates) and writes negatives.
+    ignored = asyncio.run(
+        server.training_analytics_apply(
+            server.TrainingApply(group_id="sack", name="Sack", keep=False, split="train")
+        )
+    )
+    assert ignored["applied"] == 2
+    images = sorted((root / "images" / "train").glob("*.jpg"))
+    assert len(images) == 2  # not duplicated
+    assert all(p.read_text(encoding="utf-8").strip() == "" for p in (root / "labels" / "train").glob("*.txt"))

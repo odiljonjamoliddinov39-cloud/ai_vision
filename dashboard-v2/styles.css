@@ -3157,3 +3157,11 @@ h3 .muted {
   font-weight: 600;
   white-space: nowrap;
 }
+
+.test-crop {
+  width: 64px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+}
