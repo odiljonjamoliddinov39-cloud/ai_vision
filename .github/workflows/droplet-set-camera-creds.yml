@@ -1,0 +1,114 @@
+name: Set camera credentials on droplet
+
+# Writes the NVR camera-controller settings (incl. credentials from GitHub
+# secrets) into the droplet .env, resets the camera list so the backend reseeds
+# a clean set of authenticated channels, and restarts the backend.
+#
+# The password comes from the NVR_PASSWORD secret and is masked by GitHub - it
+# is never printed and never stored in the repo. Username defaults to "admin"
+# unless the NVR_USERNAME secret is set.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-production
+  cancel-in-progress: false
+
+jobs:
+  set-creds:
+    name: Configure NVR credentials + reseed cameras
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          NVR_PASSWORD: ${{ secrets.NVR_PASSWORD }}
+        run: |
+          missing=""
+          [ -z "$DO_HOST" ] && missing="$missing DO_HOST"
+          [ -z "$DO_USER" ] && missing="$missing DO_USER"
+          [ -z "$DO_SSH_KEY" ] && missing="$missing DO_SSH_KEY"
+          [ -z "$NVR_PASSWORD" ] && missing="$missing NVR_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Missing required secret(s):$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          NVR_USERNAME: ${{ secrets.NVR_USERNAME }}
+          NVR_PASSWORD: ${{ secrets.NVR_PASSWORD }}
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 8m
+          # Pass the two credential vars into the remote shell without printing.
+          envs: NVR_USERNAME,NVR_PASSWORD
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+            NVR_USERNAME="${NVR_USERNAME:-admin}"
+
+            echo "Updating camera-controller settings in .env (values not printed)..."
+            touch .env
+            # Drop any previous camera-controller lines, then append the new set.
+            sed -i '/^CAMERA_CONTROLLER_/d' .env
+            {
+              echo "CAMERA_CONTROLLER_HOST=87.192.242.82"
+              echo "CAMERA_CONTROLLER_PORT=554"
+              echo "CAMERA_CONTROLLER_PROTOCOL=rtsp"
+              echo "CAMERA_CONTROLLER_USERNAME=${NVR_USERNAME}"
+              echo "CAMERA_CONTROLLER_PASSWORD=${NVR_PASSWORD}"
+              echo "CAMERA_CONTROLLER_CHANNELS=2,5,6,16,20,23,25"
+              echo "CAMERA_CONTROLLER_STREAM_TEMPLATE=/Streaming/Channels/{channel}01"
+              echo "CAMERA_CONTROLLER_NAME=Zavod NVR"
+            } >> .env
+            echo ".env updated. CAMERA_CONTROLLER_ keys now present:"
+            grep -oE '^CAMERA_CONTROLLER_[A-Z_]+' .env | sort -u
+
+            echo "Backing up + resetting the camera list so it reseeds clean..."
+            docker compose stop backend 2>/dev/null || true
+            ts="$(date +%s)"
+            for f in database/cameras.db database/cameras.db-wal database/cameras.db-shm; do
+              [ -f "$f" ] && mv "$f" "${f}.bak-${ts}" && echo "moved $f -> ${f}.bak-${ts}"
+            done
+
+            echo "Recreating backend to load new .env + reseed cameras..."
+            docker compose up -d --force-recreate --no-deps backend
+
+            echo "Waiting for the backend to come up + seed..."
+            PORT="$(grep -E '^AI_VISION_PORT=' .env 2>/dev/null | cut -d= -f2)"; PORT="${PORT:-8080}"
+            for i in $(seq 1 20); do
+              sleep 6
+              if curl -s --max-time 8 "http://localhost:${PORT}/api/v2/streams/health" >/tmp/h.json 2>/dev/null; then
+                echo "attempt $i: got stream health"
+                break
+              fi
+              echo "attempt $i: backend not ready yet"
+            done
+
+            echo "================= STREAM STATUS (names + status only) ================="
+            python3 - <<'PY' 2>/dev/null || cat /tmp/h.json
+            import json
+            try:
+                d=json.load(open("/tmp/h.json"))
+            except Exception as e:
+                print("could not parse health:", e); raise SystemExit
+            for s in d.get("streams", []):
+                print(f"- {s.get('name')}: {s.get('status')} (err={s.get('last_error')})")
+            PY
+            echo "Done."
