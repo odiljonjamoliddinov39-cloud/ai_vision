@@ -3068,3 +3068,37 @@ h3 .muted {
     right: 16px;
   }
 }
+
+.training-page {
+  display: grid;
+  gap: 20px;
+}
+
+.training-field {
+  display: block;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.training-field input,
+.training-field select,
+.training-field textarea {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  margin-top: 5px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.training-classes {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}

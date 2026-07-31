@@ -1053,8 +1053,9 @@ def test_dashboard_has_result_analytics_page_for_recognition_history():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
 
-    assert 'label: "Result Analytics"' in source
-    assert 'id: "result_analytics"' in source
+    # The training-focused deployment hides Result Analytics from the menu
+    # (only Camera Control, Camera Feed and YOLO Training remain), but the page
+    # code itself is kept intact and can be re-enabled.
     assert 'catalogApiPath("/api/catalog/results/history?limit=500")' in source
     assert "function renderResultAnalytics(container)" in source
     assert "function runResultAnalyticsRecognition(container, button, filters)" in source

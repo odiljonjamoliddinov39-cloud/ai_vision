@@ -167,6 +167,25 @@ const I18N = {
     "menu.enterprise": "Enterprise Map",
     "menu.events": "Events",
     "menu.feed": "Camera Feed",
+    "menu.training": "YOLO Training",
+    "training.loading": "Loading dataset...",
+    "training.dataset_title": "Dataset",
+    "training.inject_title": "Add training data",
+    "training.inject_note": "Drop images and (optionally) prompts, then Save and Inject straight into the YOLO dataset.",
+    "training.images": "Images",
+    "training.split": "Split",
+    "training.labeled": "Labeled",
+    "training.negatives": "Negatives",
+    "training.unlabeled": "Unlabeled",
+    "training.instances": "instances",
+    "training.no_classes": "No classes defined yet.",
+    "training.prompts_saved": "Saved prompts",
+    "training.prompt_label": "Prompt (what YOLO should read)",
+    "training.prompt_ph": "e.g. baget box, stacked baget boxes, flour sack",
+    "training.save_inject": "Save and Inject",
+    "training.injecting": "Injecting...",
+    "training.injected": "Injected {images} image(s), {prompts} new prompt(s).",
+    "training.need_input": "Add at least one image or a prompt first.",
     "menu.ai_models": "AI Models",
     "menu.integrations": "Integrations",
     "menu.logs": "Logs",
@@ -409,6 +428,25 @@ const I18N = {
     "menu.enterprise": "Структура",
     "menu.events": "События",
     "menu.feed": "Видеопоток",
+    "menu.training": "Обучение YOLO",
+    "training.loading": "Загрузка набора данных...",
+    "training.dataset_title": "Набор данных",
+    "training.inject_title": "Добавить данные для обучения",
+    "training.inject_note": "Загрузите изображения и (по желанию) подсказки, затем нажмите «Сохранить и внедрить» прямо в набор данных YOLO.",
+    "training.images": "Изображения",
+    "training.split": "Раздел",
+    "training.labeled": "Размечено",
+    "training.negatives": "Негативные",
+    "training.unlabeled": "Без разметки",
+    "training.instances": "объектов",
+    "training.no_classes": "Классы ещё не заданы.",
+    "training.prompts_saved": "Сохранённые подсказки",
+    "training.prompt_label": "Подсказка (что должен читать YOLO)",
+    "training.prompt_ph": "напр. baget box, stacked baget boxes, flour sack",
+    "training.save_inject": "Сохранить и внедрить",
+    "training.injecting": "Внедрение...",
+    "training.injected": "Внедрено изображений: {images}, новых подсказок: {prompts}.",
+    "training.need_input": "Сначала добавьте хотя бы одно изображение или подсказку.",
     "menu.ai_models": "AI модели",
     "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
@@ -2455,21 +2493,13 @@ async function deleteNvrCameras(nvr) {
 }
 
 function accountMenus(role) {
+  // Training-focused deployment: only camera control, the live feed, and the
+  // YOLO Training workspace. The analytics / AI Check-in / warehouse modules
+  // are intentionally hidden here.
   const menus = [];
   if (role.access?.camera) menus.push({ id: "camera", label: "Camera Control", sub: "NVR & vision quality" });
-  if (role.access?.camera) menus.push({ id: "camera_info", label: "Camera Info", sub: "Device models" });
-  if (role.access?.camera) menus.push({ id: "enterprise", label: "Enterprise Map", sub: "Blocks, zones & cameras" });
   if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
-  menus.push({ id: "ai", label: "AI Check-in", sub: "Products to count" });
-  menus.push({ id: "ai_models", label: "AI Models", sub: "YOLOE & training" });
-  if (role.access?.analytics) menus.push({ id: "analytics", label: "Analytics", sub: "Charts & trends" });
-  if (role.access?.analytics) menus.push({ id: "result_analytics", label: "Result Analytics", sub: "Recognition results" });
-  if (role.access?.analytics) menus.push({ id: "events", label: "Events", sub: "Incidents & alerts" });
-  if (role.access?.analytics) menus.push({ id: "zones", label: "Zones & Safety", sub: "Rules by camera group" });
-  menus.push({ id: "dimension", label: "3D Dimensioning", sub: "Item measurements" });
-  if (role.access?.analytics) menus.push({ id: "integrations", label: "Integrations", sub: "NVR, API & systems" });
-  if (role.access?.analytics) menus.push({ id: "ai_modules", label: "AI Modules", sub: "270-function roadmap" });
-  if (role.access?.analytics) menus.push({ id: "logs", label: "Logs", sub: "Engine actions" });
+  menus.push({ id: "training", label: "YOLO Training", sub: "Dataset & injection" });
   return menus;
 }
 
@@ -4263,6 +4293,108 @@ async function renderWarehouseLogs(container, force = false) {
   }
 }
 
+function yoloDatasetStatsHtml(stats) {
+  const classes = stats.classes || {};
+  const splits = stats.splits || {};
+  const instances = stats.class_instances || {};
+  const classRows =
+    Object.entries(classes)
+      .map(
+        ([id, name]) =>
+          `<li><strong>${escapeHtml(String(name))}</strong> <span class="muted">(class ${escapeHtml(String(id))} · ${Number(instances[id] || 0).toLocaleString()} ${escapeHtml(t("training.instances"))})</span></li>`
+      )
+      .join("") || `<li class="muted">${escapeHtml(t("training.no_classes"))}</li>`;
+  const splitRows = ["train", "val"]
+    .map((split) => {
+      const data = splits[split] || {};
+      return `<tr><td>${escapeHtml(split)}</td><td>${Number(data.images || 0)}</td><td>${Number(data.labeled || 0)}</td><td>${Number(data.negatives || 0)}</td><td>${Number(data.unlabeled || 0)}</td></tr>`;
+    })
+    .join("");
+  const prompts = Array.isArray(stats.prompts) ? stats.prompts : [];
+  return `
+    <section class="acc-block">
+      <h3>${escapeHtml(t("training.dataset_title"))}</h3>
+      <ul class="training-classes">${classRows}</ul>
+      <div style="overflow-x:auto">
+        <table class="result-table">
+          <thead><tr>
+            <th>${escapeHtml(t("training.split"))}</th>
+            <th>${escapeHtml(t("training.images"))}</th>
+            <th>${escapeHtml(t("training.labeled"))}</th>
+            <th>${escapeHtml(t("training.negatives"))}</th>
+            <th>${escapeHtml(t("training.unlabeled"))}</th>
+          </tr></thead>
+          <tbody>${splitRows}</tbody>
+        </table>
+      </div>
+      <p class="chart-note">${escapeHtml(t("training.prompts_saved"))}: ${prompts.length ? escapeHtml(prompts.join(", ")) : "—"}</p>
+    </section>`;
+}
+
+function renderYoloTrainingBody(container, stats) {
+  container.innerHTML = `
+    <div class="training-page">
+      <section class="acc-block">
+        <h3>${escapeHtml(t("training.inject_title"))}</h3>
+        <p class="chart-note">${escapeHtml(t("training.inject_note"))}</p>
+        <form data-training-inject>
+          <label class="training-field">${escapeHtml(t("training.images"))}
+            <input type="file" name="images" accept="image/*" multiple />
+          </label>
+          <label class="training-field">${escapeHtml(t("training.split"))}
+            <select name="split"><option value="train">train</option><option value="val">val</option></select>
+          </label>
+          <label class="training-field">${escapeHtml(t("training.prompt_label"))}
+            <textarea name="prompts" rows="3" placeholder="${escapeAttr(t("training.prompt_ph"))}"></textarea>
+          </label>
+          <button type="submit" class="export-button">${escapeHtml(t("training.save_inject"))}</button>
+        </form>
+      </section>
+      ${yoloDatasetStatsHtml(stats)}
+    </div>`;
+  const form = container.querySelector("[data-training-inject]");
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const files = Array.from(form.images.files || []);
+    const prompts = form.prompts.value.trim();
+    if (!files.length && !prompts) {
+      toast(t("training.need_input"));
+      return;
+    }
+    const button = form.querySelector("button[type=submit]");
+    button.disabled = true;
+    button.textContent = t("training.injecting");
+    try {
+      const payload = new FormData();
+      payload.append("split", form.split.value);
+      payload.append("prompts", prompts);
+      files.forEach((file) => payload.append("files", file));
+      const response = await fetch(`${API_BASE}/api/training/inject`, { method: "POST", body: payload });
+      if (!response.ok) throw new Error((await response.text()) || "Inject failed");
+      const data = await response.json();
+      toast(t("training.injected", { images: data.images_saved, prompts: (data.prompts_added || []).length }));
+      if (container.isConnected && accountModule === "training") renderYoloTrainingBody(container, data.dataset);
+    } catch (error) {
+      toast(error.message || "Inject failed");
+      button.disabled = false;
+      button.textContent = t("training.save_inject");
+    }
+  });
+}
+
+async function renderYoloTraining(container) {
+  container.innerHTML = `<p class="empty">${escapeHtml(t("training.loading"))}</p>`;
+  let stats;
+  try {
+    stats = await api("/api/training/dataset");
+  } catch (error) {
+    container.innerHTML = `<p class="empty">${escapeHtml(error.message || "Failed to load dataset.")}</p>`;
+    return;
+  }
+  if (!container.isConnected || accountModule !== "training") return;
+  renderYoloTrainingBody(container, stats);
+}
+
 function renderAccountModule() {
   const { company, role } = accountState;
   companyConfig(company);
@@ -4379,6 +4511,11 @@ function renderAccountModule() {
     `;
     const discoveryPanel = els.moduleContent.querySelector("[data-discovery-panel]");
     if (discoveryPanel) renderDiscoveryPanel(discoveryPanel);
+    return;
+  }
+
+  if (menu.id === "training") {
+    void renderYoloTraining(els.moduleContent);
     return;
   }
 
