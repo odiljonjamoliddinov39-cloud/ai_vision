@@ -4596,7 +4596,23 @@ async function renderTrainingAnalytics(container) {
     runBtn.textContent = t("test.running");
     try {
       const data = await catalogRequest("/api/training/analytics/run", { method: "POST" });
-      results.innerHTML = trainingAnalyticsRowsHtml(data.items || []);
+      const items = data.items || [];
+      if (!items.length) {
+        const d = data.diagnostics || {};
+        let why = t("test.empty");
+        if (d.model === false) {
+          why = "No model loaded in the web process (set TRAINING_USE_MODEL=1 and ensure enough memory).";
+        } else if (!d.cameras) {
+          why = "No cameras found. Start the streams / cameras first.";
+        } else if (!d.frames_read) {
+          why = `Swept ${d.cameras} camera(s) but read 0 live frames — the streams have no current image yet.`;
+        } else {
+          why = `Swept ${d.cameras} camera(s), read ${d.frames_read} frame(s), found 0 items. Nothing detected in the current frames.`;
+        }
+        results.innerHTML = `<p class="chart-note">${escapeHtml(why)}</p>`;
+      } else {
+        results.innerHTML = trainingAnalyticsRowsHtml(items);
+      }
     } catch (error) {
       results.innerHTML = `<p class="empty">${escapeHtml(error.message || "Test failed")}</p>`;
     } finally {
