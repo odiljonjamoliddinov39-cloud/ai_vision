@@ -5705,6 +5705,12 @@ def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
 
     detector = _training_detector()
     groups: dict[str, dict[str, Any]] = {}
+    diag = {
+        "cameras": len(cameras),
+        "frames_read": 0,
+        "detections": 0,
+        "model": detector is not None,
+    }
 
     def _add(label: str, count: int, frame, box: dict[str, Any]) -> None:
         key = _catalog_normalize_name(label) or "object"
@@ -5721,12 +5727,14 @@ def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
             frame = _catalog_live_frame_image(slot=slot, camera=name)
             if frame is None:
                 continue
+            diag["frames_read"] += 1
             try:
                 detections = detector.detect(frame)
             except Exception as exc:  # noqa: BLE001 - one bad frame must not stop the sweep
                 _audit("training_analytics_detect_failed", {"slot": slot, "error": str(exc)})
                 continue
             for det in detections or []:
+                diag["detections"] += 1
                 box = getattr(det, "box", None)
                 bbox = (
                     {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}
@@ -5744,11 +5752,14 @@ def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
                 if not isinstance(detection, dict):
                     continue
                 label = str(detection.get("class_name") or detection.get("inventory_name") or "object")
+                diag["detections"] += 1
                 if camera_name not in frame_cache:
                     slot = slots_by_camera.get(str(camera_name))
                     frame_cache[camera_name] = _catalog_live_frame_image(
                         slot=int(slot) if slot is not None else None, camera=str(camera_name)
                     )
+                    if frame_cache[camera_name] is not None:
+                        diag["frames_read"] += 1
                 _add(label, int(detection.get("quantity") or 1), frame_cache[camera_name], detection.get("bbox") or {})
 
     TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
@@ -5786,7 +5797,7 @@ def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
                 "keep": True,
             }
         )
-    return {"items": items}
+    return {"items": items, "diagnostics": diag}
 
 
 @app.post("/api/training/analytics/apply")
