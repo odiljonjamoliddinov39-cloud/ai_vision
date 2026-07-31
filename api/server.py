@@ -5378,9 +5378,37 @@ def _training_detector():
         return None
 
 
+def _ensure_training_dataset() -> None:
+    """Make sure the dataset dirs + data.yaml exist. On a fresh persistent
+    volume (first boot after the dataset was added to docker-compose) the tree
+    is empty, so seed the baseline classes and the split folders. Idempotent and
+    never raises - training tools must degrade gracefully."""
+    try:
+        import yaml as _yaml
+
+        for sub in ("images/train", "images/val", "labels/train", "labels/val"):
+            (TRAINING_DATASET_ROOT / sub).mkdir(parents=True, exist_ok=True)
+        if not TRAINING_DATASET_YAML.exists():
+            TRAINING_DATASET_YAML.write_text(
+                _yaml.safe_dump(
+                    {
+                        "path": "datasets/baget_box",
+                        "train": "images/train",
+                        "val": "images/val",
+                        "names": {0: "baget box", 1: "sack"},
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+    except Exception as exc:  # noqa: BLE001
+        _audit("training_dataset_seed_failed", {"error": str(exc)})
+
+
 def _training_dataset_stats() -> dict[str, Any]:
     import yaml as _yaml
 
+    _ensure_training_dataset()
     names: dict[Any, Any] = {}
     if TRAINING_DATASET_YAML.exists():
         data = _yaml.safe_load(TRAINING_DATASET_YAML.read_text(encoding="utf-8")) or {}
