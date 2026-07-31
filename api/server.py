@@ -5331,6 +5331,45 @@ TRAINING_PROMPTS_PATH = TRAINING_DATASET_ROOT / "prompts.json"
 TRAINING_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
+_training_detector_obj = None
+_training_detector_key = None
+
+
+def _training_detector():
+    """Light, cached detector for the training tools - uses config detection
+    settings (conf/imgsz) instead of the heavy 1280px/0.01-conf catalog one."""
+    global _training_detector_obj, _training_detector_key
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    det = config.get("detection", {}) or {}
+    prompts = det.get("class_prompts") or []
+    key = (
+        det.get("model_path"),
+        tuple(prompts),
+        float(det.get("confidence_threshold", 0.4)),
+        str(det.get("device", "auto")),
+        int(det.get("image_size", 640)),
+    )
+    if _training_detector_obj is not None and _training_detector_key == key:
+        return _training_detector_obj
+    try:
+        _training_detector_obj = Detector(
+            model_path=str(det.get("model_path") or "yoloe-26s-seg.pt"),
+            confidence_threshold=float(det.get("confidence_threshold", 0.4)),
+            device=str(det.get("device", "auto")),
+            class_prompts=prompts or None,
+            image_size=int(det.get("image_size", 640)),
+            class_agnostic_nms=bool(det.get("class_agnostic_nms", False)),
+            fallback_model_path=det.get("fallback_model_path"),
+        )
+        _training_detector_key = key
+        return _training_detector_obj
+    except Exception as exc:  # noqa: BLE001 - training tools must degrade gracefully
+        _audit("training_detector_failed", {"error": str(exc)})
+        _training_detector_obj = None
+        _training_detector_key = None
+        return None
+
+
 def _training_dataset_stats() -> dict[str, Any]:
     import yaml as _yaml
 
@@ -5466,19 +5505,24 @@ def _training_resolve_class(name: str) -> int:
 @app.post("/api/training/detect")
 async def training_detect(files: list[UploadFile] = File(default=[])) -> dict[str, Any]:
     """Run the detector over each image so the operator can name/keep detections."""
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files or []:
+        if not (upload.content_type or "").startswith("image/"):
+            continue
+        payloads.append((upload.filename or "image", await upload.read()))
+    # Detection is heavy + synchronous; run it off the event loop so the
+    # dashboard stays responsive.
+    return await asyncio.to_thread(_training_detect_sync, payloads)
+
+
+def _training_detect_sync(payloads: list[tuple[str, bytes]]) -> dict[str, Any]:
     import base64
     import cv2
     import numpy as np
 
-    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
-    prompts = (config.get("detection", {}) or {}).get("class_prompts") or []
-    detector = _catalog_yolo_for_prompts(prompts) if prompts else None
-
+    detector = _training_detector()
     images: list[dict[str, Any]] = []
-    for upload in files or []:
-        if not (upload.content_type or "").startswith("image/"):
-            continue
-        contents = await upload.read()
+    for filename, contents in payloads:
         frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             continue
@@ -5515,7 +5559,7 @@ async def training_detect(files: list[UploadFile] = File(default=[])) -> dict[st
                 }
             )
         images.append(
-            {"filename": upload.filename, "width": width, "height": height, "detections": detections}
+            {"filename": filename, "width": width, "height": height, "detections": detections}
         )
     return {"images": images}
 
@@ -5608,17 +5652,21 @@ def _training_gemini_name(crop) -> str | None:
 
 @app.post("/api/training/analytics/run")
 async def training_analytics_run(gemini: bool = True) -> dict[str, Any]:
+    # Detection + Gemini are heavy and synchronous; run off the event loop so
+    # the dashboard stays responsive while the test runs.
+    return await asyncio.to_thread(_training_analytics_run_sync, gemini)
+
+
+def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
     """Instant test: detect items in the current live frames, grouped by type,
     with a sample crop, a count and a Gemini-suggested real name."""
     import cv2
 
     health = _catalog_health_snapshot()
     frames = _catalog_live_frames(
-        health, max_frames=int(os.getenv("TRAINING_ANALYTICS_MAX_FRAMES", "12"))
+        health, max_frames=int(os.getenv("TRAINING_ANALYTICS_MAX_FRAMES", "3"))
     )
-    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
-    prompts = (config.get("detection", {}) or {}).get("class_prompts") or []
-    detector = _catalog_yolo_for_prompts(prompts) if prompts else None
+    detector = _training_detector()
 
     groups: dict[str, dict[str, Any]] = {}
     for entry in frames:
@@ -5639,25 +5687,27 @@ async def training_analytics_run(gemini: bool = True) -> dict[str, Any]:
                     group["crops"].append(crop)
 
     TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    ordered = sorted(groups.items(), key=lambda kv: -kv[1]["count"])
+    gemini_budget = int(os.getenv("TRAINING_ANALYTICS_GEMINI_MAX", "10"))
     items: list[dict[str, Any]] = []
-    for key, group in groups.items():
+    for index, (key, group) in enumerate(ordered):
         group_id = _catalog_visual_slug(key)
         stage = TRAINING_STAGING_DIR / group_id
         if stage.exists():
             for old in stage.glob("*.jpg"):
                 old.unlink()
         stage.mkdir(parents=True, exist_ok=True)
-        for index, crop in enumerate(group["crops"]):
+        for crop_index, crop in enumerate(group["crops"]):
             ok, buffer = cv2.imencode(".jpg", crop)
             if ok:
-                (stage / f"crop_{index:02d}.jpg").write_bytes(buffer.tobytes())
+                (stage / f"crop_{crop_index:02d}.jpg").write_bytes(buffer.tobytes())
         crop_url = (
             f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg"
             if (stage / "crop_00.jpg").exists()
             else ""
         )
         name = group["label"]
-        if gemini and group["crops"]:
+        if gemini and group["crops"] and index < gemini_budget:
             suggested = _training_gemini_name(group["crops"][0])
             if suggested:
                 name = suggested
@@ -5671,7 +5721,6 @@ async def training_analytics_run(gemini: bool = True) -> dict[str, Any]:
                 "keep": True,
             }
         )
-    items.sort(key=lambda item: -item["count"])
     return {"items": items}
 
 
