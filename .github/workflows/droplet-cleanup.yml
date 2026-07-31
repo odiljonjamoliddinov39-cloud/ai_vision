@@ -1,0 +1,87 @@
+name: Droplet disk cleanup (safe)
+
+# Manual, disk-only cleanup. Frees space WITHOUT touching any database, the
+# training dataset volume, models, config, .env, or catalog/inventory reference
+# images. Trigger from the Actions tab (Run workflow) or via the API.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-production
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Reclaim disk on the droplet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Cleanup skipped: set DO_HOST, DO_USER, and DO_SSH_KEY repository secrets."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clean disk on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            # Do NOT use -e: one failing cleanup step must not abort the rest.
+            set -uo pipefail
+            APP_DIR="/opt/ai_vision"
+            cd "$APP_DIR" || { echo "No $APP_DIR"; exit 1; }
+
+            echo "================= BEFORE ================="
+            df -h / | tail -1
+            docker system df 2>/dev/null || true
+            for d in recordings snapshots logs; do
+              [ -d "$d" ] && echo "$d: $(du -sh "$d" 2>/dev/null | cut -f1)"
+            done
+
+            echo "================= Docker build cache + unused images ================="
+            # Full build-cache prune: this is the biggest win (~9GB). Trade-off:
+            # the next deploy rebuilds the AI layer from scratch (~17m), once.
+            docker builder prune -af 2>/dev/null || true
+            # Images/containers not used by a running container. The live
+            # backend + mediamtx images are referenced, so they are kept.
+            docker image prune -af 2>/dev/null || true
+            docker container prune -f 2>/dev/null || true
+
+            echo "================= Recordings (older than 1 day) ================="
+            [ -d recordings ] && find recordings -type f -mtime +1 -delete 2>/dev/null || true
+
+            echo "================= Logs (>2d, and truncate >50MB) ================="
+            [ -d logs ] && find logs -type f -mtime +2 -delete 2>/dev/null || true
+            [ -d logs ] && find logs -type f -size +50M -exec sh -c ': > "$1"' _ {} \; 2>/dev/null || true
+
+            echo "================= Snapshots (regenerated frames + staging only) ================="
+            # Only top-level detection/live frames (>1 day) and the ephemeral
+            # training-staging crops. Subfolders that hold reference images -
+            # catalog/, inventory/, product-learning/ - are left untouched.
+            [ -d snapshots ] && find snapshots -maxdepth 1 -type f -mtime +1 -delete 2>/dev/null || true
+            [ -d snapshots/training-staging ] && rm -rf snapshots/training-staging/* 2>/dev/null || true
+
+            echo "================= AFTER ================="
+            df -h / | tail -1
+            docker system df 2>/dev/null || true
+            for d in recordings snapshots logs; do
+              [ -d "$d" ] && echo "$d: $(du -sh "$d" 2>/dev/null | cut -f1)"
+            done
+            echo "Cleanup complete."
