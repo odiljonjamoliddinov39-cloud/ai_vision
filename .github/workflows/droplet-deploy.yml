@@ -56,10 +56,13 @@ jobs:
             # resilient if the droplet's deploy.sh is ever stale.
             free_mb="$(df -Pm /opt/ai_vision | awk 'NR==2 {print $4}')"
             echo "Free disk space: ${free_mb}MB"
-            if [ "${free_mb:-0}" -lt 3072 ]; then
+            if [ "${free_mb:-0}" -lt 1024 ]; then
+              # Only when truly low: prune unused images/containers, but keep
+              # recent build cache so the next deploy still reuses the heavy AI
+              # dependency layer instead of a ~17m from-scratch rebuild.
               echo "Low disk space; reclaiming Docker space before deploy..."
-              docker system prune -af || true
-              docker builder prune -af || true
+              docker system prune -f || true
+              docker builder prune -af --keep-storage 5GB 2>/dev/null || docker builder prune -af || true
               df -h / || true
             fi
             chmod +x /opt/ai_vision/scripts/deploy.sh
