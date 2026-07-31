@@ -1327,7 +1327,7 @@ input {
   position: absolute;
   top: 8px;
   right: 8px;
-  z-index: 1;
+  z-index: 2;
   padding: 3px 9px;
   border-radius: 999px;
   background: rgba(5, 46, 22, 0.86);
@@ -2873,6 +2873,12 @@ h3 .muted {
   padding: 0;
 }
 
+.feed-frame {
+  position: relative;
+  width: 100%;
+  background: #020617;
+}
+
 .live-preview img,
 .live-preview canvas {
   display: block;
@@ -2885,6 +2891,15 @@ h3 .muted {
 .live-preview img.feed-stale,
 .live-preview canvas.feed-stale {
   opacity: 0.72;
+}
+
+.feed-detection-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  height: 100%;
+  aspect-ratio: auto;
+  pointer-events: none;
 }
 
 .live-preview figcaption {

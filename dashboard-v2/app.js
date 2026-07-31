@@ -717,12 +717,26 @@ function liveDetectionsForCanvas(canvas) {
   return [];
 }
 
+function liveDetectionOverlayForCanvas(canvas) {
+  return canvas.parentElement?.querySelector("[data-live-detection-overlay]") || null;
+}
+
 function drawLiveDetectionOverlay(canvas, detections) {
-  if (!canvas.width || !canvas.height || !detections?.length) {
-    canvas.dataset.liveDetectionCount = "0";
+  const overlay = liveDetectionOverlayForCanvas(canvas);
+  if (!overlay || !canvas.width || !canvas.height) {
+    if (overlay) overlay.dataset.liveDetectionCount = "0";
     return;
   }
-  const ctx = canvas.getContext("2d", { alpha: false });
+  if (overlay.width !== canvas.width || overlay.height !== canvas.height) {
+    overlay.width = canvas.width;
+    overlay.height = canvas.height;
+  }
+  const ctx = overlay.getContext("2d");
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!detections?.length) {
+    overlay.dataset.liveDetectionCount = "0";
+    return;
+  }
   const width = canvas.width;
   const height = canvas.height;
   const lineWidth = Math.max(2, Math.round(width / 520));
@@ -766,7 +780,7 @@ function drawLiveDetectionOverlay(canvas, detections) {
     drawn += 1;
   });
   ctx.restore();
-  canvas.dataset.liveDetectionCount = String(drawn);
+  overlay.dataset.liveDetectionCount = String(drawn);
 }
 
 function updateLiveDetectionCache(payload) {
@@ -786,13 +800,10 @@ function updateLiveDetectionCache(payload) {
   });
 }
 
-function redrawVisibleLiveFramesWithDetections() {
+function redrawVisibleDetectionOverlays() {
   const surfaces = Array.from(els.moduleContent.querySelectorAll("[data-live-frame]"));
   surfaces.forEach((canvas) => {
-    const slot = Number(canvas.dataset.liveSlot);
-    const cachedFrame = slot ? liveFrameCache.get(slot) : null;
-    if (cachedFrame) renderLiveSocketFrame(slot, cachedFrame, false);
-    else drawLiveDetectionOverlay(canvas, liveDetectionsForCanvas(canvas));
+    drawLiveDetectionOverlay(canvas, liveDetectionsForCanvas(canvas));
   });
 }
 
@@ -807,7 +818,7 @@ async function refreshLiveDetections() {
   try {
     const payload = await api("/api/v2/detections/latest", { force: true });
     updateLiveDetectionCache(payload);
-    redrawVisibleLiveFramesWithDetections();
+    redrawVisibleDetectionOverlays();
   } catch {
     // Live video must continue even if detector health is temporarily unavailable.
   } finally {
@@ -825,7 +836,7 @@ function syncLiveDetectionRefresh() {
     refreshLiveDetections();
     liveDetectionTimer = window.setInterval(refreshLiveDetections, LIVE_DETECTION_REFRESH_MS);
   } else {
-    redrawVisibleLiveFramesWithDetections();
+    redrawVisibleDetectionOverlays();
   }
 }
 
@@ -850,12 +861,13 @@ function renderLiveSocketFrame(slot, jpegBytes, cacheFrame = true) {
         els.moduleContent.querySelectorAll(`[data-live-frame][data-live-slot="${slot}"]`)
       );
       canvases.forEach((canvas) => {
+        const resized = canvas.width !== bitmap.width || canvas.height !== bitmap.height;
         if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
           canvas.width = bitmap.width;
           canvas.height = bitmap.height;
         }
         canvas.getContext("2d", { alpha: false }).drawImage(bitmap, 0, 0);
-        drawLiveDetectionOverlay(canvas, liveDetectionsForCanvas(canvas));
+        if (resized) drawLiveDetectionOverlay(canvas, liveDetectionsForCanvas(canvas));
         delete canvas.dataset.livePriming;
         canvas.classList.remove("feed-stale");
         canvas.removeAttribute("title");
@@ -2306,7 +2318,7 @@ function renderFeedTile(nvr, channel) {
   if (channel.active && channel.slot_number != null) {
     const cameraName = feedCameraDisplayName(nvr, channel);
     const aliases = feedCameraAliases(nvr, channel).join("||");
-    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><canvas class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-camera="${escapeAttr(cameraName)}" data-live-camera-aliases="${escapeAttr(aliases)}" data-live-priming="true" role="img" aria-label="${escapeAttr(cameraName)}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><div class="feed-frame"><canvas class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-camera="${escapeAttr(cameraName)}" data-live-camera-aliases="${escapeAttr(aliases)}" data-live-priming="true" role="img" aria-label="${escapeAttr(cameraName)}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><canvas class="feed-detection-layer" data-live-detection-overlay data-live-slot="${channel.slot_number}" aria-hidden="true"></canvas></div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
   }
   return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
 }

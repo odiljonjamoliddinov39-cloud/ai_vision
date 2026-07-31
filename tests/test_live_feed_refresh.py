@@ -181,8 +181,8 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=69" in html
-    assert "/dashboard-v2/assets/styles.css?v=49" in html
+    assert "/dashboard-v2/assets/app.js?v=70" in html
+    assert "/dashboard-v2/assets/styles.css?v=50" in html
 
 
 def test_latest_detections_endpoint_exposes_camera_slots_for_feed_overlay(tmp_path, monkeypatch):
@@ -221,12 +221,17 @@ def test_camera_feed_draws_detection_boxes_and_labels_on_live_canvas():
     styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
 
     assert 'api("/api/v2/detections/latest", { force: true })' in source
+    assert "function liveDetectionOverlayForCanvas(canvas)" in source
     assert "function drawLiveDetectionOverlay(canvas, detections)" in source
     assert "function liveDetectionLabel(detection)" in source
     assert "ctx.strokeRect(x, y, boxWidth, boxHeight);" in source
     assert "ctx.fillText(label, labelX + 7, labelY + 4, labelWidth - 14);" in source
     assert 'data-live-camera-aliases="${escapeAttr(aliases)}"' in source
+    assert 'data-live-detection-overlay data-live-slot="${channel.slot_number}"' in source
+    assert "function redrawVisibleDetectionOverlays()" in source
+    assert "function redrawVisibleLiveFramesWithDetections()" not in source
     assert ".live-preview canvas" in styles
+    assert ".feed-detection-layer" in styles
 
 
 def test_dashboard_navigation_uses_cached_data_until_refresh():
