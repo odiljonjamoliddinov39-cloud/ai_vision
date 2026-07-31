@@ -1,0 +1,85 @@
+name: Droplet diagnostics (read-only)
+
+# Manual, read-only. SSHes to the droplet and reports why the camera streams
+# are not connecting: stream health, camera list, whether the camera-controller
+# env is set (values are never printed), NVR reachability, and the backend's
+# recent stream errors. Changes nothing on the server.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Own lane so it can run immediately, even while a deploy is building.
+concurrency:
+  group: droplet-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: Read stream health on the droplet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Diagnostics skipped: set DO_HOST, DO_USER, and DO_SSH_KEY repository secrets."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Diagnose on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 8m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+            PORT="$(grep -E '^AI_VISION_PORT=' .env 2>/dev/null | cut -d= -f2)"
+            PORT="${PORT:-8080}"
+            BASE="http://localhost:${PORT}"
+
+            echo "================= STREAM HEALTH ================="
+            curl -s --max-time 12 "$BASE/api/v2/streams/health" || echo "(request failed)"
+            echo ""
+
+            echo "================= CAMERAS (redacted by API) ================="
+            curl -s --max-time 12 "$BASE/api/cameras" || echo "(request failed)"
+            echo ""
+
+            echo "================= CAMERA-CONTROLLER ENV (presence only) ================="
+            for v in CAMERA_CONTROLLER_HOST CAMERA_CONTROLLER_PORT CAMERA_CONTROLLER_PROTOCOL \
+                     CAMERA_CONTROLLER_USERNAME CAMERA_CONTROLLER_PASSWORD \
+                     CAMERA_CONTROLLER_CHANNELS CAMERA_CONTROLLER_CHANNEL_COUNT \
+                     CAMERA_CONTROLLER_STREAM_TEMPLATE AI_VISION_ENTERPRISE_STREAMING \
+                     AI_VISION_STREAM_FIRST MEDIAMTX_REQUIRED; do
+              if grep -q "^$v=" .env 2>/dev/null; then echo "$v: SET"; else echo "$v: (not set)"; fi
+            done
+            echo ""
+
+            echo "================= NVR REACHABILITY 87.192.242.82:554 ================="
+            if timeout 8 bash -c 'cat < /dev/null > /dev/tcp/87.192.242.82/554' 2>/dev/null; then
+              echo "TCP 554 -> REACHABLE from droplet"
+            else
+              echo "TCP 554 -> NOT reachable from droplet (firewall / host / offline)"
+            fi
+            echo ""
+
+            echo "================= BACKEND recent stream errors ================="
+            docker compose logs backend --tail 200 2>/dev/null \
+              | grep -iE "reconnect|rtsp|stream|401|403|unauth|denied|refused|timed out|timeout|ffmpeg|no route|could not open|error" \
+              | tail -50 || echo "(no matching log lines)"
+            echo ""
+            echo "Diagnostics complete."
