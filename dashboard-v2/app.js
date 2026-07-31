@@ -186,6 +186,14 @@ const I18N = {
     "training.injecting": "Injecting...",
     "training.injected": "Injected {images} image(s), {prompts} new prompt(s).",
     "training.need_input": "Add at least one image or a prompt first.",
+    "training.detect": "Detect items",
+    "training.detecting": "Detecting...",
+    "training.detect_note": "YOLO detects the items in each image. Keep the ones it should learn (good list) and uncheck the rest to ignore them (bad list), name each kept item, then Save and Inject.",
+    "training.review_empty": "Upload images and press Detect items to see what YOLO finds.",
+    "training.no_detections": "Nothing detected - this image will be saved as a negative (ignore) example.",
+    "training.necessary": "Detect (keep)",
+    "training.item_name_ph": "Name this item",
+    "training.need_images": "Choose one or more images first.",
     "menu.ai_models": "AI Models",
     "menu.integrations": "Integrations",
     "menu.logs": "Logs",
@@ -447,6 +455,14 @@ const I18N = {
     "training.injecting": "Внедрение...",
     "training.injected": "Внедрено изображений: {images}, новых подсказок: {prompts}.",
     "training.need_input": "Сначала добавьте хотя бы одно изображение или подсказку.",
+    "training.detect": "Найти объекты",
+    "training.detecting": "Поиск...",
+    "training.detect_note": "YOLO находит объекты на каждом изображении. Оставьте нужные (хороший список) и снимите отметку с остальных, чтобы игнорировать (плохой список), назовите каждый оставленный объект и нажмите «Сохранить и внедрить».",
+    "training.review_empty": "Загрузите изображения и нажмите «Найти объекты», чтобы увидеть результаты YOLO.",
+    "training.no_detections": "Ничего не найдено - изображение будет сохранено как негативный (игнорируемый) пример.",
+    "training.necessary": "Обнаруживать (оставить)",
+    "training.item_name_ph": "Название объекта",
+    "training.need_images": "Сначала выберите одно или несколько изображений.",
     "menu.ai_models": "AI модели",
     "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
@@ -4331,53 +4347,140 @@ function yoloDatasetStatsHtml(stats) {
     </section>`;
 }
 
+let trainingReview = [];
+
+function trainingReviewHtml() {
+  if (!trainingReview.length) {
+    return `<p class="chart-note">${escapeHtml(t("training.review_empty"))}</p>`;
+  }
+  return trainingReview
+    .map((image, imageIndex) => {
+      const rows = image.detections.length
+        ? image.detections
+            .map(
+              (det, detIndex) => `
+              <div class="training-det">
+                ${det.crop ? `<img src="${det.crop}" alt="detection" />` : ""}
+                <input type="text" value="${escapeAttr(det.name || "")}" data-img="${imageIndex}" data-det="${detIndex}" data-field="name" placeholder="${escapeAttr(t("training.item_name_ph"))}" />
+                <label class="training-necessary"><input type="checkbox" ${det.necessary ? "checked" : ""} data-img="${imageIndex}" data-det="${detIndex}" data-field="necessary" /> ${escapeHtml(t("training.necessary"))}</label>
+                ${det.confidence ? `<span class="muted">${Math.round(det.confidence * 100)}%</span>` : ""}
+              </div>`
+            )
+            .join("")
+        : `<p class="chart-note">${escapeHtml(t("training.no_detections"))}</p>`;
+      return `
+        <article class="training-image-card">
+          <header>${escapeHtml(image.filename || "image")}</header>
+          ${rows}
+        </article>`;
+    })
+    .join("");
+}
+
 function renderYoloTrainingBody(container, stats) {
   container.innerHTML = `
     <div class="training-page">
       <section class="acc-block">
         <h3>${escapeHtml(t("training.inject_title"))}</h3>
-        <p class="chart-note">${escapeHtml(t("training.inject_note"))}</p>
-        <form data-training-inject>
-          <label class="training-field">${escapeHtml(t("training.images"))}
-            <input type="file" name="images" accept="image/*" multiple />
-          </label>
-          <label class="training-field">${escapeHtml(t("training.split"))}
-            <select name="split"><option value="train">train</option><option value="val">val</option></select>
-          </label>
-          <label class="training-field">${escapeHtml(t("training.prompt_label"))}
-            <textarea name="prompts" rows="3" placeholder="${escapeAttr(t("training.prompt_ph"))}"></textarea>
-          </label>
-          <button type="submit" class="export-button">${escapeHtml(t("training.save_inject"))}</button>
-        </form>
+        <p class="chart-note">${escapeHtml(t("training.detect_note"))}</p>
+        <label class="training-field">${escapeHtml(t("training.images"))}
+          <input type="file" accept="image/*" multiple data-training-files />
+        </label>
+        <label class="training-field">${escapeHtml(t("training.split"))}
+          <select data-training-split><option value="train">train</option><option value="val">val</option></select>
+        </label>
+        <button type="button" class="export-button" data-training-detect>${escapeHtml(t("training.detect"))}</button>
+        <div class="training-review" data-training-review>${trainingReviewHtml()}</div>
+        <label class="training-field" style="margin-top:14px">${escapeHtml(t("training.prompt_label"))}
+          <textarea data-training-prompts rows="3" placeholder="${escapeAttr(t("training.prompt_ph"))}"></textarea>
+        </label>
+        <button type="button" class="export-button" data-training-save>${escapeHtml(t("training.save_inject"))}</button>
       </section>
       ${yoloDatasetStatsHtml(stats)}
     </div>`;
-  const form = container.querySelector("[data-training-inject]");
-  form?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const files = Array.from(form.images.files || []);
-    const prompts = form.prompts.value.trim();
-    if (!files.length && !prompts) {
+
+  const detectBtn = container.querySelector("[data-training-detect]");
+  const saveBtn = container.querySelector("[data-training-save]");
+  const reviewEl = container.querySelector("[data-training-review]");
+
+  detectBtn?.addEventListener("click", async () => {
+    const files = Array.from(container.querySelector("[data-training-files]")?.files || []);
+    if (!files.length) {
+      toast(t("training.need_images"));
+      return;
+    }
+    detectBtn.disabled = true;
+    detectBtn.textContent = t("training.detecting");
+    try {
+      const payload = new FormData();
+      files.forEach((file) => payload.append("files", file));
+      const response = await fetch(`${API_BASE}/api/training/detect`, { method: "POST", body: payload });
+      if (!response.ok) throw new Error((await response.text()) || "Detect failed");
+      const data = await response.json();
+      trainingReview = (data.images || []).map((image, index) => ({
+        file: files[index],
+        filename: image.filename,
+        detections: (image.detections || []).map((det) => ({ ...det, necessary: true })),
+      }));
+      reviewEl.innerHTML = trainingReviewHtml();
+    } catch (error) {
+      toast(error.message || "Detect failed");
+    } finally {
+      detectBtn.disabled = false;
+      detectBtn.textContent = t("training.detect");
+    }
+  });
+
+  reviewEl?.addEventListener("input", (event) => {
+    const el = event.target;
+    const imgIndex = Number(el.dataset.img);
+    const detIndex = Number(el.dataset.det);
+    if (Number.isNaN(imgIndex) || Number.isNaN(detIndex)) return;
+    const det = trainingReview[imgIndex]?.detections[detIndex];
+    if (!det) return;
+    if (el.dataset.field === "name") det.name = el.value;
+    if (el.dataset.field === "necessary") det.necessary = el.checked;
+  });
+
+  saveBtn?.addEventListener("click", async () => {
+    const split = container.querySelector("[data-training-split]")?.value || "train";
+    const prompts = (container.querySelector("[data-training-prompts]")?.value || "").trim();
+    if (!trainingReview.length && !prompts) {
       toast(t("training.need_input"));
       return;
     }
-    const button = form.querySelector("button[type=submit]");
-    button.disabled = true;
-    button.textContent = t("training.injecting");
+    saveBtn.disabled = true;
+    saveBtn.textContent = t("training.injecting");
     try {
-      const payload = new FormData();
-      payload.append("split", form.split.value);
-      payload.append("prompts", prompts);
-      files.forEach((file) => payload.append("files", file));
-      const response = await fetch(`${API_BASE}/api/training/inject`, { method: "POST", body: payload });
-      if (!response.ok) throw new Error((await response.text()) || "Inject failed");
-      const data = await response.json();
-      toast(t("training.injected", { images: data.images_saved, prompts: (data.prompts_added || []).length }));
-      if (container.isConnected && accountModule === "training") renderYoloTrainingBody(container, data.dataset);
+      let labeled = 0;
+      for (const image of trainingReview) {
+        if (!image.file) continue;
+        const payload = new FormData();
+        payload.append("split", split);
+        payload.append(
+          "boxes",
+          JSON.stringify(image.detections.map((d) => ({ bbox: d.bbox, name: d.name, necessary: !!d.necessary })))
+        );
+        payload.append("file", image.file);
+        const response = await fetch(`${API_BASE}/api/training/annotate`, { method: "POST", body: payload });
+        if (response.ok) labeled += 1;
+      }
+      let dataset = null;
+      if (prompts) {
+        const promptPayload = new FormData();
+        promptPayload.append("split", split);
+        promptPayload.append("prompts", prompts);
+        const promptResponse = await fetch(`${API_BASE}/api/training/inject`, { method: "POST", body: promptPayload });
+        if (promptResponse.ok) dataset = (await promptResponse.json()).dataset;
+      }
+      if (!dataset) dataset = await api("/api/training/dataset");
+      toast(t("training.injected", { images: labeled, prompts: prompts ? 1 : 0 }));
+      trainingReview = [];
+      if (container.isConnected && accountModule === "training") renderYoloTrainingBody(container, dataset);
     } catch (error) {
-      toast(error.message || "Inject failed");
-      button.disabled = false;
-      button.textContent = t("training.save_inject");
+      toast(error.message || "Save failed");
+      saveBtn.disabled = false;
+      saveBtn.textContent = t("training.save_inject");
     }
   });
 }

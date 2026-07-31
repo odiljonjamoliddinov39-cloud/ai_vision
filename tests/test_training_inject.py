@@ -1,8 +1,10 @@
 import asyncio
 import io
+import json
 
 import cv2
 import numpy as np
+import yaml
 from fastapi import UploadFile
 from starlette.datastructures import Headers
 
@@ -72,3 +74,37 @@ def test_training_dataset_counts_labels_and_negatives(tmp_path, monkeypatch):
     train = stats["splits"]["train"]
     assert (train["images"], train["labeled"], train["negatives"], train["unlabeled"]) == (3, 1, 1, 1)
     assert stats["class_instances"].get("0") == 1
+
+
+def test_training_annotate_writes_labels_and_negatives(tmp_path, monkeypatch):
+    _point_dataset(monkeypatch, tmp_path / "baget_box")
+
+    boxes = json.dumps(
+        [
+            {"bbox": {"x1": 10, "y1": 10, "x2": 50, "y2": 40}, "name": "baget box", "necessary": True},
+            {"bbox": {"x1": 0, "y1": 0, "x2": 20, "y2": 20}, "name": "sack", "necessary": False},
+        ]
+    )
+    result = asyncio.run(server.training_annotate(split="train", boxes=boxes, file=_upload((9, 9, 9))))
+
+    assert result["labeled"] == 1
+    assert result["negative"] is False
+    labels = list((tmp_path / "baget_box" / "labels" / "train").glob("*.txt"))
+    assert labels[0].read_text(encoding="utf-8").strip().startswith("0 ")
+
+    negative = json.dumps(
+        [{"bbox": {"x1": 1, "y1": 1, "x2": 5, "y2": 5}, "name": "sack", "necessary": False}]
+    )
+    result_neg = asyncio.run(server.training_annotate(split="train", boxes=negative, file=_upload((1, 1, 1))))
+    assert result_neg["labeled"] == 0
+    assert result_neg["negative"] is True
+
+
+def test_training_resolve_class_adds_new_class(tmp_path, monkeypatch):
+    root = tmp_path / "baget_box"
+    _point_dataset(monkeypatch, root)
+
+    assert server._training_resolve_class("Baget Box") == 0  # matches existing (normalized)
+    assert server._training_resolve_class("Pallet") == 2  # new class appended
+    data = yaml.safe_load((root / "data.yaml").read_text(encoding="utf-8"))
+    assert data["names"][2] == "Pallet"

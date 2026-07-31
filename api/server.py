@@ -5440,6 +5440,144 @@ async def training_inject(
     }
 
 
+def _training_resolve_class(name: str) -> int:
+    """Return the class id for a name, adding it to data.yaml if it is new."""
+    import yaml as _yaml
+
+    data = {}
+    if TRAINING_DATASET_YAML.exists():
+        data = _yaml.safe_load(TRAINING_DATASET_YAML.read_text(encoding="utf-8")) or {}
+    names = data.get("names") or {}
+    normalized = _catalog_normalize_name(name)
+    for class_id, class_name in names.items():
+        if _catalog_normalize_name(str(class_name)) == normalized:
+            return int(class_id)
+    new_id = (max((int(k) for k in names.keys()), default=-1) + 1) if names else 0
+    names[new_id] = name
+    data["names"] = names
+    data.setdefault("path", "datasets/baget_box")
+    data.setdefault("train", "images/train")
+    data.setdefault("val", "images/val")
+    TRAINING_DATASET_YAML.parent.mkdir(parents=True, exist_ok=True)
+    TRAINING_DATASET_YAML.write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return int(new_id)
+
+
+@app.post("/api/training/detect")
+async def training_detect(files: list[UploadFile] = File(default=[])) -> dict[str, Any]:
+    """Run the detector over each image so the operator can name/keep detections."""
+    import base64
+    import cv2
+    import numpy as np
+
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    prompts = (config.get("detection", {}) or {}).get("class_prompts") or []
+    detector = _catalog_yolo_for_prompts(prompts) if prompts else None
+
+    images: list[dict[str, Any]] = []
+    for upload in files or []:
+        if not (upload.content_type or "").startswith("image/"):
+            continue
+        contents = await upload.read()
+        frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+        height, width = frame.shape[:2]
+        boxes: list[tuple[int, int, int, int, str, float]] = []
+        if detector is not None:
+            try:
+                for detection in detector.detect(frame):
+                    x1, y1, x2, y2 = detection.box
+                    boxes.append((int(x1), int(y1), int(x2), int(y2), detection.class_name, float(detection.confidence)))
+            except Exception:  # noqa: BLE001 - fall back to proposals below
+                boxes = []
+        if not boxes:
+            for (x1, y1, x2, y2) in _catalog_class_agnostic_boxes(frame):
+                boxes.append((int(x1), int(y1), int(x2), int(y2), "object", 0.0))
+
+        detections: list[dict[str, Any]] = []
+        for (x1, y1, x2, y2, name, confidence) in boxes[:30]:
+            crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+            if crop.size == 0:
+                continue
+            ok, buffer = cv2.imencode(".jpg", crop)
+            crop_data = (
+                f"data:image/jpeg;base64,{base64.b64encode(buffer.tobytes()).decode()}"
+                if ok
+                else ""
+            )
+            detections.append(
+                {
+                    "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                    "name": name,
+                    "confidence": round(confidence, 3),
+                    "crop": crop_data,
+                }
+            )
+        images.append(
+            {"filename": upload.filename, "width": width, "height": height, "detections": detections}
+        )
+    return {"images": images}
+
+
+@app.post("/api/training/annotate")
+async def training_annotate(
+    split: str = Form("train"),
+    boxes: str = Form("[]"),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Save one labelled image: necessary boxes become YOLO labels, others are
+    left unlabelled (background). No necessary boxes = a negative image."""
+    import cv2
+    import numpy as np
+
+    split = "val" if str(split).strip().lower().startswith("v") else "train"
+    contents = await file.read()
+    frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Image could not be decoded.")
+    height, width = frame.shape[:2]
+    try:
+        items = json.loads(boxes) or []
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid boxes payload.")
+
+    lines: list[str] = []
+    for item in items:
+        if not item.get("necessary"):
+            continue
+        name = " ".join(str(item.get("name", "")).split()).strip()
+        bbox = item.get("bbox") or {}
+        try:
+            x1 = float(bbox["x1"]); y1 = float(bbox["y1"]); x2 = float(bbox["x2"]); y2 = float(bbox["y2"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not name:
+            continue
+        x1, x2 = sorted((max(0.0, min(width, x1)), max(0.0, min(width, x2))))
+        y1, y2 = sorted((max(0.0, min(height, y1)), max(0.0, min(height, y2))))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        class_id = _training_resolve_class(name)
+        cx = ((x1 + x2) / 2.0) / width
+        cy = ((y1 + y2) / 2.0) / height
+        bw = (x2 - x1) / width
+        bh = (y2 - y1) / height
+        lines.append(f"{class_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+
+    img_dir = TRAINING_DATASET_ROOT / "images" / split
+    lbl_dir = TRAINING_DATASET_ROOT / "labels" / split
+    img_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"label_{int(time.time() * 1000)}"
+    ok, buffer = cv2.imencode(".jpg", frame)
+    (img_dir / f"{stem}.jpg").write_bytes(buffer.tobytes() if ok else contents)
+    (lbl_dir / f"{stem}.txt").write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+
+    _audit("training_annotate", {"split": split, "boxes": len(lines), "negative": not lines})
+    return {"labeled": len(lines), "negative": not lines, "dataset": _training_dataset_stats()}
+
+
 @app.post("/api/catalog/items")
 async def create_catalog_item(
     scope_id: str = Form(...),
