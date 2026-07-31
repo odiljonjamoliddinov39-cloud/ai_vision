@@ -3102,3 +3102,66 @@ h3 .muted {
   display: grid;
   gap: 4px;
 }
+
+.training-review {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.training-image-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--panel-strong);
+}
+
+.training-image-card header {
+  font-weight: 600;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.training-det {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px dashed var(--line);
+}
+
+.training-det img {
+  width: 64px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  flex: none;
+}
+
+.training-det input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.training-necessary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.test-crop {
+  width: 64px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+}

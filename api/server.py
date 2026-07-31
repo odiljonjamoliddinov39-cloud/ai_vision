@@ -5440,6 +5440,297 @@ async def training_inject(
     }
 
 
+def _training_resolve_class(name: str) -> int:
+    """Return the class id for a name, adding it to data.yaml if it is new."""
+    import yaml as _yaml
+
+    data = {}
+    if TRAINING_DATASET_YAML.exists():
+        data = _yaml.safe_load(TRAINING_DATASET_YAML.read_text(encoding="utf-8")) or {}
+    names = data.get("names") or {}
+    normalized = _catalog_normalize_name(name)
+    for class_id, class_name in names.items():
+        if _catalog_normalize_name(str(class_name)) == normalized:
+            return int(class_id)
+    new_id = (max((int(k) for k in names.keys()), default=-1) + 1) if names else 0
+    names[new_id] = name
+    data["names"] = names
+    data.setdefault("path", "datasets/baget_box")
+    data.setdefault("train", "images/train")
+    data.setdefault("val", "images/val")
+    TRAINING_DATASET_YAML.parent.mkdir(parents=True, exist_ok=True)
+    TRAINING_DATASET_YAML.write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return int(new_id)
+
+
+@app.post("/api/training/detect")
+async def training_detect(files: list[UploadFile] = File(default=[])) -> dict[str, Any]:
+    """Run the detector over each image so the operator can name/keep detections."""
+    import base64
+    import cv2
+    import numpy as np
+
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    prompts = (config.get("detection", {}) or {}).get("class_prompts") or []
+    detector = _catalog_yolo_for_prompts(prompts) if prompts else None
+
+    images: list[dict[str, Any]] = []
+    for upload in files or []:
+        if not (upload.content_type or "").startswith("image/"):
+            continue
+        contents = await upload.read()
+        frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+        height, width = frame.shape[:2]
+        boxes: list[tuple[int, int, int, int, str, float]] = []
+        if detector is not None:
+            try:
+                for detection in detector.detect(frame):
+                    x1, y1, x2, y2 = detection.box
+                    boxes.append((int(x1), int(y1), int(x2), int(y2), detection.class_name, float(detection.confidence)))
+            except Exception:  # noqa: BLE001 - fall back to proposals below
+                boxes = []
+        if not boxes:
+            for (x1, y1, x2, y2) in _catalog_class_agnostic_boxes(frame):
+                boxes.append((int(x1), int(y1), int(x2), int(y2), "object", 0.0))
+
+        detections: list[dict[str, Any]] = []
+        for (x1, y1, x2, y2, name, confidence) in boxes[:30]:
+            crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+            if crop.size == 0:
+                continue
+            ok, buffer = cv2.imencode(".jpg", crop)
+            crop_data = (
+                f"data:image/jpeg;base64,{base64.b64encode(buffer.tobytes()).decode()}"
+                if ok
+                else ""
+            )
+            detections.append(
+                {
+                    "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                    "name": name,
+                    "confidence": round(confidence, 3),
+                    "crop": crop_data,
+                }
+            )
+        images.append(
+            {"filename": upload.filename, "width": width, "height": height, "detections": detections}
+        )
+    return {"images": images}
+
+
+@app.post("/api/training/annotate")
+async def training_annotate(
+    split: str = Form("train"),
+    boxes: str = Form("[]"),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Save one labelled image: necessary boxes become YOLO labels, others are
+    left unlabelled (background). No necessary boxes = a negative image."""
+    import cv2
+    import numpy as np
+
+    split = "val" if str(split).strip().lower().startswith("v") else "train"
+    contents = await file.read()
+    frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Image could not be decoded.")
+    height, width = frame.shape[:2]
+    try:
+        items = json.loads(boxes) or []
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid boxes payload.")
+
+    lines: list[str] = []
+    for item in items:
+        if not item.get("necessary"):
+            continue
+        name = " ".join(str(item.get("name", "")).split()).strip()
+        bbox = item.get("bbox") or {}
+        try:
+            x1 = float(bbox["x1"]); y1 = float(bbox["y1"]); x2 = float(bbox["x2"]); y2 = float(bbox["y2"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not name:
+            continue
+        x1, x2 = sorted((max(0.0, min(width, x1)), max(0.0, min(width, x2))))
+        y1, y2 = sorted((max(0.0, min(height, y1)), max(0.0, min(height, y2))))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        class_id = _training_resolve_class(name)
+        cx = ((x1 + x2) / 2.0) / width
+        cy = ((y1 + y2) / 2.0) / height
+        bw = (x2 - x1) / width
+        bh = (y2 - y1) / height
+        lines.append(f"{class_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+
+    img_dir = TRAINING_DATASET_ROOT / "images" / split
+    lbl_dir = TRAINING_DATASET_ROOT / "labels" / split
+    img_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"label_{int(time.time() * 1000)}"
+    ok, buffer = cv2.imencode(".jpg", frame)
+    (img_dir / f"{stem}.jpg").write_bytes(buffer.tobytes() if ok else contents)
+    (lbl_dir / f"{stem}.txt").write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+
+    _audit("training_annotate", {"split": split, "boxes": len(lines), "negative": not lines})
+    return {"labeled": len(lines), "negative": not lines, "dataset": _training_dataset_stats()}
+
+
+TRAINING_STAGING_DIR = SNAPSHOT_DIR / "training-staging"
+TRAINING_APPLIED_PATH = TRAINING_DATASET_ROOT / "applied.json"
+
+
+class TrainingApply(BaseModel):
+    group_id: str = Field(min_length=1, max_length=120)
+    name: str = Field(default="", max_length=80)
+    keep: bool = True
+    split: str = "train"
+
+
+def _training_gemini_name(crop) -> str | None:
+    try:
+        from recognition.gemini_client import GeminiClient
+    except Exception:  # noqa: BLE001
+        return None
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    model = (config.get("recognition", {}) or {}).get("model", "gemini-3.1-flash-lite")
+    try:
+        result = GeminiClient(model=model).recognize(crop)
+        name = getattr(result, "name", None)
+        if name and str(name).strip().lower() != "unknown product":
+            return str(name).strip()
+    except Exception:  # noqa: BLE001 - naming is best-effort
+        return None
+    return None
+
+
+@app.post("/api/training/analytics/run")
+async def training_analytics_run(gemini: bool = True) -> dict[str, Any]:
+    """Instant test: detect items in the current live frames, grouped by type,
+    with a sample crop, a count and a Gemini-suggested real name."""
+    import cv2
+
+    health = _catalog_health_snapshot()
+    frames = _catalog_live_frames(
+        health, max_frames=int(os.getenv("TRAINING_ANALYTICS_MAX_FRAMES", "12"))
+    )
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    prompts = (config.get("detection", {}) or {}).get("class_prompts") or []
+    detector = _catalog_yolo_for_prompts(prompts) if prompts else None
+
+    groups: dict[str, dict[str, Any]] = {}
+    for entry in frames:
+        frame = entry["frame"]
+        try:
+            detections = detector.detect(frame) if detector is not None else []
+        except Exception:  # noqa: BLE001
+            detections = []
+        for detection in detections:
+            label = str(detection.class_name or "object")
+            key = _catalog_normalize_name(label) or "object"
+            group = groups.setdefault(key, {"label": label, "count": 0, "crops": []})
+            group["count"] += 1
+            if len(group["crops"]) < 6:
+                x1, y1, x2, y2 = detection.box
+                crop = frame[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
+                if crop.size:
+                    group["crops"].append(crop)
+
+    TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    items: list[dict[str, Any]] = []
+    for key, group in groups.items():
+        group_id = _catalog_visual_slug(key)
+        stage = TRAINING_STAGING_DIR / group_id
+        if stage.exists():
+            for old in stage.glob("*.jpg"):
+                old.unlink()
+        stage.mkdir(parents=True, exist_ok=True)
+        for index, crop in enumerate(group["crops"]):
+            ok, buffer = cv2.imencode(".jpg", crop)
+            if ok:
+                (stage / f"crop_{index:02d}.jpg").write_bytes(buffer.tobytes())
+        crop_url = (
+            f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg"
+            if (stage / "crop_00.jpg").exists()
+            else ""
+        )
+        name = group["label"]
+        if gemini and group["crops"]:
+            suggested = _training_gemini_name(group["crops"][0])
+            if suggested:
+                name = suggested
+        items.append(
+            {
+                "group_id": group_id,
+                "label": group["label"],
+                "count": group["count"],
+                "crop_url": crop_url,
+                "name": name,
+                "keep": True,
+            }
+        )
+    items.sort(key=lambda item: -item["count"])
+    return {"items": items}
+
+
+@app.post("/api/training/analytics/apply")
+async def training_analytics_apply(payload: TrainingApply) -> dict[str, Any]:
+    """Directly edit the dataset from an analytics row: keep = save the item's
+    detected crops as positive examples under the name; ignore = save them as
+    negatives. Re-applying the same item replaces its previous entries."""
+    group_id = _catalog_visual_slug(payload.group_id)
+    name = " ".join(payload.name.split()).strip()
+    keep = bool(payload.keep)
+    split = "val" if str(payload.split).strip().lower().startswith("v") else "train"
+    if not group_id:
+        raise HTTPException(status_code=400, detail="group_id is required.")
+
+    stage = TRAINING_STAGING_DIR / group_id
+    crops = sorted(stage.glob("*.jpg")) if stage.exists() else []
+    if not crops:
+        raise HTTPException(status_code=404, detail="No staged crops; run the test again.")
+    if keep and not name:
+        raise HTTPException(status_code=400, detail="A name is required to keep an item.")
+
+    applied = _read_json(TRAINING_APPLIED_PATH) or {}
+    if not isinstance(applied, dict):
+        applied = {}
+    for old_rel in applied.get(group_id, []):
+        image_path = TRAINING_DATASET_ROOT / old_rel
+        if image_path.exists():
+            image_path.unlink()
+        # old_rel is images/<split>/<stem>.jpg -> labels/<split>/<stem>.txt
+        label_path = TRAINING_DATASET_ROOT / "labels" / Path(old_rel).parent.name / (Path(old_rel).stem + ".txt")
+        if label_path.exists():
+            label_path.unlink()
+
+    class_id = _training_resolve_class(name) if keep else None
+    img_dir = TRAINING_DATASET_ROOT / "images" / split
+    lbl_dir = TRAINING_DATASET_ROOT / "labels" / split
+    img_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    for index, crop_path in enumerate(crops):
+        stem = f"analytics_{group_id}_{index:02d}"
+        (img_dir / f"{stem}.jpg").write_bytes(crop_path.read_bytes())
+        if keep and class_id is not None:
+            (lbl_dir / f"{stem}.txt").write_text(f"{class_id} 0.5 0.5 1.0 1.0\n", encoding="utf-8")
+        else:
+            (lbl_dir / f"{stem}.txt").write_text("", encoding="utf-8")  # negative
+        written.append(f"images/{split}/{stem}.jpg")
+
+    applied[group_id] = written
+    TRAINING_APPLIED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TRAINING_APPLIED_PATH.write_text(json.dumps(applied, indent=2), encoding="utf-8")
+    _audit(
+        "training_analytics_apply",
+        {"group_id": group_id, "name": name, "keep": keep, "count": len(written)},
+    )
+    return {"applied": len(written), "keep": keep, "dataset": _training_dataset_stats()}
+
+
 @app.post("/api/catalog/items")
 async def create_catalog_item(
     scope_id: str = Form(...),
