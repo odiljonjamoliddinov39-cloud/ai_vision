@@ -4611,6 +4611,7 @@ def v2_latest_detections() -> dict[str, Any]:
     return {
         "state": health.get("state", "offline"),
         "updated_at": health.get("updated_at"),
+        "cameras": health.get("cameras") or [],
         "detections": health.get("last_detections_by_camera") or {},
         "spatial": health.get("last_spatial_objects_by_camera")
         or health.get("last_spatial_objects")

@@ -626,11 +626,16 @@ let loadRetryTimer = null;
 // regardless of scroll position and avoids the browser's per-origin limit on
 // separate long-lived MJPEG requests.
 const LIVE_STREAM_RECONNECT_MS = 1500;
+const LIVE_DETECTION_REFRESH_MS = 3000;
 let liveFrameSocket = null;
 let liveFrameSocketSlots = "";
 let liveFrameReconnectTimer = null;
+let liveDetectionTimer = null;
+let liveDetectionLoading = false;
 const liveFrameGenerations = new Map();
 const liveFrameCache = new Map();
+const liveDetectionsByCamera = new Map();
+const liveDetectionsBySlot = new Map();
 
 function setFeedBadgeLive(image, isLive) {
   const badge = image.parentElement?.querySelector(".feed-transmitting");
@@ -644,6 +649,191 @@ function liveWebSocketUrl(slots) {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("slots", slots);
   return url.toString();
+}
+
+function normalizeLiveCameraKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function uniqueLiveCameraAliases(values) {
+  const seen = new Set();
+  return values
+    .map((value) => String(value || "").trim())
+    .filter((value) => {
+      const key = normalizeLiveCameraKey(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function liveDetectionBox(detection) {
+  const bbox = detection?.bbox || detection?.box;
+  if (Array.isArray(bbox) && bbox.length >= 4) {
+    return { x1: Number(bbox[0]), y1: Number(bbox[1]), x2: Number(bbox[2]), y2: Number(bbox[3]) };
+  }
+  if (bbox && typeof bbox === "object") {
+    return {
+      x1: Number(bbox.x1 ?? bbox.left),
+      y1: Number(bbox.y1 ?? bbox.top),
+      x2: Number(bbox.x2 ?? bbox.right),
+      y2: Number(bbox.y2 ?? bbox.bottom),
+    };
+  }
+  return null;
+}
+
+function liveDetectionLabel(detection) {
+  const name = detection?.inventory_name || detection?.class_name || detection?.label || detection?.name || "object";
+  const quantity = Number(detection?.quantity || 0);
+  const confidence = Number(detection?.confidence);
+  const parts = [quantity > 1 ? `${quantity}x ${name}` : name];
+  if (Number.isFinite(confidence) && confidence > 0) parts.push(`${Math.round(confidence * 100)}%`);
+  return parts.join(" · ");
+}
+
+function liveDetectionAliasesForCanvas(canvas) {
+  const slot = Number(canvas.dataset.liveSlot);
+  const stream = slot ? streamStatusBySlot().get(slot) : null;
+  return uniqueLiveCameraAliases([
+    canvas.dataset.liveCamera,
+    ...(canvas.dataset.liveCameraAliases || "").split("||"),
+    stream?.name,
+    stream?.camera_name,
+    slot ? `slot-${slot}` : "",
+    slot ? `Slot ${slot}` : "",
+    slot ? `Camera ${slot}` : "",
+    slot ? `NVR Camera ${slot}` : "",
+  ]);
+}
+
+function liveDetectionsForCanvas(canvas) {
+  const slot = Number(canvas.dataset.liveSlot);
+  if (slot && liveDetectionsBySlot.has(slot)) return liveDetectionsBySlot.get(slot) || [];
+  for (const alias of liveDetectionAliasesForCanvas(canvas)) {
+    const detections = liveDetectionsByCamera.get(normalizeLiveCameraKey(alias));
+    if (detections) return detections;
+  }
+  return [];
+}
+
+function drawLiveDetectionOverlay(canvas, detections) {
+  if (!canvas.width || !canvas.height || !detections?.length) {
+    canvas.dataset.liveDetectionCount = "0";
+    return;
+  }
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const width = canvas.width;
+  const height = canvas.height;
+  const lineWidth = Math.max(2, Math.round(width / 520));
+  const fontSize = Math.max(13, Math.round(width / 88));
+  let drawn = 0;
+  ctx.save();
+  ctx.lineWidth = lineWidth;
+  ctx.font = `700 ${fontSize}px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.textBaseline = "top";
+  detections.slice(0, 80).forEach((detection, index) => {
+    const box = liveDetectionBox(detection);
+    if (!box || [box.x1, box.y1, box.x2, box.y2].some((value) => !Number.isFinite(value))) return;
+    const sourceWidth = Number(detection.frame_width || detection.frameWidth || detection.image_width || width) || width;
+    const sourceHeight = Number(detection.frame_height || detection.frameHeight || detection.image_height || height) || height;
+    const scaleX = width / sourceWidth;
+    const scaleY = height / sourceHeight;
+    const x = Math.max(0, Math.min(box.x1, box.x2) * scaleX);
+    const y = Math.max(0, Math.min(box.y1, box.y2) * scaleY);
+    const x2 = Math.min(width, Math.max(box.x1, box.x2) * scaleX);
+    const y2 = Math.min(height, Math.max(box.y1, box.y2) * scaleY);
+    const boxWidth = Math.max(0, x2 - x);
+    const boxHeight = Math.max(0, y2 - y);
+    if (boxWidth < 3 || boxHeight < 3) return;
+
+    const color = index % 2 === 0 ? "#ef4444" : "#38bdf8";
+    ctx.strokeStyle = color;
+    ctx.shadowColor = "rgba(15, 23, 42, 0.5)";
+    ctx.shadowBlur = lineWidth * 1.5;
+    ctx.strokeRect(x, y, boxWidth, boxHeight);
+    ctx.shadowBlur = 0;
+
+    const label = liveDetectionLabel(detection);
+    const labelWidth = Math.min(ctx.measureText(label).width + 14, width - 8);
+    const labelHeight = fontSize + 8;
+    const labelX = Math.min(Math.max(4, x), Math.max(4, width - labelWidth - 4));
+    const labelY = y - labelHeight - 4 >= 4 ? y - labelHeight - 4 : Math.min(height - labelHeight - 4, y + 4);
+    ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+    ctx.fillRect(labelX, labelY, labelWidth, labelHeight);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(label, labelX + 7, labelY + 4, labelWidth - 14);
+    drawn += 1;
+  });
+  ctx.restore();
+  canvas.dataset.liveDetectionCount = String(drawn);
+}
+
+function updateLiveDetectionCache(payload) {
+  liveDetectionsByCamera.clear();
+  liveDetectionsBySlot.clear();
+  const byCamera = payload?.detections || payload?.spatial || {};
+  Object.entries(byCamera).forEach(([cameraName, detections]) => {
+    if (!Array.isArray(detections)) return;
+    liveDetectionsByCamera.set(normalizeLiveCameraKey(cameraName), detections);
+  });
+  (payload?.cameras || []).forEach((camera) => {
+    const slot = Number(camera?.slot_number ?? camera?.slotNumber);
+    const cameraName = normalizeLiveCameraKey(camera?.name || camera?.camera_name);
+    if (!slot || !cameraName) return;
+    const detections = liveDetectionsByCamera.get(cameraName);
+    if (detections) liveDetectionsBySlot.set(slot, detections);
+  });
+}
+
+function redrawVisibleLiveFramesWithDetections() {
+  const surfaces = Array.from(els.moduleContent.querySelectorAll("[data-live-frame]"));
+  surfaces.forEach((canvas) => {
+    const slot = Number(canvas.dataset.liveSlot);
+    const cachedFrame = slot ? liveFrameCache.get(slot) : null;
+    if (cachedFrame) renderLiveSocketFrame(slot, cachedFrame, false);
+    else drawLiveDetectionOverlay(canvas, liveDetectionsForCanvas(canvas));
+  });
+}
+
+async function refreshLiveDetections() {
+  const hasLiveFrames = Boolean(els.moduleContent.querySelector("[data-live-frame]"));
+  if (!hasLiveFrames) {
+    stopLiveDetectionRefresh();
+    return;
+  }
+  if (liveDetectionLoading) return;
+  liveDetectionLoading = true;
+  try {
+    const payload = await api("/api/v2/detections/latest", { force: true });
+    updateLiveDetectionCache(payload);
+    redrawVisibleLiveFramesWithDetections();
+  } catch {
+    // Live video must continue even if detector health is temporarily unavailable.
+  } finally {
+    liveDetectionLoading = false;
+  }
+}
+
+function syncLiveDetectionRefresh() {
+  const hasLiveFrames = Boolean(els.moduleContent.querySelector("[data-live-frame]"));
+  if (!hasLiveFrames) {
+    stopLiveDetectionRefresh();
+    return;
+  }
+  if (liveDetectionTimer === null) {
+    refreshLiveDetections();
+    liveDetectionTimer = window.setInterval(refreshLiveDetections, LIVE_DETECTION_REFRESH_MS);
+  } else {
+    redrawVisibleLiveFramesWithDetections();
+  }
+}
+
+function stopLiveDetectionRefresh() {
+  if (liveDetectionTimer !== null) {
+    window.clearInterval(liveDetectionTimer);
+    liveDetectionTimer = null;
+  }
 }
 
 function renderLiveSocketFrame(slot, jpegBytes, cacheFrame = true) {
@@ -665,6 +855,7 @@ function renderLiveSocketFrame(slot, jpegBytes, cacheFrame = true) {
           canvas.height = bitmap.height;
         }
         canvas.getContext("2d", { alpha: false }).drawImage(bitmap, 0, 0);
+        drawLiveDetectionOverlay(canvas, liveDetectionsForCanvas(canvas));
         delete canvas.dataset.livePriming;
         canvas.classList.remove("feed-stale");
         canvas.removeAttribute("title");
@@ -746,9 +937,11 @@ function stopLiveFrameRefresh() {
 function syncLiveFrameRefresh() {
   const hasLiveFrames = Boolean(els.moduleContent.querySelector("[data-live-frame]"));
   if (!hasLiveFrames) {
+    stopLiveDetectionRefresh();
     return;
   }
   reconcileLiveStreams();
+  syncLiveDetectionRefresh();
 }
 
 const HEAD_MODULE_IDS = new Set(["overview", "users"]);
@@ -2083,12 +2276,37 @@ function inferFeedGroup(nvr, nvrIndex, channel, channelIndex, nvrCount) {
   return { id: `auto-${idPrefix}-${groupIndex}`, name: feedDefaultGroupName(groupIndex) };
 }
 
+function feedCameraAliases(nvr, channel) {
+  const channelNumber = channel?.channel || channel?.external_channel_id || "";
+  const slotNumber = channel?.slot_number || "";
+  const nvrName = nvr?.name || "NVR";
+  return uniqueLiveCameraAliases([
+    channel?.name,
+    channel?.camera_name,
+    channel?.cameraName,
+    channelNumber ? `${nvrName} Camera ${channelNumber}` : "",
+    channelNumber ? `${nvrName} Channel ${channelNumber}` : "",
+    channelNumber ? `NVR Camera ${channelNumber}` : "",
+    channelNumber ? `Camera ${channelNumber}` : "",
+    slotNumber ? `slot-${slotNumber}` : "",
+    slotNumber ? `Slot ${slotNumber}` : "",
+    slotNumber ? `Camera ${slotNumber}` : "",
+    slotNumber ? `NVR Camera ${slotNumber}` : "",
+  ]);
+}
+
+function feedCameraDisplayName(nvr, channel) {
+  return feedCameraAliases(nvr, channel)[0] || `${nvr?.name || "NVR"} ${t("table.channel")} ${channel?.channel || ""}`.trim();
+}
+
 function renderFeedTile(nvr, channel) {
   if (!channel) {
     return `<figure class="feed-empty"><div>${escapeHtml(t("feed.readd"))}</div><figcaption>${escapeHtml(nvr.name)}</figcaption></figure>`;
   }
   if (channel.active && channel.slot_number != null) {
-    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><canvas class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-priming="true" role="img" aria-label="${escapeHtml(nvr.name)} channel ${channel.channel}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
+    const cameraName = feedCameraDisplayName(nvr, channel);
+    const aliases = feedCameraAliases(nvr, channel).join("||");
+    return `<figure><span class="feed-transmitting feed-stale-badge">${escapeHtml(t("status.waiting_video"))}</span><canvas class="feed-stale" data-live-frame data-live-slot="${channel.slot_number}" data-live-camera="${escapeAttr(cameraName)}" data-live-camera-aliases="${escapeAttr(aliases)}" data-live-priming="true" role="img" aria-label="${escapeAttr(cameraName)}" title="${escapeHtml(t("status.waiting_fresh_frame"))}" style="display:block;width:100%;aspect-ratio:16/9"></canvas><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
   }
   return `<figure class="feed-empty"><div>${escapeHtml(channel.message || t("feed.no_signal"))}</div><figcaption>${escapeHtml(nvr.name)} · ${escapeHtml(t("table.channel"))} ${channel.channel}</figcaption></figure>`;
 }

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from starlette.requests import Request
@@ -180,8 +181,52 @@ def test_backend_container_keeps_detector_autostart_and_watchdog_enabled():
 def test_dashboard_asset_version_loads_the_continuous_feed_release():
     html = (ROOT / "dashboard-v2" / "index.html").read_text(encoding="utf-8")
 
-    assert "/dashboard-v2/assets/app.js?v=68" in html
-    assert "/dashboard-v2/assets/styles.css?v=48" in html
+    assert "/dashboard-v2/assets/app.js?v=69" in html
+    assert "/dashboard-v2/assets/styles.css?v=49" in html
+
+
+def test_latest_detections_endpoint_exposes_camera_slots_for_feed_overlay(tmp_path, monkeypatch):
+    health_path = tmp_path / "detection_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "updated_at": "2026-07-31T10:00:00",
+                "cameras": [{"name": "NVR Camera 5", "slot_number": 5}],
+                "last_detections_by_camera": {
+                    "NVR Camera 5": [
+                        {
+                            "class_name": "baget box",
+                            "confidence": 0.91,
+                            "frame_width": 1280,
+                            "frame_height": 720,
+                            "bbox": {"x1": 10, "y1": 20, "x2": 110, "y2": 220},
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "DETECTION_HEALTH_PATH", health_path)
+
+    payload = server.v2_latest_detections()
+
+    assert payload["cameras"] == [{"name": "NVR Camera 5", "slot_number": 5}]
+    assert payload["detections"]["NVR Camera 5"][0]["bbox"]["x2"] == 110
+
+
+def test_camera_feed_draws_detection_boxes_and_labels_on_live_canvas():
+    source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'api("/api/v2/detections/latest", { force: true })' in source
+    assert "function drawLiveDetectionOverlay(canvas, detections)" in source
+    assert "function liveDetectionLabel(detection)" in source
+    assert "ctx.strokeRect(x, y, boxWidth, boxHeight);" in source
+    assert "ctx.fillText(label, labelX + 7, labelY + 4, labelWidth - 14);" in source
+    assert 'data-live-camera-aliases="${escapeAttr(aliases)}"' in source
+    assert ".live-preview canvas" in styles
 
 
 def test_dashboard_navigation_uses_cached_data_until_refresh():

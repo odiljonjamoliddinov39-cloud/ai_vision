@@ -2873,7 +2873,8 @@ h3 .muted {
   padding: 0;
 }
 
-.live-preview img {
+.live-preview img,
+.live-preview canvas {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -2881,7 +2882,8 @@ h3 .muted {
   transition: opacity 160ms ease;
 }
 
-.live-preview img.feed-stale {
+.live-preview img.feed-stale,
+.live-preview canvas.feed-stale {
   opacity: 0.72;
 }
 
