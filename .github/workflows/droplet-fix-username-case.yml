@@ -1,0 +1,96 @@
+name: Fix NVR username case + reseed
+
+# VLC confirms the stream works (H.264, /Streaming/Channels/X01). The droplet
+# only fails auth because the stored username is "Admin" (capital A) and the NVR
+# wants "admin". This lowercases just the username in .env (the password already
+# in .env is left untouched and never read/printed) and reseeds the cameras.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-production
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Lowercase username + reseed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 8m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+
+            echo "Lowercasing CAMERA_CONTROLLER_USERNAME to 'admin' (password left untouched)..."
+            touch .env
+            if grep -q '^CAMERA_CONTROLLER_USERNAME=' .env; then
+              sed -i 's/^CAMERA_CONTROLLER_USERNAME=.*/CAMERA_CONTROLLER_USERNAME=admin/' .env
+            else
+              echo "CAMERA_CONTROLLER_USERNAME=admin" >> .env
+            fi
+            # Confirm the username line (safe to show) and that a password exists
+            # (value NOT shown).
+            grep '^CAMERA_CONTROLLER_USERNAME=' .env
+            if grep -q '^CAMERA_CONTROLLER_PASSWORD=.\+' .env; then
+              echo "CAMERA_CONTROLLER_PASSWORD: present"
+            else
+              echo "CAMERA_CONTROLLER_PASSWORD: MISSING - this fix needs the password already stored; if this says MISSING, re-add it."
+            fi
+
+            echo "Resetting camera list so it reseeds with the corrected username..."
+            docker compose stop backend 2>/dev/null || true
+            ts="$(date +%s)"
+            for f in database/cameras.db database/cameras.db-wal database/cameras.db-shm; do
+              [ -f "$f" ] && mv "$f" "${f}.bak-${ts}" && echo "moved $f"
+            done
+
+            echo "Recreating backend..."
+            docker compose up -d --force-recreate --no-deps backend
+
+            echo "Waiting for seed + first connect (main stream tested before activation)..."
+            PORT="$(grep -E '^AI_VISION_PORT=' .env 2>/dev/null | cut -d= -f2)"; PORT="${PORT:-8080}"
+            for i in $(seq 1 25); do
+              sleep 6
+              curl -s --max-time 8 "http://localhost:${PORT}/api/v2/streams/health" >/tmp/h.json 2>/dev/null && break
+              echo "attempt $i: backend not ready yet"
+            done
+
+            echo "================= STREAM STATUS ================="
+            python3 - <<'PY' 2>/dev/null || cat /tmp/h.json
+            import json
+            try:
+                d = json.load(open("/tmp/h.json"))
+            except Exception as e:
+                print("could not parse:", e); raise SystemExit
+            streams = d.get("streams", [])
+            if not streams:
+                print("(no streams yet - may still be testing)")
+            for s in streams:
+                print(f"- {s.get('name')}: {s.get('status')}  (err={s.get('last_error')})")
+            PY
+            echo "Done."
