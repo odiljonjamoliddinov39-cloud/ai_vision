@@ -58,6 +58,35 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _resolve_target_fps(value) -> float:
+    """AUTO/zero means run continuously at sustainable hardware speed."""
+    if value is None or str(value).strip().upper() == "AUTO":
+        return 0.0
+    target = float(value)
+    return max(0.0, target)
+
+
+def _performance_metrics() -> dict:
+    metrics = {"cpu_usage_percent": None, "gpu_usage_percent": None}
+    try:
+        import psutil
+
+        metrics["cpu_usage_percent"] = round(float(psutil.cpu_percent()), 1)
+    except Exception:
+        pass
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        metrics["gpu_usage_percent"] = round(
+            float(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu), 1
+        )
+    except Exception:
+        pass
+    return metrics
+
+
 def main():
     parser = argparse.ArgumentParser(description="AI Vision Assistant")
     parser.add_argument(
@@ -289,9 +318,9 @@ def main():
     frame_number = 0
     dummy_positions = {cam.name: 0 for cam in cameras}
 
-    # Capture stays independent from inference. Each camera has one replaceable
-    # pending frame, so a slow model drops old work instead of building delay.
-    target_detection_fps = float(det_cfg.get("target_fps", 0) or 0)
+    # Capture stays independent from inference. Bounded per-camera queues keep
+    # latency controlled while allowing FIFO operation when completeness matters.
+    target_detection_fps = _resolve_target_fps(det_cfg.get("target_fps", "AUTO"))
     min_detection_interval = 1.0 / target_detection_fps if target_detection_fps > 0 else 0.0
     stale_after_ms = int(det_cfg.get("stale_after_ms", 3000))
     max_concurrent_cameras = int(det_cfg.get("max_concurrent_cameras", 0) or 0)
@@ -301,6 +330,8 @@ def main():
         else {cam.name for cam in cameras}
     )
     last_detection_at = {cam.name: 0.0 for cam in cameras}
+    camera_frame_counts = {cam.name: 0 for cam in cameras}
+    camera_fps_started_at = time.monotonic()
     processors = {
         cam.name: (
             object_trackers[cam.name].update
@@ -311,7 +342,15 @@ def main():
         if cam.name in inference_camera_names and detector.model is not None
     }
     inference_scheduler = (
-        LatestFrameInferenceScheduler(processors) if processors else None
+        LatestFrameInferenceScheduler(
+            processors,
+            queue_size=det_cfg.get("queue_size", 5),
+            queue_mode=det_cfg.get("queue_mode", "latest"),
+            workers=det_cfg.get("detector_workers", "AUTO"),
+            device=detector.device,
+        )
+        if processors
+        else None
     )
 
     try:
@@ -329,6 +368,7 @@ def main():
                 any_frame = True
                 last_frame_seen_at = now
                 frames_read += 1
+                camera_frame_counts[cam.name] += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
                 frame_at = time.time()
 
@@ -357,8 +397,10 @@ def main():
                         0, round((time.time() - inference_result.frame_at) * 1000)
                     )
                     result_is_stale = frame_age_ms > stale_after_ms
+                    camera_elapsed = max(0.001, time.monotonic() - camera_fps_started_at)
                     inference_by_camera[cam.name] = {
                         **inference_scheduler.metrics(cam.name),
+                        "camera_fps": round(camera_frame_counts[cam.name] / camera_elapsed, 3),
                         "frame_at": datetime.fromtimestamp(
                             inference_result.frame_at
                         ).isoformat(timespec="milliseconds"),
@@ -386,8 +428,10 @@ def main():
                             "inference_age_ms": None,
                         }
                     )
+                    camera_elapsed = max(0.001, time.monotonic() - camera_fps_started_at)
                     inference_by_camera[cam.name] = {
                         **metrics,
+                        "camera_fps": round(camera_frame_counts[cam.name] / camera_elapsed, 3),
                         "frame_at": datetime.fromtimestamp(frame_at).isoformat(
                             timespec="milliseconds"
                         ),
@@ -548,6 +592,7 @@ def main():
                     "last_spatial_objects_by_camera": last_spatial_objects_by_camera,
                     "last_detections_by_camera": last_detections_by_camera,
                     "inference_by_camera": inference_by_camera,
+                    "performance": _performance_metrics(),
                     "live_feed_enabled": live_feed_enabled,
                     "event_logging_enabled": event_logger is not None,
                     "snapshot_enabled": snapshot_saver is not None,
