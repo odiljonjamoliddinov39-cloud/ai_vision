@@ -1,0 +1,62 @@
+name: Detector-only check (read-only)
+
+# Shows the DETECTOR's own state, with all stream/ffmpeg noise filtered OUT:
+# whether the YOLO model file exists + loaded, the detection thread/loop
+# started, and any detection-specific Python error. Read-only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  det:
+    name: Detector-only state
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 6m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+
+            echo "================= is a detection process/thread running? ================="
+            docker compose exec -T backend sh -c "ps aux | grep -iE 'python|main.py|detect' | grep -iv grep" 2>/dev/null || echo "(cannot list processes)"
+            echo ""
+
+            echo "================= YOLO model file present in container? ================="
+            docker compose exec -T backend sh -c "ls -la /app/models 2>/dev/null; echo '---'; ls -la /app/*.pt 2>/dev/null" 2>/dev/null || echo "(cannot list models)"
+            echo ""
+
+            echo "================= DETECTOR-ONLY backend log (stream noise removed) ================="
+            docker compose logs backend --tail 1500 2>/dev/null \
+              | grep -ivE "\[stream:|ffmpeg|hevc|rtsp @|GET /|POST /|OPTIONS /|First slice|NAL|POC|cu_qp" \
+              | grep -iE "detect|yolo|ultralytics|torch|model|worker|thread|autostart|watchdog|inference|loaded|starting|traceback|error|exception|warm|device|cpu|frame" \
+              | tail -60 || echo "(no detector lines found - the loop may never have logged anything)"
+            echo ""
+            echo "Done."
