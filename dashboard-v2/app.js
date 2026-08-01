@@ -6254,11 +6254,23 @@ function renderAnalytics(container, catalogMode = false) {
   const alerts = currentOperationalAlerts();
   const health = state.overview?.health || {};
   const cameraCount = Number(health.camera_count || 0);
+  const inferenceMetrics = Object.values(health.inference_by_camera || {});
+  const metricTotal = (key) => inferenceMetrics.reduce((sum, item) => sum + Number(item?.[key] || 0), 0);
+  const metricAverage = (key) => inferenceMetrics.length ? metricTotal(key) / inferenceMetrics.length : 0;
+  const performance = health.performance || {};
   const resources = [
-    { name: "CPU Usage", pct: 42, color: "#2a78d6" },
-    { name: "GPU Usage", pct: 67, color: "#7c3aed" },
-    { name: "Storage Usage", pct: 58, color: "#0891b2" },
-    { name: "Memory Usage", pct: 71, color: "#db2777" },
+    { name: "CPU Usage", pct: performance.cpu_usage_percent, color: "#2a78d6" },
+    { name: "GPU Usage", pct: performance.gpu_usage_percent, color: "#7c3aed" },
+  ].filter((resource) => Number.isFinite(Number(resource.pct)));
+  const detectorMetrics = [
+    ["Camera FPS", metricTotal("camera_fps").toFixed(1)],
+    ["Inference FPS", metricTotal("inference_fps").toFixed(1)],
+    ["Dropped Frames", metricTotal("dropped_frames").toLocaleString()],
+    ["Queued Frames", metricTotal("queue_depth").toLocaleString()],
+    ["Queue Latency", metricAverage("average_queue_latency_ms").toFixed(1) + " ms"],
+    ["Average Inference", metricAverage("average_inference_duration_ms").toFixed(1) + " ms"],
+    ["Detection Count/sec", metricTotal("detection_count_per_sec").toFixed(1)],
+    ["Tracking FPS", metricTotal("tracking_fps").toFixed(1)],
   ];
   container.innerHTML = `
     <p class="chart-note">${catalogMode ? "Operational overview with scheduled catalog recognition results below." : "Companies/uptime are sample data - AI Check-ins below are live."}</p>
@@ -6288,16 +6300,20 @@ function renderAnalytics(container, catalogMode = false) {
       </section>
       <section class="ov-card">
         <h3>System Resources</h3>
-        ${resources
-          .map(
-            (res) => `
-              <div class="res-row">
-                <div class="res-head"><strong>${res.name}</strong><span>${res.pct}%</span></div>
-                <div class="res-bar"><i style="width:${res.pct}%;background:${res.color}"></i></div>
-              </div>
-            `
-          )
-          .join("")}
+        ${resources.length
+          ? resources.map(
+              (res) => `
+                <div class="res-row">
+                  <div class="res-head"><strong>${res.name}</strong><span>${Number(res.pct).toFixed(1)}%</span></div>
+                  <div class="res-bar"><i style="width:${Math.max(0, Math.min(100, Number(res.pct)))}%;background:${res.color}"></i></div>
+                </div>
+              `
+            ).join("")
+          : '<p class="empty">Resource metrics unavailable</p>'}
+        <h3>Detection Performance</h3>
+        ${detectorMetrics.map(([name, value]) => `
+          <div class="res-row"><div class="res-head"><strong>${name}</strong><span>${value}</span></div></div>
+        `).join("")}
       </section>
       <section class="ov-card" data-recent-activity>
         <h3>AI Check in</h3>
