@@ -1,0 +1,84 @@
+name: Detection check (read-only)
+
+# Reports whether the detection worker is running and producing detections:
+# detection_health.json summary, recent detection/worker log lines, and the
+# relevant env (autostart, stream-first). Read-only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    name: Check detection on the droplet
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 6m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+
+            echo "================= detection-relevant env ================="
+            for v in AUTO_START_DETECTION AI_VISION_STREAM_FIRST DETECTION_WATCHDOG_ENABLED \
+                     CATALOG_RECOGNITION_SCHEDULER_ENABLED AI_VISION_ENTERPRISE_STREAMING; do
+              val="$(grep -E "^$v=" .env 2>/dev/null | cut -d= -f2)"
+              echo "$v=${val:-（from compose/default）}"
+            done
+            echo ""
+
+            echo "================= detection_health.json (summary) ================="
+            docker compose exec -T backend python - <<'PY' 2>/dev/null || echo "(could not read health)"
+            import json, os
+            p = "/app/logs/detection_health.json"
+            try:
+                d = json.load(open(p))
+            except Exception as e:
+                print("no health file yet:", e); raise SystemExit
+            print("running:", d.get("running"), "| updated:", d.get("updated_at") or d.get("timestamp"))
+            print("frames_processed:", d.get("frames_processed"), "| fps:", d.get("fps"))
+            print("last_error:", d.get("last_error"))
+            cams = d.get("cameras") or []
+            print("cameras in health:", len(cams))
+            bydet = d.get("last_detections_by_camera") or {}
+            tot = sum(len(v or []) for v in bydet.values())
+            print("cameras with detections:", sum(1 for v in bydet.values() if v), "| total detections:", tot)
+            for name, dets in list(bydet.items())[:8]:
+                labels = [x.get("class_name") for x in (dets or [])][:6]
+                print(f"  - {name}: {len(dets or [])} -> {labels}")
+            PY
+            echo ""
+
+            echo "================= backend log: detection / worker / model lines ================="
+            docker compose logs backend --tail 400 2>/dev/null \
+              | grep -iE "detection|detector|yolo|model|worker|stream.?first|frame|watchdog|autostart|torch|cuda|device" \
+              | grep -ivE "GET /|POST /|OPTIONS /" \
+              | tail -40 || echo "(no matching lines)"
+            echo ""
+            echo "Done."
