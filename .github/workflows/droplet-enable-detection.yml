@@ -1,0 +1,111 @@
+name: Enable detection (careful)
+
+# Turns the detector on WITHOUT disturbing anything else. Backs up .env, updates
+# ONLY three keys (AUTO_START_DETECTION, DETECTION_WATCHDOG_ENABLED,
+# AI_VISION_STREAM_FIRST), recreates ONLY the backend container, and verifies
+# that streams stay online and detection starts. Does not touch config.yaml,
+# cameras.db, the dataset volume, credentials, ALLOWED_ORIGINS, or mediamtx.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-production
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    name: Enable detection safely
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 8m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+
+            echo "Backing up .env..."
+            ts="$(date +%s)"
+            cp .env ".env.bak-${ts}" && echo "backup: .env.bak-${ts}"
+
+            # Idempotent set: replace the key if present, else append. Only these 3.
+            set_kv() {
+              local key="$1" val="$2"
+              if grep -qE "^${key}=" .env; then
+                sed -i "s|^${key}=.*|${key}=${val}|" .env
+              else
+                echo "${key}=${val}" >> .env
+              fi
+            }
+            echo "Setting the 3 detection keys (nothing else touched)..."
+            set_kv AUTO_START_DETECTION true
+            set_kv DETECTION_WATCHDOG_ENABLED true
+            set_kv AI_VISION_STREAM_FIRST 1
+
+            echo "----- the 3 keys now -----"
+            grep -E '^(AUTO_START_DETECTION|DETECTION_WATCHDOG_ENABLED|AI_VISION_STREAM_FIRST)=' .env
+            echo "----- confirming protected settings are UNCHANGED -----"
+            grep -E '^CAMERA_CONTROLLER_USERNAME=' .env || echo "username line: (none)"
+            if grep -q '^CAMERA_CONTROLLER_PASSWORD=.\+' .env; then echo "camera password: still present"; fi
+            grep -E '^ALLOWED_ORIGINS=' .env || echo "ALLOWED_ORIGINS: (none)"
+            echo ""
+
+            echo "Recreating ONLY the backend (mediamtx/streams left running)..."
+            docker compose up -d --no-deps backend
+
+            echo "Waiting for backend + detector to spin up..."
+            PORT="$(grep -E '^AI_VISION_PORT=' .env 2>/dev/null | cut -d= -f2)"; PORT="${PORT:-8080}"
+            for i in $(seq 1 20); do
+              sleep 6
+              curl -s --max-time 8 "http://localhost:${PORT}/api/v2/streams/health" >/tmp/s.json 2>/dev/null && break
+            done
+
+            echo "================= STREAMS still OK? ================="
+            python3 - <<'PY' 2>/dev/null || echo "(could not read streams health)"
+            import json
+            d = json.load(open("/tmp/s.json"))
+            ss = d.get("streams", [])
+            online = sum(1 for s in ss if s.get("status") == "online")
+            print(f"streams: {len(ss)} total, {online} online")
+            for s in ss[:8]:
+                print(f"  - {s.get('name')}: {s.get('status')}")
+            PY
+            echo ""
+
+            echo "================= DETECTOR running? ================="
+            docker compose exec -T backend python - <<'PY' 2>/dev/null || echo "(no health yet - may need a minute)"
+            import json
+            try:
+                d = json.load(open("/app/logs/detection_health.json"))
+            except Exception as e:
+                print("health not ready:", e); raise SystemExit
+            print("running:", d.get("running"), "| frames:", d.get("frames_processed"), "| fps:", d.get("fps"), "| last_error:", d.get("last_error"))
+            bydet = d.get("last_detections_by_camera") or {}
+            print("total detections:", sum(len(v or []) for v in bydet.values()))
+            PY
+            echo ""
+            echo "If detector still shows running:None, give it ~1 min (model load) and re-check."
+            echo "Done."
