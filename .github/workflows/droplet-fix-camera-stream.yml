@@ -1,0 +1,126 @@
+name: Fix camera streams (main stream + reseed)
+
+# Auth already works (streams moved past 401). The sub-stream (…02) URLs return
+# "Invalid data", so switch to the main stream (…01) for the 7 kiosk channels.
+# Reuses the credentials ALREADY stored on the droplet (in cameras.db) - no
+# password input or GitHub secret needed; creds are read server-side and never
+# printed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-production
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Reseed cameras on main stream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 8m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+
+            echo "Extracting existing working credentials from the running backend (not printed)..."
+            # Read one credentialed stream_url from cameras.db inside the container
+            # and emit shell assignments. Only the assignments are produced, and
+            # they are consumed by eval - never echoed to the log.
+            CREDS="$(docker compose exec -T backend python - <<'PY'
+            import sqlite3
+            from urllib.parse import urlsplit, unquote
+            import shlex
+            try:
+                con = sqlite3.connect("/app/database/cameras.db")
+                row = con.execute(
+                    "SELECT stream_url FROM cameras WHERE stream_url LIKE 'rtsp://%:%@%' LIMIT 1"
+                ).fetchone()
+            except Exception:
+                row = None
+            if not row:
+                print("OK=0")
+            else:
+                u = urlsplit(row[0])
+                print("OK=1")
+                print("NVR_USER=" + shlex.quote(unquote(u.username or "")))
+                print("NVR_PASS=" + shlex.quote(unquote(u.password or "")))
+            PY
+            )"
+            eval "$CREDS"
+            if [ "${OK:-0}" != "1" ] || [ -z "${NVR_USER:-}" ] || [ -z "${NVR_PASS:-}" ]; then
+              echo "Could not find stored credentials in cameras.db - nothing changed."
+              echo "Add the NVR again in the dashboard (with password) and re-run, or use the secret-based workflow."
+              exit 1
+            fi
+            echo "Found stored credentials for user '${NVR_USER}' (password hidden). Proceeding."
+
+            echo "Writing camera-controller settings (main stream) to .env..."
+            touch .env
+            sed -i '/^CAMERA_CONTROLLER_/d' .env
+            {
+              echo "CAMERA_CONTROLLER_HOST=87.192.242.82"
+              echo "CAMERA_CONTROLLER_PORT=554"
+              echo "CAMERA_CONTROLLER_PROTOCOL=rtsp"
+              echo "CAMERA_CONTROLLER_USERNAME=${NVR_USER}"
+              echo "CAMERA_CONTROLLER_PASSWORD=${NVR_PASS}"
+              echo "CAMERA_CONTROLLER_CHANNELS=2,5,6,16,20,23,25"
+              echo "CAMERA_CONTROLLER_STREAM_TEMPLATE=/Streaming/Channels/{channel}01"
+              echo "CAMERA_CONTROLLER_NAME=Zavod NVR"
+            } >> .env
+            echo "CAMERA_CONTROLLER_ keys now in .env:"
+            grep -oE '^CAMERA_CONTROLLER_[A-Z_]+' .env | sort -u
+
+            echo "Backing up + resetting the camera list so it reseeds clean (main stream, 7 channels)..."
+            docker compose stop backend 2>/dev/null || true
+            ts="$(date +%s)"
+            for f in database/cameras.db database/cameras.db-wal database/cameras.db-shm; do
+              [ -f "$f" ] && mv "$f" "${f}.bak-${ts}" && echo "moved $f"
+            done
+
+            echo "Recreating backend..."
+            docker compose up -d --force-recreate --no-deps backend
+
+            echo "Waiting for backend + seed (main stream is tested before activation)..."
+            PORT="$(grep -E '^AI_VISION_PORT=' .env 2>/dev/null | cut -d= -f2)"; PORT="${PORT:-8080}"
+            for i in $(seq 1 25); do
+              sleep 6
+              curl -s --max-time 8 "http://localhost:${PORT}/api/v2/streams/health" >/tmp/h.json 2>/dev/null && break
+              echo "attempt $i: backend not ready yet"
+            done
+
+            echo "================= STREAM STATUS ================="
+            python3 - <<'PY' 2>/dev/null || cat /tmp/h.json
+            import json
+            try:
+                d = json.load(open("/tmp/h.json"))
+            except Exception as e:
+                print("could not parse:", e); raise SystemExit
+            for s in d.get("streams", []):
+                print(f"- {s.get('name')}: {s.get('status')}  (err={s.get('last_error')})")
+            PY
+            echo "Done."
