@@ -3221,3 +3221,26 @@ h3 .muted {
   border-radius: 6px;
   border: 1px solid var(--line-strong);
 }
+
+.search-summary {
+  margin: 4px 0 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 1.02rem;
+  background: var(--accent-soft, rgba(37, 99, 235, 0.1));
+  color: var(--accent-strong, #1d4ed8);
+  border: 1px solid var(--line-strong);
+}
+
+.result-table tr.search-cam-head td {
+  padding-top: 14px;
+  font-size: 0.95rem;
+  color: var(--text-muted, #6b7280);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.result-table tr.search-cam-head [data-cam-subtotal] {
+  font-weight: 600;
+  color: var(--text-strong, inherit);
+}

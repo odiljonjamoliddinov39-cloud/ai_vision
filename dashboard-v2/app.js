@@ -221,6 +221,8 @@ const I18N = {
     "search.saved_n": "Saved {n} item(s) to the dataset.",
     "search.nothing_kept": "Nothing is kept to save.",
     "search.recounted": "Recounted: {n} boxes.",
+    "search.summary": "Found {total} box(es) · {locations} location(s) · {cameras} camera(s)",
+    "search.subtotal": "{n} box(es)",
     "menu.ai_models": "AI Models",
     "menu.integrations": "Integrations",
     "menu.logs": "Logs",
@@ -517,6 +519,8 @@ const I18N = {
     "search.saved_n": "Сохранено {n} объект(ов) в набор данных.",
     "search.nothing_kept": "Нечего сохранять.",
     "search.recounted": "Пересчитано: {n} коробок.",
+    "search.summary": "Найдено {total} коробк(и) · {locations} мест · {cameras} камер",
+    "search.subtotal": "{n} коробк(и)",
     "menu.ai_models": "AI модели",
     "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
@@ -4652,6 +4656,7 @@ async function renderTrainingAnalytics(container) {
         saveAllBtn.hidden = true;
       } else {
         searchResults.innerHTML = trainingSearchRowsHtml(rows);
+        updateSearchSummary(searchResults);
         saveAllBtn.hidden = false;
       }
     } catch (error) {
@@ -4672,6 +4677,11 @@ async function renderTrainingAnalytics(container) {
     if (row && event.target.matches("[data-search-keep]") && !event.target.checked) {
       void recountSearchRow(row);
     }
+    updateSearchSummary(searchResults);
+  });
+  // Editing a count by hand updates the totals immediately.
+  searchResults?.addEventListener("input", (event) => {
+    if (event.target.matches("[data-search-count]")) updateSearchSummary(searchResults);
   });
   saveAllBtn?.addEventListener("click", async () => {
     const rows = [...searchResults.querySelectorAll("[data-search-row]")];
@@ -4729,7 +4739,37 @@ async function renderTrainingAnalytics(container) {
 }
 
 function trainingSearchRowsHtml(rows) {
+  // Group the results by camera so boxes found across several cameras are
+  // clearly separated, each camera carrying its own running subtotal. A
+  // grand-total banner sits on top. Both are recomputed live by
+  // updateSearchSummary() as counts change or rows are recounted/ignored.
+  const groups = new Map();
+  for (const row of rows) {
+    const cam = row.camera || "—";
+    if (!groups.has(cam)) groups.set(cam, []);
+    groups.get(cam).push(row);
+  }
+  const bodyHtml = [...groups.entries()]
+    .map(([cam, camRows]) => {
+      const rowsHtml = camRows
+        .map(
+          (row) => `
+              <tr data-search-row data-group="${escapeAttr(row.group_id)}" data-camera="${escapeAttr(cam)}">
+                <td><input type="text" data-search-name value="${escapeAttr(row.name || "")}" placeholder="${escapeAttr(t("training.item_name_ph"))}" /></td>
+                <td><input type="number" min="0" class="count-input" data-search-count value="${Number(row.count) || 0}" /></td>
+                <td>${row.crop_url ? `<img class="test-crop" src="${escapeAttr(`${API_BASE}${row.crop_url}`)}" alt="" />` : "—"}</td>
+                <td>${escapeHtml(cam)}</td>
+                <td><label class="training-necessary"><input type="checkbox" data-search-keep checked /> ${escapeHtml(t("test.keep"))}</label></td>
+              </tr>`
+        )
+        .join("");
+      return `
+              <tr class="search-cam-head"><td colspan="5">📷 <b>${escapeHtml(cam)}</b> — <span data-cam-subtotal data-camera="${escapeAttr(cam)}"></span></td></tr>
+              ${rowsHtml}`;
+    })
+    .join("");
   return `
+    <div data-search-summary class="search-summary"></div>
     <div style="overflow-x:auto">
       <table class="result-table">
         <thead><tr>
@@ -4740,21 +4780,43 @@ function trainingSearchRowsHtml(rows) {
           <th>${escapeHtml(t("test.keep_ignore"))}</th>
         </tr></thead>
         <tbody>
-          ${rows
-            .map(
-              (row) => `
-              <tr data-search-row data-group="${escapeAttr(row.group_id)}">
-                <td><input type="text" data-search-name value="${escapeAttr(row.name || "")}" placeholder="${escapeAttr(t("training.item_name_ph"))}" /></td>
-                <td><input type="number" min="0" class="count-input" data-search-count value="${Number(row.count) || 0}" /></td>
-                <td>${row.crop_url ? `<img class="test-crop" src="${escapeAttr(`${API_BASE}${row.crop_url}`)}" alt="" />` : "—"}</td>
-                <td>${escapeHtml(row.camera || "—")}</td>
-                <td><label class="training-necessary"><input type="checkbox" data-search-keep checked /> ${escapeHtml(t("test.keep"))}</label></td>
-              </tr>`
-            )
-            .join("")}
+          ${bodyHtml}
         </tbody>
       </table>
     </div>`;
+}
+
+// Recompute the grand-total banner and each camera's subtotal from the live
+// rows. Only rows that are kept (checkbox checked) are counted, so ignoring a
+// wrong stack drops it from the totals until it is recounted and re-kept.
+function updateSearchSummary(scope) {
+  if (!scope) return;
+  const rows = [...scope.querySelectorAll("[data-search-row]")];
+  let total = 0;
+  let locations = 0;
+  const cams = new Set();
+  const perCam = new Map();
+  for (const row of rows) {
+    const keep = row.querySelector("[data-search-keep]");
+    if (keep && !keep.checked) continue;
+    const count = Number(row.querySelector("[data-search-count]").value) || 0;
+    const cam = row.dataset.camera || "—";
+    total += count;
+    locations += 1;
+    cams.add(cam);
+    perCam.set(cam, (perCam.get(cam) || 0) + count);
+  }
+  const summary = scope.querySelector("[data-search-summary]");
+  if (summary) {
+    summary.textContent = t("search.summary")
+      .replace("{total}", String(total))
+      .replace("{locations}", String(locations))
+      .replace("{cameras}", String(cams.size));
+  }
+  scope.querySelectorAll("[data-cam-subtotal]").forEach((el) => {
+    const cam = el.dataset.camera;
+    el.textContent = t("search.subtotal").replace("{n}", String(perCam.get(cam) || 0));
+  });
 }
 
 async function recountSearchRow(row) {
@@ -4772,6 +4834,7 @@ async function recountSearchRow(row) {
     // Re-check the box: the recount produced a fresh number to confirm.
     const keep = row.querySelector("[data-search-keep]");
     if (keep) keep.checked = true;
+    updateSearchSummary(row.closest("[data-search-results]"));
     toast(t("search.recounted").replace("{n}", String(countInput.value)));
   } catch (error) {
     countInput.value = prev;
