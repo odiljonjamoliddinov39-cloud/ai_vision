@@ -85,12 +85,31 @@ jobs:
                 print("\n".join(keep[:10]) or "(no diagnostic lines)")
                 print()
 
-            print("================= RTSP PROBE (encoded creds) =================")
-            probe("ch1 MAIN /Streaming/Channels/101  (VLC-confirmed working)", "/Streaming/Channels/101", "tcp")
-            probe("ch2 MAIN /Streaming/Channels/201  (kiosk)", "/Streaming/Channels/201", "tcp")
-            probe("ch5 MAIN /Streaming/Channels/501  (kiosk)", "/Streaming/Channels/501", "tcp")
-            probe("ch6 MAIN /Streaming/Channels/601  (kiosk)", "/Streaming/Channels/601", "tcp")
-            probe("ch16 MAIN /Streaming/Channels/1601 (kiosk)", "/Streaming/Channels/1601", "tcp")
-            print("codec_name=h264/hevc + width/height => readable. Compare ch1 (works in VLC) vs the kiosk channels.")
+            def verbose(label, path, transport):
+                url = f"rtsp://{user}:{pw}@{host}:554{path}"
+                cmd = ["ffprobe", "-hide_banner", "-loglevel", "verbose",
+                       "-rtsp_transport", transport, "-i", url]
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+                    txt = out.stdout + out.stderr
+                except subprocess.TimeoutExpired as e:
+                    txt = "TIMEOUT 25s\n" + (getattr(e, "stderr", "") or "")
+                keep = []
+                for line in txt.splitlines():
+                    l = line.lower()
+                    if any(k in l for k in ("m=video", "rtpmap", "h264", "h265", "hevc",
+                                            "fmtp", "sdp", "stream #", "video:", "codec",
+                                            "invalid", "unauthor", "401", "method describe",
+                                            "reply", "server:", "could not", "timeout",
+                                            "immediate exit", "nal", "rtp:")):
+                        keep.append(line.strip())
+                print(f"----- {label} (VERBOSE) -----")
+                print("\n".join(keep[-25:]) or "(no diagnostic lines)")
+                print()
+
+            print("================= RTSP VERBOSE PROBE (channel 1) =================")
+            verbose("ch1 /Streaming/Channels/101 tcp", "/Streaming/Channels/101", "tcp")
+            verbose("ch1 /Streaming/Channels/101 udp", "/Streaming/Channels/101", "udp")
+            print("Look for a=rtpmap ... H264/H265 (codec the NVR advertises) and whether media/NAL data arrives.")
             PY
             echo "Probe complete."
