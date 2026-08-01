@@ -224,6 +224,7 @@ const I18N = {
     "search.summary": "Found {total} box(es) · {locations} location(s) · {cameras} camera(s)",
     "search.subtotal": "{n} box(es)",
     "search.scanning": "Scanning cameras {done}/{total}… (keeps running if you leave — come back anytime)",
+    "search.capped": "Scanned {done}/{total} cameras and stopped at the time limit. Press Recognize again to continue the rest.",
     "dataset.title": "Dataset backup",
     "dataset.note": "Your dataset lives on a persistent volume and is auto-backed-up on every save, and restored automatically if the server ever comes up empty. Download a copy to keep it safe off-server; restore from a downloaded copy anytime.",
     "dataset.download": "Download dataset",
@@ -529,6 +530,7 @@ const I18N = {
     "search.summary": "Найдено {total} коробк(и) · {locations} мест · {cameras} камер",
     "search.subtotal": "{n} коробк(и)",
     "search.scanning": "Сканирование камер {done}/{total}… (продолжается, даже если выйти — возвращайтесь в любой момент)",
+    "search.capped": "Просканировано {done}/{total} камер, остановлено по лимиту времени. Нажмите «Распознать» ещё раз, чтобы продолжить.",
     "dataset.title": "Резервная копия набора данных",
     "dataset.note": "Набор данных хранится на постоянном томе и резервируется при каждом сохранении, а также восстанавливается автоматически, если сервер запустился пустым. Скачайте копию, чтобы хранить её вне сервера; восстановить можно в любой момент.",
     "dataset.download": "Скачать набор данных",
@@ -4673,12 +4675,18 @@ async function renderTrainingAnalytics(container) {
     const running = status === "running";
     recognizeBtn.disabled = running;
     recognizeBtn.textContent = running ? t("search.recognizing") : t("search.recognize");
+    const diag = data.diagnostics || {};
     if (rows.length) {
-      const note = running
-        ? `<p class="chart-note">${escapeHtml(
-            t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
-          )}</p>`
-        : "";
+      let note = "";
+      if (running) {
+        note = `<p class="chart-note">${escapeHtml(
+          t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
+        )}</p>`;
+      } else if (diag.stopped_early) {
+        note = `<p class="chart-note">${escapeHtml(
+          t("search.capped").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
+        )}</p>`;
+      }
       searchResults.innerHTML = note + trainingSearchRowsHtml(rows);
       updateSearchSummary(searchResults);
       saveAllBtn.hidden = false;

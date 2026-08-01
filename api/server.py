@@ -6455,6 +6455,15 @@ def _training_search_worker(query: str, generation: int) -> None:
 
     rows: list[dict[str, Any]] = []
     seq = 0
+    # Hard time budget: on a CPU-only box each frame takes seconds, so a full
+    # sweep of many cameras can run for many minutes. Cap it so the job always
+    # finishes promptly with whatever it found; the user can re-run to continue.
+    try:
+        budget = float(os.getenv("AI_VISION_SEARCH_BUDGET_SECONDS", "150"))
+    except ValueError:
+        budget = 150.0
+    deadline = time.monotonic() + budget
+    stopped_early = False
     if detector is not None:
         TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
         for idx, (slot, cam_name) in enumerate(cam_items, start=1):
@@ -6464,6 +6473,8 @@ def _training_search_worker(query: str, generation: int) -> None:
             except Exception as exc:  # noqa: BLE001
                 _audit("training_search_camera_failed", {"slot": slot, "error": str(exc)})
             rows.sort(key=lambda r: -r["count"])
+            diag["scanned"] = idx
+            diag["stopped_early"] = time.monotonic() >= deadline and idx < len(cam_items)
             # Publish progress + partial rows after each camera so the page can
             # show results as they are found. Stop early if superseded.
             if not _training_search_write_state(
@@ -6471,6 +6482,11 @@ def _training_search_worker(query: str, generation: int) -> None:
                 generation,
             ):
                 return
+            if time.monotonic() >= deadline and idx < len(cam_items):
+                stopped_early = True
+                _audit("training_search_budget_reached", {"scanned": idx, "total": len(cam_items)})
+                break
+    diag["stopped_early"] = stopped_early
 
     rows.sort(key=lambda r: -r["count"])
     _training_search_write_state(
