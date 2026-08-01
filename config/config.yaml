@@ -25,29 +25,22 @@ cameras:
 detection:
   model_path: yoloe-26s-seg.pt
   fallback_model_path: yolov8s-worldv2.pt
-  confidence_threshold: 0.4
-  iou_threshold: 0.55
+  confidence_threshold: 0.50
+  iou_threshold: 0.45
   max_detections: 300
   image_size: 640
   class_agnostic_nms: false
   device: auto
-  target_fps: 2.0
+  target_fps: AUTO
+  detector_workers: AUTO
+  queue_size: 5
+  queue_mode: latest
   stale_after_ms: 3000
   max_concurrent_cameras: 0
   classes: null
+  target_class: baget_box
   class_prompts:
   - baget box
-  - stack of baget boxes
-  - cardboard box
-  - stack of cardboard boxes
-  - sack of flour
-  - stack of flour sacks
-  - woven sack
-  - bag of flour
-  - large bag
-  - wrapped pallet
-  - wooden pallet
-  - warehouse package
 spatial_analysis:
   enabled: false
   horizontal_fov_degrees: 90.0
@@ -79,7 +72,7 @@ display:
   live_frame_width: 1280
   live_frame_jpeg_quality: 85
 tracking:
-  enabled: false
+  enabled: true
   tracker_config: config/warehouse_bytetrack.yaml
   classes: null
   grace_period_seconds: 5.0

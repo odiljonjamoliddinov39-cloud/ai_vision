@@ -53,7 +53,8 @@ def test_main_never_reuses_old_detections_on_new_frames():
     )
 
     assert "object_trackers = {" in source
-    assert "LatestFrameInferenceScheduler(processors)" in source
+    assert "LatestFrameInferenceScheduler(" in source
+    assert 'queue_mode=det_cfg.get("queue_mode", "latest")' in source
     assert "last_detections.get" not in source
     assert '"stale": True' in source
     assert "last_detections_by_camera[cam.name] = []" in source
