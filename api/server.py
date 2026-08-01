@@ -17,6 +17,7 @@ import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3313,6 +3314,12 @@ async def _catalog_recognition_scheduler() -> None:
 @app.on_event("startup")
 async def start_detection_watchdog() -> None:
     global _catalog_recognition_task, _watchdog_task
+    # Self-heal the training dataset on boot: restore from the newest in-volume
+    # backup if the working tree came up empty, then ensure the baseline dirs.
+    try:
+        _ensure_training_dataset()
+    except Exception:  # noqa: BLE001 - never block startup on this
+        pass
     if _watchdog_task is None or _watchdog_task.done():
         _watchdog_task = asyncio.create_task(_detection_watchdog())
     if _catalog_recognition_task is None or _catalog_recognition_task.done():
@@ -5378,13 +5385,100 @@ def _training_detector():
         return None
 
 
+# --- Dataset durability: in-volume backups + auto-restore ---------------------
+# The dataset lives on the persistent `ai-vision-datasets` Docker volume, so it
+# already survives redeploys (git reset / compose up). These backups add a
+# second line of defence against the working tree being cleared: snapshots kept
+# inside the same volume, plus auto-restore on boot if the tree comes up empty.
+# The user can also download/upload the whole dataset for an off-server copy.
+TRAINING_BACKUP_KEEP = 15
+_training_last_backup = 0.0
+
+
+def _training_backup_dir() -> Path:
+    """Backups live next to the dataset root (…/datasets/_backups) so they sit
+    on the same persistent volume and always track the dataset's location."""
+    return TRAINING_DATASET_ROOT.parent / "_backups"
+
+
+def _training_dataset_has_images() -> bool:
+    for split in ("train", "val"):
+        img_dir = TRAINING_DATASET_ROOT / "images" / split
+        if img_dir.exists() and any(
+            p.suffix.lower() in TRAINING_IMAGE_EXTS for p in img_dir.iterdir()
+        ):
+            return True
+    return False
+
+
+def _training_backup_dataset(reason: str = "", *, min_interval: float = 120.0, force: bool = False):
+    """Snapshot the dataset into a tar.gz inside the persistent volume so an
+    accidental wipe of the working tree can be recovered. Throttled so rapid
+    edits don't cause a backup storm; keeps the newest TRAINING_BACKUP_KEEP.
+    Never raises - a failed backup must not break a save."""
+    global _training_last_backup
+    try:
+        now = time.time()
+        if not force and (now - _training_last_backup) < min_interval:
+            return None
+        if not _training_dataset_has_images():
+            return None
+        import tarfile
+
+        backup_dir = _training_backup_dir()
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        archive = backup_dir / f"baget_box-{stamp}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(TRAINING_DATASET_ROOT, arcname="baget_box")
+        _training_last_backup = now
+        for old in sorted(backup_dir.glob("baget_box-*.tar.gz"))[:-TRAINING_BACKUP_KEEP]:
+            old.unlink()
+        _audit("training_dataset_backup", {"archive": archive.name, "reason": reason})
+        return archive
+    except Exception as exc:  # noqa: BLE001
+        _audit("training_dataset_backup_failed", {"error": str(exc)})
+        return None
+
+
+def _training_restore_from_backup_if_empty() -> bool:
+    """If the dataset tree has no images but a backup exists, restore the newest
+    one. Runs on boot so a cleared/reset working tree self-heals. Never raises."""
+    try:
+        if _training_dataset_has_images():
+            return False
+        backup_dir = _training_backup_dir()
+        backups = sorted(backup_dir.glob("baget_box-*.tar.gz")) if backup_dir.exists() else []
+        if not backups:
+            return False
+        import tarfile
+
+        newest = backups[-1]
+        with tarfile.open(newest, "r:gz") as tar:
+            try:
+                tar.extractall(TRAINING_DATASET_ROOT.parent, filter="data")
+            except TypeError:
+                # Older Python without the extraction filter argument.
+                tar.extractall(TRAINING_DATASET_ROOT.parent)
+        _audit("training_dataset_restored", {"archive": newest.name})
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _audit("training_dataset_restore_failed", {"error": str(exc)})
+        return False
+
+
 def _ensure_training_dataset() -> None:
     """Make sure the dataset dirs + data.yaml exist. On a fresh persistent
     volume (first boot after the dataset was added to docker-compose) the tree
-    is empty, so seed the baseline classes and the split folders. Idempotent and
-    never raises - training tools must degrade gracefully."""
+    is empty, so seed the baseline classes and the split folders. If a backup
+    exists it is restored first. Idempotent and never raises - training tools
+    must degrade gracefully."""
     try:
         import yaml as _yaml
+
+        # Recover a wiped working tree from the newest in-volume backup before
+        # falling back to seeding an empty baseline.
+        _training_restore_from_backup_if_empty()
 
         for sub in ("images/train", "images/val", "labels/train", "labels/val"):
             (TRAINING_DATASET_ROOT / sub).mkdir(parents=True, exist_ok=True)
@@ -5458,6 +5552,57 @@ def training_dataset() -> dict[str, Any]:
     return _training_dataset_stats()
 
 
+@app.get("/api/training/dataset/export")
+def training_dataset_export() -> Response:
+    """Download the whole dataset as a tar.gz so an off-server copy can be kept
+    (the firmest protection against losing it). Also refreshes the newest
+    in-volume backup."""
+    import io as _io
+    import tarfile
+
+    _ensure_training_dataset()
+    _training_backup_dataset("export", force=True)
+    buffer = _io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        if TRAINING_DATASET_ROOT.exists():
+            tar.add(TRAINING_DATASET_ROOT, arcname="baget_box")
+    buffer.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="baget_box-dataset-{stamp}.tar.gz"'},
+    )
+
+
+@app.post("/api/training/dataset/import")
+async def training_dataset_import(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Restore the dataset from a previously exported tar.gz. Backs up whatever
+    is there first, then merges the archive's contents in (never deletes)."""
+    import io as _io
+    import tarfile
+
+    contents = await file.read()
+    _training_backup_dataset("pre-import", force=True)
+    try:
+        with tarfile.open(fileobj=_io.BytesIO(contents), mode="r:gz") as tar:
+            members = [m for m in tar.getmembers() if m.name.startswith("baget_box")]
+            if not members:
+                raise HTTPException(status_code=400, detail="Archive does not contain a baget_box dataset.")
+            try:
+                tar.extractall(TRAINING_DATASET_ROOT.parent, members=members, filter="data")
+            except TypeError:
+                tar.extractall(TRAINING_DATASET_ROOT.parent, members=members)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Could not read archive: {exc}") from exc
+    _ensure_training_dataset()
+    _training_backup_dataset("post-import", force=True)
+    _audit("training_dataset_import", {"bytes": len(contents)})
+    return {"restored": True, "dataset": _training_dataset_stats()}
+
+
 @app.post("/api/training/inject")
 async def training_inject(
     split: str = Form("train"),
@@ -5508,6 +5653,7 @@ async def training_inject(
     )
 
     _audit("training_inject", {"split": split, "images_saved": saved, "prompts_added": added})
+    _training_backup_dataset("inject")
     return {
         "images_saved": saved,
         "prompts_added": added,
@@ -6115,98 +6261,254 @@ async def training_analytics_apply(payload: TrainingApply) -> dict[str, Any]:
         "training_analytics_apply",
         {"group_id": group_id, "name": name, "keep": keep, "count": len(written), "boxes": payload.count},
     )
+    if written:
+        _training_backup_dataset("apply")
     return {"applied": len(written), "keep": keep, "dataset": _training_dataset_stats()}
 
 
-@app.post("/api/training/search")
-async def training_search(payload: TrainingSearch) -> dict[str, Any]:
-    """Dataset-centered recognition: sweep every camera, group detections into
-    per-location stacks, count the boxes at each spot, label each stack by
-    comparing its crop to the trained dataset (not Gemini), and (if a query is
-    given) return only the stacks whose name matches what you typed."""
-    return await asyncio.to_thread(_training_search_sync, payload.query)
+# --- Recognition search as a persistent background job -----------------------
+# The sweep runs in a daemon thread and writes its progress + results to disk
+# after every camera, so it keeps running even when the browser tab is closed
+# and the last results are restored the next time the page is opened.
+TRAINING_SEARCH_STATE_PATH = TRAINING_STAGING_DIR / "search_job.json"
+_training_search_lock = threading.Lock()
+_training_search_state: dict[str, Any] = {}
+_training_search_generation = 0
+
+
+def _training_search_idle_state() -> dict[str, Any]:
+    return {
+        "status": "idle",
+        "query": "",
+        "rows": [],
+        "diagnostics": {"cameras": 0, "frames_read": 0, "clusters": 0, "model": True},
+        "progress": {"done": 0, "total": 0},
+        "started_at": None,
+        "finished_at": None,
+    }
+
+
+def _training_search_status() -> dict[str, Any]:
+    """Current job state: the in-memory copy if present, else the last one
+    persisted to disk (survives a backend restart), else idle."""
+    with _training_search_lock:
+        if _training_search_state:
+            return dict(_training_search_state)
+    try:
+        return json.loads(TRAINING_SEARCH_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return _training_search_idle_state()
+
+
+def _training_search_write_state(state: dict[str, Any], generation: int) -> bool:
+    """Persist state only while this worker is still the current generation, so
+    a restarted search (new query) cannot be clobbered by a superseded one."""
+    with _training_search_lock:
+        if generation != _training_search_generation:
+            return False
+        _training_search_state.clear()
+        _training_search_state.update(state)
+    try:
+        TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        TRAINING_SEARCH_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start):
+    """Detect on one camera's current frame and return (rows, next_seq)."""
+    import cv2
+
+    rows: list[dict[str, Any]] = []
+    seq = seq_start
+    frame = _catalog_live_frame_image(slot=slot, camera=cam_name)
+    if frame is None:
+        return rows, seq
+    diag["frames_read"] += 1
+    try:
+        detections = detector.detect(frame)
+    except Exception as exc:  # noqa: BLE001
+        _audit("training_search_detect_failed", {"slot": slot, "error": str(exc)})
+        return rows, seq
+    boxes: list[tuple[int, int, int, int]] = []
+    labels: list[str] = []
+    for det in detections or []:
+        box = getattr(det, "box", None)
+        if not box or len(box) < 4:
+            continue
+        boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+        labels.append(str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object"))
+    if not boxes:
+        return rows, seq
+    for members in _training_cluster_boxes(boxes):
+        diag["clusters"] += 1
+        xs1 = min(boxes[i][0] for i in members)
+        ys1 = min(boxes[i][1] for i in members)
+        xs2 = max(boxes[i][2] for i in members)
+        ys2 = max(boxes[i][3] for i in members)
+        crop = _catalog_detection_crop(frame, {"x1": xs1, "y1": ys1, "x2": xs2, "y2": ys2})
+        if crop is None or crop.size == 0:
+            continue
+        matched, score = _training_match_dataset(crop, refs)
+        # Prefer the dataset label when the match is confident; else the
+        # detector's own label for the biggest box in the stack.
+        biggest = max(members, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
+        name = matched if (matched and score >= 0.6) else labels[biggest]
+        norm_name = _catalog_normalize_name(name)
+        norm_label = _catalog_normalize_name(labels[biggest])
+        if term and term not in norm_name and term not in norm_label:
+            continue
+        seq += 1
+        group_id = _catalog_visual_slug(f"search-{slot}-{seq}")
+        stage = TRAINING_STAGING_DIR / group_id
+        if stage.exists():
+            for old in stage.glob("*.jpg"):
+                old.unlink()
+        stage.mkdir(parents=True, exist_ok=True)
+        ok, buffer = cv2.imencode(".jpg", crop)
+        if ok:
+            (stage / "crop_00.jpg").write_bytes(buffer.tobytes())
+        rows.append(
+            {
+                "group_id": group_id,
+                "name": name,
+                "count": len(members),
+                "camera": cam_name,
+                "slot": slot,
+                "similarity": round(score, 3),
+                "crop_url": f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg" if ok else "",
+                "keep": True,
+            }
+        )
+    return rows, seq
 
 
 def _training_search_sync(query: str) -> dict[str, Any]:
-    import cv2
-
+    """Synchronous single-pass sweep returning {rows, diagnostics}. The live
+    UI uses the background job (start/status) instead, but this keeps a simple
+    blocking entry point for internal callers and tests."""
     term = _catalog_normalize_name(query)
     health = _catalog_health_snapshot()
     cameras = _training_camera_map(health)
     detector = _training_detector()
     refs = _training_dataset_reference_embeddings()
     diag = {"cameras": len(cameras), "frames_read": 0, "clusters": 0, "model": detector is not None}
-
     if detector is None:
         return {"rows": [], "diagnostics": diag}
-
     TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     seq = 0
     for slot, cam_name in sorted(cameras.items()):
-        frame = _catalog_live_frame_image(slot=slot, camera=cam_name)
-        if frame is None:
-            continue
-        diag["frames_read"] += 1
-        try:
-            detections = detector.detect(frame)
-        except Exception as exc:  # noqa: BLE001
-            _audit("training_search_detect_failed", {"slot": slot, "error": str(exc)})
-            continue
-        boxes: list[tuple[int, int, int, int]] = []
-        labels: list[str] = []
-        for det in detections or []:
-            box = getattr(det, "box", None)
-            if not box or len(box) < 4:
-                continue
-            boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
-            labels.append(str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object"))
-        if not boxes:
-            continue
-        for members in _training_cluster_boxes(boxes):
-            diag["clusters"] += 1
-            xs1 = min(boxes[i][0] for i in members)
-            ys1 = min(boxes[i][1] for i in members)
-            xs2 = max(boxes[i][2] for i in members)
-            ys2 = max(boxes[i][3] for i in members)
-            crop = _catalog_detection_crop(frame, {"x1": xs1, "y1": ys1, "x2": xs2, "y2": ys2})
-            if crop is None or crop.size == 0:
-                continue
-            matched, score = _training_match_dataset(crop, refs)
-            # Prefer the dataset label when the match is confident; else the
-            # detector's own label for the biggest box in the stack.
-            biggest = max(members, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
-            name = matched if (matched and score >= 0.6) else labels[biggest]
-            norm_name = _catalog_normalize_name(name)
-            norm_label = _catalog_normalize_name(labels[biggest])
-            if term and term not in norm_name and term not in norm_label:
-                continue
-            seq += 1
-            group_id = _catalog_visual_slug(f"search-{slot}-{seq}")
-            stage = TRAINING_STAGING_DIR / group_id
-            if stage.exists():
-                for old in stage.glob("*.jpg"):
-                    old.unlink()
-            stage.mkdir(parents=True, exist_ok=True)
-            ok, buffer = cv2.imencode(".jpg", crop)
-            if ok:
-                (stage / "crop_00.jpg").write_bytes(buffer.tobytes())
-            rows.append(
-                {
-                    "group_id": group_id,
-                    "name": name,
-                    "count": len(members),
-                    "camera": cam_name,
-                    "slot": slot,
-                    "similarity": round(score, 3),
-                    "crop_url": f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg"
-                    if ok
-                    else "",
-                    "keep": True,
-                }
-            )
+        new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
+        rows.extend(new_rows)
     rows.sort(key=lambda r: -r["count"])
     return {"rows": rows, "diagnostics": diag}
+
+
+def _training_search_worker(query: str, generation: int) -> None:
+    started = datetime.now(timezone.utc).isoformat()
+    try:
+        term = _catalog_normalize_name(query)
+        health = _catalog_health_snapshot()
+        cameras = _training_camera_map(health)
+        detector = _training_detector()
+        refs = _training_dataset_reference_embeddings()
+    except Exception as exc:  # noqa: BLE001
+        _training_search_write_state(
+            {
+                **_training_search_idle_state(),
+                "status": "error",
+                "query": query,
+                "error": str(exc),
+                "started_at": started,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+            generation,
+        )
+        return
+
+    cam_items = sorted(cameras.items())
+    diag = {"cameras": len(cameras), "frames_read": 0, "clusters": 0, "model": detector is not None}
+    base = {"query": query, "started_at": started, "finished_at": None}
+    if not _training_search_write_state(
+        {**base, "status": "running", "rows": [], "diagnostics": diag, "progress": {"done": 0, "total": len(cam_items)}},
+        generation,
+    ):
+        return
+
+    rows: list[dict[str, Any]] = []
+    seq = 0
+    if detector is not None:
+        TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        for idx, (slot, cam_name) in enumerate(cam_items, start=1):
+            try:
+                new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
+                rows.extend(new_rows)
+            except Exception as exc:  # noqa: BLE001
+                _audit("training_search_camera_failed", {"slot": slot, "error": str(exc)})
+            rows.sort(key=lambda r: -r["count"])
+            # Publish progress + partial rows after each camera so the page can
+            # show results as they are found. Stop early if superseded.
+            if not _training_search_write_state(
+                {**base, "status": "running", "rows": rows, "diagnostics": diag, "progress": {"done": idx, "total": len(cam_items)}},
+                generation,
+            ):
+                return
+
+    rows.sort(key=lambda r: -r["count"])
+    _training_search_write_state(
+        {
+            **base,
+            "status": "done",
+            "rows": rows,
+            "diagnostics": diag,
+            "progress": {"done": len(cam_items), "total": len(cam_items)},
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        },
+        generation,
+    )
+
+
+def _training_search_start(query: str) -> dict[str, Any]:
+    global _training_search_generation
+    with _training_search_lock:
+        running = _training_search_state.get("status") == "running"
+        current_q = _training_search_state.get("query")
+        if running and _catalog_normalize_name(current_q or "") == _catalog_normalize_name(query or ""):
+            # Same search already in flight - just report it, don't duplicate.
+            return dict(_training_search_state)
+        _training_search_generation += 1
+        generation = _training_search_generation
+    _training_search_write_state(
+        {
+            **_training_search_idle_state(),
+            "status": "running",
+            "query": query,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        },
+        generation,
+    )
+    threading.Thread(target=_training_search_worker, args=(query, generation), daemon=True).start()
+    return _training_search_status()
+
+
+@app.post("/api/training/search")
+async def training_search(payload: TrainingSearch) -> dict[str, Any]:
+    """Start (or resume) a dataset-centered recognition sweep as a background
+    job: it scans every camera, groups detections into per-location stacks,
+    counts the boxes at each spot, labels each stack against the trained
+    dataset (not Gemini), and keeps only stacks matching the query. Runs to
+    completion server-side even if the browser leaves; poll the status endpoint
+    for progress and results."""
+    return await asyncio.to_thread(_training_search_start, payload.query)
+
+
+@app.get("/api/training/search/status")
+async def training_search_status() -> dict[str, Any]:
+    """Current recognition-job state (running/done/idle) with progress and the
+    rows found so far - used to restore results when the page is reopened."""
+    return _training_search_status()
 
 
 @app.post("/api/training/recount")

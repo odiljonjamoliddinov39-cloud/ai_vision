@@ -85,4 +85,9 @@ services:
       - ai-vision-datasets:/app/datasets
 
 volumes:
+  # Holds the training dataset (/app/datasets) AND its in-volume backups
+  # (/app/datasets/_backups). This is the source of truth for labelled data and
+  # is expensive to recreate. It survives `git reset` and `docker compose up`.
+  # NEVER run `docker compose down -v` or `docker volume rm ai-vision-datasets`
+  # without an off-server export first (dashboard: Training → Download dataset).
   ai-vision-datasets:

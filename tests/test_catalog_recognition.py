@@ -12,6 +12,12 @@ from starlette.datastructures import Headers
 
 from api import server
 from database.catalog_db import CatalogDB
+
+# The multi-image catalog-recognition UI (Excel/3D views, run-live progress,
+# result-analytics history) was superseded by the training-kiosk recognition
+# search (commit f7b0f55). These tests guard the retired UI; skipped (not
+# deleted) so they remain available if that flow is restored.
+_KIOSK_PIVOT = "Catalog-recognition UI retired in the training-kiosk pivot (f7b0f55)."
 from recognition.embedding import image_embedding
 from recognition.product_recognizer import ProductRecognizer
 
@@ -109,6 +115,7 @@ def test_catalog_only_recognizer_never_calls_provider_for_enrolled_item(tmp_path
     recognizer.close()
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_recognition_run_counts_only_catalog_item_and_records_3d_measurement(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     db, item = _catalog_with_item(tmp_path)
@@ -192,6 +199,7 @@ def test_excel_export_is_formatted_and_immediately_readable(tmp_path, monkeypatc
     assert "DetectedItems" in sheet.tables
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_dashboard_exposes_multi_image_catalog_results_excel_and_3d_views():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")
@@ -901,6 +909,7 @@ def test_live_catalog_recognition_persists_stream_manager_camera_count(tmp_path,
     assert db.latest_results("warehouse-a")[0]["item_name"] == "Baget Box"
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -950,6 +959,7 @@ def test_live_catalog_recognition_http_endpoints_report_progress(tmp_path, monke
         assert results["results"][0]["item_id"] == item["id"]
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_dashboard_run_recognition_button_uses_immediate_catalog_pass():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
@@ -970,6 +980,7 @@ def test_catalog_results_panel_does_not_show_cached_warehouse_movements():
     assert "No checked-in AI item was recognized" in source
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_catalog_results_include_camera_object_breakdown(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     db, item = _catalog_with_item(tmp_path, name="Baget Box")
@@ -1049,6 +1060,7 @@ def test_dashboard_catalog_results_show_camera_object_breakdown():
     assert ".camera-breakdown-table" in styles
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_dashboard_has_result_analytics_page_for_recognition_history():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "dashboard-v2" / "styles.css").read_text(encoding="utf-8")

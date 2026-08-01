@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import time
 
 import cv2
 import numpy as np
@@ -188,3 +189,51 @@ def test_training_search_reports_diagnostics_without_model(tmp_path, monkeypatch
     out = server._training_search_sync("baget boxes")
     assert out["rows"] == []
     assert out["diagnostics"]["model"] is False
+
+
+def test_training_search_background_job_completes_and_persists(tmp_path, monkeypatch):
+    _point_dataset(monkeypatch, tmp_path / "baget_box")
+    monkeypatch.setattr(server, "_training_detector", lambda: None)
+    monkeypatch.setattr(server, "_catalog_health_snapshot", lambda: {"cameras": []})
+    monkeypatch.setattr(server, "TRAINING_STAGING_DIR", tmp_path / "staging")
+    monkeypatch.setattr(server, "TRAINING_SEARCH_STATE_PATH", tmp_path / "staging" / "search_job.json")
+    monkeypatch.setattr(server, "_training_search_state", {})
+
+    started = server._training_search_start("baget boxes")
+    assert started["status"] in {"running", "done"}
+
+    # The daemon thread finishes quickly with no cameras/model.
+    deadline = time.time() + 5
+    while time.time() < deadline and server._training_search_status().get("status") != "done":
+        time.sleep(0.05)
+
+    state = server._training_search_status()
+    assert state["status"] == "done"
+    assert state["rows"] == []
+    # Persisted to disk so a reopened page restores the last results.
+    assert (tmp_path / "staging" / "search_job.json").exists()
+
+
+def test_training_dataset_backup_and_restore_round_trip(tmp_path, monkeypatch):
+    root = tmp_path / "baget_box"
+    _point_dataset(monkeypatch, root)
+    monkeypatch.setattr(server, "TRAINING_DATASET_ROOT", root)
+    # Backups now live at TRAINING_DATASET_ROOT.parent / "_backups" == tmp_path/_backups.
+    (root / "images" / "train").mkdir(parents=True, exist_ok=True)
+    (root / "labels" / "train").mkdir(parents=True, exist_ok=True)
+    ok, buffer = cv2.imencode(".jpg", _image((30, 60, 90)))
+    assert ok
+    (root / "images" / "train" / "sample.jpg").write_bytes(buffer.tobytes())
+    (root / "labels" / "train" / "sample.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+
+    archive = server._training_backup_dataset("test", force=True)
+    assert archive is not None and archive.exists()
+
+    # Simulate a wiped working tree, then self-heal from the backup.
+    import shutil
+
+    shutil.rmtree(root / "images" / "train")
+    assert not server._training_dataset_has_images()
+    assert server._training_restore_from_backup_if_empty() is True
+    assert (root / "images" / "train" / "sample.jpg").exists()
+    assert (root / "labels" / "train" / "sample.txt").read_text(encoding="utf-8").strip() == "0 0.5 0.5 0.2 0.2"

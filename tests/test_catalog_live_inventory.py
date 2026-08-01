@@ -1,6 +1,13 @@
 import json
 
+import pytest
+
 from api import server
+
+# The persistent live-recognition dashboard flow ("Scanning live feeds") was
+# superseded by the training-kiosk recognition search (commit f7b0f55). Skipped
+# (not deleted) so it can be re-enabled if that flow returns.
+_KIOSK_PIVOT = "Live-recognition dashboard flow retired in the training-kiosk pivot (f7b0f55)."
 
 
 def test_saved_item_prompts_are_added_to_yolo_vocabulary(tmp_path, monkeypatch):
@@ -72,6 +79,7 @@ def test_live_inventory_reports_unidentified_objects_by_camera(tmp_path, monkeyp
     ]
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_dashboard_uses_persistent_live_recognition_session():
     source = (
         server.ROOT / "dashboard-v2" / "app.js"

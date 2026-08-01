@@ -221,6 +221,15 @@ const I18N = {
     "search.saved_n": "Saved {n} item(s) to the dataset.",
     "search.nothing_kept": "Nothing is kept to save.",
     "search.recounted": "Recounted: {n} boxes.",
+    "search.summary": "Found {total} box(es) · {locations} location(s) · {cameras} camera(s)",
+    "search.subtotal": "{n} box(es)",
+    "search.scanning": "Scanning cameras {done}/{total}… (keeps running if you leave — come back anytime)",
+    "dataset.title": "Dataset backup",
+    "dataset.note": "Your dataset lives on a persistent volume and is auto-backed-up on every save, and restored automatically if the server ever comes up empty. Download a copy to keep it safe off-server; restore from a downloaded copy anytime.",
+    "dataset.download": "Download dataset",
+    "dataset.restore": "Restore from file",
+    "dataset.restoring": "Restoring…",
+    "dataset.restored": "Dataset restored — {n} image(s) present.",
     "menu.ai_models": "AI Models",
     "menu.integrations": "Integrations",
     "menu.logs": "Logs",
@@ -517,6 +526,15 @@ const I18N = {
     "search.saved_n": "Сохранено {n} объект(ов) в набор данных.",
     "search.nothing_kept": "Нечего сохранять.",
     "search.recounted": "Пересчитано: {n} коробок.",
+    "search.summary": "Найдено {total} коробк(и) · {locations} мест · {cameras} камер",
+    "search.subtotal": "{n} коробк(и)",
+    "search.scanning": "Сканирование камер {done}/{total}… (продолжается, даже если выйти — возвращайтесь в любой момент)",
+    "dataset.title": "Резервная копия набора данных",
+    "dataset.note": "Набор данных хранится на постоянном томе и резервируется при каждом сохранении, а также восстанавливается автоматически, если сервер запустился пустым. Скачайте копию, чтобы хранить её вне сервера; восстановить можно в любой момент.",
+    "dataset.download": "Скачать набор данных",
+    "dataset.restore": "Восстановить из файла",
+    "dataset.restoring": "Восстановление…",
+    "dataset.restored": "Набор данных восстановлен — изображений: {n}.",
     "menu.ai_models": "AI модели",
     "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
@@ -4624,6 +4642,16 @@ async function renderTrainingAnalytics(container) {
         <button type="button" class="export-button" data-run-test>${escapeHtml(t("test.run"))}</button>
         <div data-test-results><p class="chart-note">${escapeHtml(t("test.empty"))}</p></div>
       </section>
+      <section class="acc-block">
+        <h3>${escapeHtml(t("dataset.title"))}</h3>
+        <p class="chart-note">${escapeHtml(t("dataset.note"))}</p>
+        <div class="search-bar">
+          <a class="export-button" href="${API_BASE}/api/training/dataset/export">${escapeHtml(t("dataset.download"))}</a>
+          <button type="button" class="ghost-button" data-ds-restore>${escapeHtml(t("dataset.restore"))}</button>
+          <input type="file" accept=".gz,.tgz,.tar" data-ds-file hidden />
+        </div>
+        <p class="chart-note" data-ds-status></p>
+      </section>
     </div>`;
 
   // --- Recognition search (dataset-centered, per-location counting) ---
@@ -4631,47 +4659,106 @@ async function renderTrainingAnalytics(container) {
   const recognizeBtn = container.querySelector("[data-recognize]");
   const saveAllBtn = container.querySelector("[data-save-all]");
   const searchResults = container.querySelector("[data-search-results]");
+
+  // The recognition sweep runs as a background job on the server. The page
+  // only polls its status, so it keeps running when the tab is closed and the
+  // latest results are restored when the page is reopened. `pollActive` is
+  // scoped to this mount; navigating away detaches searchResults, which stops
+  // the poll chain (see the document.contains guard) without killing the job.
+  let pollActive = false;
+  const renderSearchState = (data) => {
+    const status = data.status || "idle";
+    const rows = data.rows || [];
+    const prog = data.progress || {};
+    const running = status === "running";
+    recognizeBtn.disabled = running;
+    recognizeBtn.textContent = running ? t("search.recognizing") : t("search.recognize");
+    if (rows.length) {
+      const note = running
+        ? `<p class="chart-note">${escapeHtml(
+            t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
+          )}</p>`
+        : "";
+      searchResults.innerHTML = note + trainingSearchRowsHtml(rows);
+      updateSearchSummary(searchResults);
+      saveAllBtn.hidden = false;
+      return;
+    }
+    saveAllBtn.hidden = true;
+    let why;
+    if (running) {
+      why = t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0));
+    } else if (status === "error") {
+      why = data.error || t("search.empty");
+    } else if (status === "idle") {
+      why = t("search.empty");
+    } else {
+      const d = data.diagnostics || {};
+      if (d.model === false) why = "No model loaded (set TRAINING_USE_MODEL=1 with enough memory).";
+      else if (!d.cameras) why = "No cameras found. Start the streams first.";
+      else if (!d.frames_read) why = `Swept ${d.cameras} camera(s) but read 0 live frames.`;
+      else why = `Swept ${d.cameras} camera(s), found ${d.clusters || 0} stack(s), 0 matched your search.`;
+    }
+    searchResults.innerHTML = `<p class="chart-note">${escapeHtml(why)}</p>`;
+  };
+  const poll = async () => {
+    if (!document.contains(searchResults)) { pollActive = false; return; }
+    let data;
+    try {
+      data = await catalogRequest("/api/training/search/status");
+    } catch {
+      pollActive = false;
+      return;
+    }
+    if (!document.contains(searchResults)) { pollActive = false; return; }
+    renderSearchState(data);
+    if (data.status === "running" && pollActive) {
+      setTimeout(poll, 1500);
+    } else {
+      pollActive = false;
+    }
+  };
+  const startPoll = () => {
+    if (!pollActive) {
+      pollActive = true;
+      void poll();
+    }
+  };
   const runSearch = async () => {
     recognizeBtn.disabled = true;
     recognizeBtn.textContent = t("search.recognizing");
     try {
-      const data = await catalogRequest("/api/training/search", {
+      await catalogRequest("/api/training/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: searchInput.value.trim() }),
       });
-      const rows = data.rows || [];
-      if (!rows.length) {
-        const d = data.diagnostics || {};
-        let why = t("search.empty");
-        if (d.model === false) why = "No model loaded (set TRAINING_USE_MODEL=1 with enough memory).";
-        else if (!d.cameras) why = "No cameras found. Start the streams first.";
-        else if (!d.frames_read) why = `Swept ${d.cameras} camera(s) but read 0 live frames.`;
-        else why = `Swept ${d.cameras} camera(s), found ${d.clusters || 0} stack(s), 0 matched your search.`;
-        searchResults.innerHTML = `<p class="chart-note">${escapeHtml(why)}</p>`;
-        saveAllBtn.hidden = true;
-      } else {
-        searchResults.innerHTML = trainingSearchRowsHtml(rows);
-        saveAllBtn.hidden = false;
-      }
     } catch (error) {
       searchResults.innerHTML = `<p class="empty">${escapeHtml(error.message || "Search failed")}</p>`;
-      saveAllBtn.hidden = true;
-    } finally {
       recognizeBtn.disabled = false;
       recognizeBtn.textContent = t("search.recognize");
+      return;
     }
+    startPoll();
   };
   recognizeBtn?.addEventListener("click", () => void runSearch());
   searchInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") void runSearch();
   });
+  // Restore whatever the background job is doing (running or last results) the
+  // moment this page opens.
+  startPoll();
   // Unchecking a stack means "this count is wrong" -> recount it harder.
   searchResults?.addEventListener("change", (event) => {
     const row = event.target.closest("[data-search-row]");
     if (row && event.target.matches("[data-search-keep]") && !event.target.checked) {
       void recountSearchRow(row);
     }
+    updateSearchSummary(searchResults);
+  });
+  // Editing a count by hand updates the totals immediately.
+  searchResults?.addEventListener("input", (event) => {
+    if (event.target.matches("[data-search-count]")) updateSearchSummary(searchResults);
   });
   saveAllBtn?.addEventListener("click", async () => {
     const rows = [...searchResults.querySelectorAll("[data-search-row]")];
@@ -4726,10 +4813,67 @@ async function renderTrainingAnalytics(container) {
     const row = event.target.closest("[data-test-row]");
     if (row) void applyTestRow(row);
   });
+
+  // --- Dataset backup / restore ---
+  const restoreBtn = container.querySelector("[data-ds-restore]");
+  const restoreFile = container.querySelector("[data-ds-file]");
+  const dsStatus = container.querySelector("[data-ds-status]");
+  restoreBtn?.addEventListener("click", () => restoreFile?.click());
+  restoreFile?.addEventListener("change", async () => {
+    const file = restoreFile.files && restoreFile.files[0];
+    if (!file) return;
+    restoreBtn.disabled = true;
+    if (dsStatus) dsStatus.textContent = t("dataset.restoring");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const data = await catalogRequest("/api/training/dataset/import", { method: "POST", body: form });
+      const splits = (data && data.dataset && data.dataset.splits) || {};
+      const total = Object.values(splits).reduce((sum, s) => sum + (s.images || 0), 0);
+      if (dsStatus) dsStatus.textContent = t("dataset.restored").replace("{n}", String(total));
+      toast(t("dataset.restored").replace("{n}", String(total)));
+    } catch (error) {
+      if (dsStatus) dsStatus.textContent = error.message || "Restore failed";
+      toast(error.message || "Restore failed");
+    } finally {
+      restoreBtn.disabled = false;
+      restoreFile.value = "";
+    }
+  });
 }
 
 function trainingSearchRowsHtml(rows) {
+  // Group the results by camera so boxes found across several cameras are
+  // clearly separated, each camera carrying its own running subtotal. A
+  // grand-total banner sits on top. Both are recomputed live by
+  // updateSearchSummary() as counts change or rows are recounted/ignored.
+  const groups = new Map();
+  for (const row of rows) {
+    const cam = row.camera || "—";
+    if (!groups.has(cam)) groups.set(cam, []);
+    groups.get(cam).push(row);
+  }
+  const bodyHtml = [...groups.entries()]
+    .map(([cam, camRows]) => {
+      const rowsHtml = camRows
+        .map(
+          (row) => `
+              <tr data-search-row data-group="${escapeAttr(row.group_id)}" data-camera="${escapeAttr(cam)}">
+                <td><input type="text" data-search-name value="${escapeAttr(row.name || "")}" placeholder="${escapeAttr(t("training.item_name_ph"))}" /></td>
+                <td><input type="number" min="0" class="count-input" data-search-count value="${Number(row.count) || 0}" /></td>
+                <td>${row.crop_url ? `<img class="test-crop" src="${escapeAttr(`${API_BASE}${row.crop_url}`)}" alt="" />` : "—"}</td>
+                <td>${escapeHtml(cam)}</td>
+                <td><label class="training-necessary"><input type="checkbox" data-search-keep checked /> ${escapeHtml(t("test.keep"))}</label></td>
+              </tr>`
+        )
+        .join("");
+      return `
+              <tr class="search-cam-head"><td colspan="5">📷 <b>${escapeHtml(cam)}</b> — <span data-cam-subtotal data-camera="${escapeAttr(cam)}"></span></td></tr>
+              ${rowsHtml}`;
+    })
+    .join("");
   return `
+    <div data-search-summary class="search-summary"></div>
     <div style="overflow-x:auto">
       <table class="result-table">
         <thead><tr>
@@ -4740,21 +4884,43 @@ function trainingSearchRowsHtml(rows) {
           <th>${escapeHtml(t("test.keep_ignore"))}</th>
         </tr></thead>
         <tbody>
-          ${rows
-            .map(
-              (row) => `
-              <tr data-search-row data-group="${escapeAttr(row.group_id)}">
-                <td><input type="text" data-search-name value="${escapeAttr(row.name || "")}" placeholder="${escapeAttr(t("training.item_name_ph"))}" /></td>
-                <td><input type="number" min="0" class="count-input" data-search-count value="${Number(row.count) || 0}" /></td>
-                <td>${row.crop_url ? `<img class="test-crop" src="${escapeAttr(`${API_BASE}${row.crop_url}`)}" alt="" />` : "—"}</td>
-                <td>${escapeHtml(row.camera || "—")}</td>
-                <td><label class="training-necessary"><input type="checkbox" data-search-keep checked /> ${escapeHtml(t("test.keep"))}</label></td>
-              </tr>`
-            )
-            .join("")}
+          ${bodyHtml}
         </tbody>
       </table>
     </div>`;
+}
+
+// Recompute the grand-total banner and each camera's subtotal from the live
+// rows. Only rows that are kept (checkbox checked) are counted, so ignoring a
+// wrong stack drops it from the totals until it is recounted and re-kept.
+function updateSearchSummary(scope) {
+  if (!scope) return;
+  const rows = [...scope.querySelectorAll("[data-search-row]")];
+  let total = 0;
+  let locations = 0;
+  const cams = new Set();
+  const perCam = new Map();
+  for (const row of rows) {
+    const keep = row.querySelector("[data-search-keep]");
+    if (keep && !keep.checked) continue;
+    const count = Number(row.querySelector("[data-search-count]").value) || 0;
+    const cam = row.dataset.camera || "—";
+    total += count;
+    locations += 1;
+    cams.add(cam);
+    perCam.set(cam, (perCam.get(cam) || 0) + count);
+  }
+  const summary = scope.querySelector("[data-search-summary]");
+  if (summary) {
+    summary.textContent = t("search.summary")
+      .replace("{total}", String(total))
+      .replace("{locations}", String(locations))
+      .replace("{cameras}", String(cams.size));
+  }
+  scope.querySelectorAll("[data-cam-subtotal]").forEach((el) => {
+    const cam = el.dataset.camera;
+    el.textContent = t("search.subtotal").replace("{n}", String(perCam.get(cam) || 0));
+  });
 }
 
 async function recountSearchRow(row) {
@@ -4772,6 +4938,7 @@ async function recountSearchRow(row) {
     // Re-check the box: the recount produced a fresh number to confirm.
     const keep = row.querySelector("[data-search-keep]");
     if (keep) keep.checked = true;
+    updateSearchSummary(row.closest("[data-search-results]"));
     toast(t("search.recounted").replace("{n}", String(countInput.value)));
   } catch (error) {
     countInput.value = prev;
