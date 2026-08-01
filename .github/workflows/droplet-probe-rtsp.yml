@@ -86,12 +86,11 @@ jobs:
                 print()
 
             print("================= RTSP PROBE (encoded creds) =================")
-            probe("ch5 MAIN /Streaming/Channels/501  (tcp, plain ffprobe)", "/Streaming/Channels/501", "tcp")
-            probe("ch5 MAIN /Streaming/Channels/501  (udp, plain ffprobe)", "/Streaming/Channels/501", "udp")
-            probe("ch5 MAIN /Streaming/Channels/501  (tcp, app flags)", "/Streaming/Channels/501", "tcp",
-                  extra=["-probesize", "1048576", "-analyzeduration", "1000000", "-fflags", "+discardcorrupt"])
-            probe("ch5 SUB  /Streaming/Channels/502  (tcp, plain ffprobe)", "/Streaming/Channels/502", "tcp")
-            probe("ch2 MAIN /Streaming/Channels/201  (tcp, plain ffprobe)", "/Streaming/Channels/201", "tcp")
-            print("A block printing codec_name=h264/hevc + width/height = that stream is readable.")
+            probe("ch1 MAIN /Streaming/Channels/101  (VLC-confirmed working)", "/Streaming/Channels/101", "tcp")
+            probe("ch2 MAIN /Streaming/Channels/201  (kiosk)", "/Streaming/Channels/201", "tcp")
+            probe("ch5 MAIN /Streaming/Channels/501  (kiosk)", "/Streaming/Channels/501", "tcp")
+            probe("ch6 MAIN /Streaming/Channels/601  (kiosk)", "/Streaming/Channels/601", "tcp")
+            probe("ch16 MAIN /Streaming/Channels/1601 (kiosk)", "/Streaming/Channels/1601", "tcp")
+            print("codec_name=h264/hevc + width/height => readable. Compare ch1 (works in VLC) vs the kiosk channels.")
             PY
             echo "Probe complete."
