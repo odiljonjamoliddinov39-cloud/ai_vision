@@ -1,0 +1,75 @@
+name: CORS check (read-only)
+
+# Diagnose why the Vercel dashboard gets a CORS error calling the droplet API.
+# Checks the effective ALLOWED_ORIGINS and whether the backend (and the public
+# https proxy) return Access-Control-Allow-Origin for the Vercel origin.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  cors:
+    name: Check CORS on the droplet
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 6m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+            ORIGIN="https://ai-vision-dashboard-phi.vercel.app"
+            PORT="$(grep -E '^AI_VISION_PORT=' .env 2>/dev/null | cut -d= -f2)"; PORT="${PORT:-8080}"
+
+            echo "================= .env ALLOWED_ORIGINS ================="
+            grep -E '^ALLOWED_ORIGINS=' .env 2>/dev/null || echo "ALLOWED_ORIGINS: (not set - code default should include the Vercel origin)"
+            echo ""
+
+            echo "================= deployed commit ================="
+            git rev-parse --short HEAD 2>/dev/null || echo "(unknown)"
+            echo ""
+
+            echo "================= preflight to BACKEND (localhost:${PORT}) ================="
+            curl -s -o /dev/null -D - -X OPTIONS "http://localhost:${PORT}/api/v2/devices/discover" \
+              -H "Origin: ${ORIGIN}" \
+              -H "Access-Control-Request-Method: GET" \
+              -H "Access-Control-Request-Headers: content-type" 2>&1 \
+              | grep -iE "^HTTP/|access-control-|vary" || echo "(no CORS headers from backend)"
+            echo ""
+
+            echo "================= preflight to PUBLIC https proxy ================="
+            curl -sk -o /dev/null -D - -X OPTIONS "https://67-205-160-8.sslip.io/api/v2/devices/discover" \
+              -H "Origin: ${ORIGIN}" \
+              -H "Access-Control-Request-Method: GET" \
+              -H "Access-Control-Request-Headers: content-type" 2>&1 \
+              | grep -iE "^HTTP/|access-control-|vary|server:" || echo "(no CORS headers via proxy)"
+            echo ""
+            echo "If backend returns access-control-allow-origin but the proxy does not => the proxy strips it."
+            echo "If neither returns it => ALLOWED_ORIGINS/build issue on the backend."
+            echo "Done."
