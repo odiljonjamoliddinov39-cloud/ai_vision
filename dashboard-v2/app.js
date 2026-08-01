@@ -224,6 +224,12 @@ const I18N = {
     "search.summary": "Found {total} box(es) · {locations} location(s) · {cameras} camera(s)",
     "search.subtotal": "{n} box(es)",
     "search.scanning": "Scanning cameras {done}/{total}… (keeps running if you leave — come back anytime)",
+    "dataset.title": "Dataset backup",
+    "dataset.note": "Your dataset lives on a persistent volume and is auto-backed-up on every save, and restored automatically if the server ever comes up empty. Download a copy to keep it safe off-server; restore from a downloaded copy anytime.",
+    "dataset.download": "Download dataset",
+    "dataset.restore": "Restore from file",
+    "dataset.restoring": "Restoring…",
+    "dataset.restored": "Dataset restored — {n} image(s) present.",
     "menu.ai_models": "AI Models",
     "menu.integrations": "Integrations",
     "menu.logs": "Logs",
@@ -523,6 +529,12 @@ const I18N = {
     "search.summary": "Найдено {total} коробк(и) · {locations} мест · {cameras} камер",
     "search.subtotal": "{n} коробк(и)",
     "search.scanning": "Сканирование камер {done}/{total}… (продолжается, даже если выйти — возвращайтесь в любой момент)",
+    "dataset.title": "Резервная копия набора данных",
+    "dataset.note": "Набор данных хранится на постоянном томе и резервируется при каждом сохранении, а также восстанавливается автоматически, если сервер запустился пустым. Скачайте копию, чтобы хранить её вне сервера; восстановить можно в любой момент.",
+    "dataset.download": "Скачать набор данных",
+    "dataset.restore": "Восстановить из файла",
+    "dataset.restoring": "Восстановление…",
+    "dataset.restored": "Набор данных восстановлен — изображений: {n}.",
     "menu.ai_models": "AI модели",
     "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
@@ -4630,6 +4642,16 @@ async function renderTrainingAnalytics(container) {
         <button type="button" class="export-button" data-run-test>${escapeHtml(t("test.run"))}</button>
         <div data-test-results><p class="chart-note">${escapeHtml(t("test.empty"))}</p></div>
       </section>
+      <section class="acc-block">
+        <h3>${escapeHtml(t("dataset.title"))}</h3>
+        <p class="chart-note">${escapeHtml(t("dataset.note"))}</p>
+        <div class="search-bar">
+          <a class="export-button" href="${API_BASE}/api/training/dataset/export">${escapeHtml(t("dataset.download"))}</a>
+          <button type="button" class="ghost-button" data-ds-restore>${escapeHtml(t("dataset.restore"))}</button>
+          <input type="file" accept=".gz,.tgz,.tar" data-ds-file hidden />
+        </div>
+        <p class="chart-note" data-ds-status></p>
+      </section>
     </div>`;
 
   // --- Recognition search (dataset-centered, per-location counting) ---
@@ -4790,6 +4812,33 @@ async function renderTrainingAnalytics(container) {
   results?.addEventListener("change", (event) => {
     const row = event.target.closest("[data-test-row]");
     if (row) void applyTestRow(row);
+  });
+
+  // --- Dataset backup / restore ---
+  const restoreBtn = container.querySelector("[data-ds-restore]");
+  const restoreFile = container.querySelector("[data-ds-file]");
+  const dsStatus = container.querySelector("[data-ds-status]");
+  restoreBtn?.addEventListener("click", () => restoreFile?.click());
+  restoreFile?.addEventListener("change", async () => {
+    const file = restoreFile.files && restoreFile.files[0];
+    if (!file) return;
+    restoreBtn.disabled = true;
+    if (dsStatus) dsStatus.textContent = t("dataset.restoring");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const data = await catalogRequest("/api/training/dataset/import", { method: "POST", body: form });
+      const splits = (data && data.dataset && data.dataset.splits) || {};
+      const total = Object.values(splits).reduce((sum, s) => sum + (s.images || 0), 0);
+      if (dsStatus) dsStatus.textContent = t("dataset.restored").replace("{n}", String(total));
+      toast(t("dataset.restored").replace("{n}", String(total)));
+    } catch (error) {
+      if (dsStatus) dsStatus.textContent = error.message || "Restore failed";
+      toast(error.message || "Restore failed");
+    } finally {
+      restoreBtn.disabled = false;
+      restoreFile.value = "";
+    }
   });
 }
 
