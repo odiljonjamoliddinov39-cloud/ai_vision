@@ -65,15 +65,41 @@ class Detector:
 
     def _load_model(self) -> None:
         errors: list[str] = []
-        candidates = [self.requested_model_path]
-        if self.fallback_model_path and self.fallback_model_path not in candidates:
-            candidates.append(self.fallback_model_path)
+        # Ordered, de-duplicated candidate list. We try, in order:
+        #   1. the requested model (config's model_path),
+        #   2. the configured fallback (config's fallback_model_path),
+        #   3. a known-good downloadable open-vocabulary model, so detection
+        #      still RUNS with the configured class_prompts even when the
+        #      custom weights were never provisioned on the server,
+        #   4. a stock detector that ships with Ultralytics as a last resort,
+        #      so the model is never silently None and the loop keeps running.
+        # This never touches config.yaml; it only widens what the code can
+        # recover from when a weights file is missing.
+        candidates: list[str] = []
+        for candidate in (
+            self.requested_model_path,
+            self.fallback_model_path,
+            _DEFAULT_OPEN_VOCAB_MODEL,
+            _DEFAULT_STOCK_MODEL,
+        ):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
         for candidate in candidates:
+            # If a weights file with this name exists in the mounted models
+            # directory (or cwd), load it directly; otherwise hand the bare
+            # name to Ultralytics so it can resolve/download a known asset.
+            resolved = _resolve_model_path(candidate)
             try:
-                self.model = _load_ultralytics_model(candidate)
+                self.model = _load_ultralytics_model(resolved)
                 self.model_path = candidate
                 self._apply_prompts()
                 self.load_error = "; ".join(errors) if errors else None
+                if candidate != self.requested_model_path:
+                    print(
+                        "Ultralytics detector: requested model "
+                        f"'{self.requested_model_path}' unavailable, running "
+                        f"with fallback '{candidate}'."
+                    )
                 return
             except Exception as exc:
                 errors.append(f"{candidate}: {exc}")
@@ -160,8 +186,39 @@ class Detector:
         }
 
 
+# Last-resort models used only when the configured weights are missing. Both are
+# standard Ultralytics assets that download on first use, so detection keeps
+# working even if the custom checkpoint was never provisioned. The open-vocab
+# model honours the configured class_prompts; the stock model is the final
+# safety net so the detector is never silently disabled. Overridable via env.
+_DEFAULT_OPEN_VOCAB_MODEL = os.getenv("AI_VISION_OPENVOCAB_MODEL", "yolov8s-worldv2.pt")
+_DEFAULT_STOCK_MODEL = os.getenv("AI_VISION_STOCK_MODEL", "yolov8n.pt")
+
+
+def _resolve_model_path(model_path: str) -> str:
+    """Return a real filesystem path when the weights live in the mounted
+    models directory (or cwd); otherwise return the bare name so Ultralytics
+    can resolve/download a known asset. Absolute/existing paths pass through."""
+    name = str(model_path)
+    if os.path.isabs(name) or os.path.exists(name):
+        return name
+    search_dirs = [
+        os.getenv("AI_VISION_MODELS_DIR", ""),
+        "/app/models",
+        "models",
+        os.getcwd(),
+    ]
+    for directory in search_dirs:
+        if not directory:
+            continue
+        candidate = os.path.join(directory, name)
+        if os.path.exists(candidate):
+            return candidate
+    return name
+
+
 def _load_ultralytics_model(model_path: str):
-    normalized = model_path.lower()
+    normalized = os.path.basename(model_path).lower()
     if "yoloe" in normalized:
         from ultralytics import YOLOE
 
