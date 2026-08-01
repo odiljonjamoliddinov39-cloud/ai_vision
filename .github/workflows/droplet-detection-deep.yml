@@ -1,0 +1,74 @@
+name: Detection deep diagnostic (read-only)
+
+# Read-only. Determines whether the detection loop is erroring or just starved:
+# full backend startup log (tracebacks / model load / detection thread), OOM
+# evidence, container restart state, and live CPU/memory. Changes nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  deep:
+    name: Deep detection diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deep check on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 6m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+
+            echo "================= host memory ================="
+            free -m 2>/dev/null || true
+            echo ""
+
+            echo "================= container state (restarts?) ================="
+            docker compose ps 2>/dev/null || true
+            echo ""
+
+            echo "================= live CPU/MEM (one snapshot) ================="
+            docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' 2>/dev/null || true
+            echo ""
+
+            echo "================= OOM / killed evidence (kernel) ================="
+            (dmesg -T 2>/dev/null | grep -iE "out of memory|killed process|oom-kill" | tail -8) || echo "(dmesg not available or none)"
+            echo ""
+
+            echo "================= backend: exceptions / tracebacks ================="
+            docker compose logs backend --tail 800 2>/dev/null \
+              | grep -iE "traceback|error|exception|killed|oom|cuda|out of memory|failed|no module|cannot|torch|ultralytics|detection (started|stopped|loop)|autostart|watchdog|model" \
+              | grep -ivE "GET /|POST /|OPTIONS /|First slice|access-control" \
+              | tail -50 || echo "(no matching lines)"
+            echo ""
+
+            echo "================= backend: last 25 lines (raw tail) ================="
+            docker compose logs backend --tail 25 2>/dev/null || true
+            echo ""
+            echo "Done."
