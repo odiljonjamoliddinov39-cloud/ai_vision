@@ -141,13 +141,20 @@ class Detector:
             return []
         result = results[0]
         boxes = getattr(result, "boxes", None)
-        if boxes is None:
+        # A frame with no detections yields an empty or non-Boxes value (some
+        # builds hand back an empty list). Only a populated Ultralytics Boxes
+        # exposes cls/conf/xyxy; anything else means "nothing detected", so
+        # return [] instead of raising on a missing attribute.
+        cls = getattr(boxes, "cls", None)
+        conf = getattr(boxes, "conf", None)
+        xyxy = getattr(boxes, "xyxy", None)
+        if cls is None or conf is None or xyxy is None:
             return []
         names = getattr(result, "names", {}) or {}
         detections: list[Detection] = []
-        class_values = boxes.cls.tolist()
-        confidence_values = boxes.conf.tolist()
-        coordinates = boxes.xyxy.tolist()
+        class_values = cls.tolist()
+        confidence_values = conf.tolist()
+        coordinates = xyxy.tolist()
         for class_value, confidence, coordinates_xyxy in zip(
             class_values, confidence_values, coordinates
         ):

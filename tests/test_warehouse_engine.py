@@ -1,7 +1,14 @@
 from dataclasses import dataclass
 
+import pytest
+
 from warehouse_engine.engine import WarehouseEngine
 from warehouse_engine.rules import parse_task_prompt
+
+# The warehouse-engine operations dashboard page was removed in the
+# training-kiosk pivot (commit f7b0f55). Skipped (not deleted) so it can be
+# re-enabled if the operator platform is restored.
+_KIOSK_PIVOT = "Warehouse-engine dashboard page retired in the training-kiosk pivot (f7b0f55)."
 
 
 @dataclass
@@ -81,6 +88,7 @@ def test_main_routes_inventory_through_warehouse_engine():
     assert "_process_warehouse_counting(" not in source.split('if __name__ == "__main__":')[0]
 
 
+@pytest.mark.skip(reason=_KIOSK_PIVOT)
 def test_dashboard_exposes_engine_operations_and_task_builder():
     from pathlib import Path
 
