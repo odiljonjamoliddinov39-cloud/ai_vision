@@ -223,6 +223,7 @@ const I18N = {
     "search.recounted": "Recounted: {n} boxes.",
     "search.summary": "Found {total} box(es) · {locations} location(s) · {cameras} camera(s)",
     "search.subtotal": "{n} box(es)",
+    "search.scanning": "Scanning cameras {done}/{total}… (keeps running if you leave — come back anytime)",
     "menu.ai_models": "AI Models",
     "menu.integrations": "Integrations",
     "menu.logs": "Logs",
@@ -521,6 +522,7 @@ const I18N = {
     "search.recounted": "Пересчитано: {n} коробок.",
     "search.summary": "Найдено {total} коробк(и) · {locations} мест · {cameras} камер",
     "search.subtotal": "{n} коробк(и)",
+    "search.scanning": "Сканирование камер {done}/{total}… (продолжается, даже если выйти — возвращайтесь в любой момент)",
     "menu.ai_models": "AI модели",
     "menu.integrations": "Интеграции",
     "menu.logs": "Журнал действий",
@@ -4635,42 +4637,95 @@ async function renderTrainingAnalytics(container) {
   const recognizeBtn = container.querySelector("[data-recognize]");
   const saveAllBtn = container.querySelector("[data-save-all]");
   const searchResults = container.querySelector("[data-search-results]");
+
+  // The recognition sweep runs as a background job on the server. The page
+  // only polls its status, so it keeps running when the tab is closed and the
+  // latest results are restored when the page is reopened. `pollActive` is
+  // scoped to this mount; navigating away detaches searchResults, which stops
+  // the poll chain (see the document.contains guard) without killing the job.
+  let pollActive = false;
+  const renderSearchState = (data) => {
+    const status = data.status || "idle";
+    const rows = data.rows || [];
+    const prog = data.progress || {};
+    const running = status === "running";
+    recognizeBtn.disabled = running;
+    recognizeBtn.textContent = running ? t("search.recognizing") : t("search.recognize");
+    if (rows.length) {
+      const note = running
+        ? `<p class="chart-note">${escapeHtml(
+            t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
+          )}</p>`
+        : "";
+      searchResults.innerHTML = note + trainingSearchRowsHtml(rows);
+      updateSearchSummary(searchResults);
+      saveAllBtn.hidden = false;
+      return;
+    }
+    saveAllBtn.hidden = true;
+    let why;
+    if (running) {
+      why = t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0));
+    } else if (status === "error") {
+      why = data.error || t("search.empty");
+    } else if (status === "idle") {
+      why = t("search.empty");
+    } else {
+      const d = data.diagnostics || {};
+      if (d.model === false) why = "No model loaded (set TRAINING_USE_MODEL=1 with enough memory).";
+      else if (!d.cameras) why = "No cameras found. Start the streams first.";
+      else if (!d.frames_read) why = `Swept ${d.cameras} camera(s) but read 0 live frames.`;
+      else why = `Swept ${d.cameras} camera(s), found ${d.clusters || 0} stack(s), 0 matched your search.`;
+    }
+    searchResults.innerHTML = `<p class="chart-note">${escapeHtml(why)}</p>`;
+  };
+  const poll = async () => {
+    if (!document.contains(searchResults)) { pollActive = false; return; }
+    let data;
+    try {
+      data = await catalogRequest("/api/training/search/status");
+    } catch {
+      pollActive = false;
+      return;
+    }
+    if (!document.contains(searchResults)) { pollActive = false; return; }
+    renderSearchState(data);
+    if (data.status === "running" && pollActive) {
+      setTimeout(poll, 1500);
+    } else {
+      pollActive = false;
+    }
+  };
+  const startPoll = () => {
+    if (!pollActive) {
+      pollActive = true;
+      void poll();
+    }
+  };
   const runSearch = async () => {
     recognizeBtn.disabled = true;
     recognizeBtn.textContent = t("search.recognizing");
     try {
-      const data = await catalogRequest("/api/training/search", {
+      await catalogRequest("/api/training/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: searchInput.value.trim() }),
       });
-      const rows = data.rows || [];
-      if (!rows.length) {
-        const d = data.diagnostics || {};
-        let why = t("search.empty");
-        if (d.model === false) why = "No model loaded (set TRAINING_USE_MODEL=1 with enough memory).";
-        else if (!d.cameras) why = "No cameras found. Start the streams first.";
-        else if (!d.frames_read) why = `Swept ${d.cameras} camera(s) but read 0 live frames.`;
-        else why = `Swept ${d.cameras} camera(s), found ${d.clusters || 0} stack(s), 0 matched your search.`;
-        searchResults.innerHTML = `<p class="chart-note">${escapeHtml(why)}</p>`;
-        saveAllBtn.hidden = true;
-      } else {
-        searchResults.innerHTML = trainingSearchRowsHtml(rows);
-        updateSearchSummary(searchResults);
-        saveAllBtn.hidden = false;
-      }
     } catch (error) {
       searchResults.innerHTML = `<p class="empty">${escapeHtml(error.message || "Search failed")}</p>`;
-      saveAllBtn.hidden = true;
-    } finally {
       recognizeBtn.disabled = false;
       recognizeBtn.textContent = t("search.recognize");
+      return;
     }
+    startPoll();
   };
   recognizeBtn?.addEventListener("click", () => void runSearch());
   searchInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") void runSearch();
   });
+  // Restore whatever the background job is doing (running or last results) the
+  // moment this page opens.
+  startPoll();
   // Unchecking a stack means "this count is wrong" -> recount it harder.
   searchResults?.addEventListener("change", (event) => {
     const row = event.target.closest("[data-search-row]");

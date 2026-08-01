@@ -17,6 +17,7 @@ import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -6118,95 +6119,249 @@ async def training_analytics_apply(payload: TrainingApply) -> dict[str, Any]:
     return {"applied": len(written), "keep": keep, "dataset": _training_dataset_stats()}
 
 
-@app.post("/api/training/search")
-async def training_search(payload: TrainingSearch) -> dict[str, Any]:
-    """Dataset-centered recognition: sweep every camera, group detections into
-    per-location stacks, count the boxes at each spot, label each stack by
-    comparing its crop to the trained dataset (not Gemini), and (if a query is
-    given) return only the stacks whose name matches what you typed."""
-    return await asyncio.to_thread(_training_search_sync, payload.query)
+# --- Recognition search as a persistent background job -----------------------
+# The sweep runs in a daemon thread and writes its progress + results to disk
+# after every camera, so it keeps running even when the browser tab is closed
+# and the last results are restored the next time the page is opened.
+TRAINING_SEARCH_STATE_PATH = TRAINING_STAGING_DIR / "search_job.json"
+_training_search_lock = threading.Lock()
+_training_search_state: dict[str, Any] = {}
+_training_search_generation = 0
+
+
+def _training_search_idle_state() -> dict[str, Any]:
+    return {
+        "status": "idle",
+        "query": "",
+        "rows": [],
+        "diagnostics": {"cameras": 0, "frames_read": 0, "clusters": 0, "model": True},
+        "progress": {"done": 0, "total": 0},
+        "started_at": None,
+        "finished_at": None,
+    }
+
+
+def _training_search_status() -> dict[str, Any]:
+    """Current job state: the in-memory copy if present, else the last one
+    persisted to disk (survives a backend restart), else idle."""
+    with _training_search_lock:
+        if _training_search_state:
+            return dict(_training_search_state)
+    try:
+        return json.loads(TRAINING_SEARCH_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return _training_search_idle_state()
+
+
+def _training_search_write_state(state: dict[str, Any], generation: int) -> bool:
+    """Persist state only while this worker is still the current generation, so
+    a restarted search (new query) cannot be clobbered by a superseded one."""
+    with _training_search_lock:
+        if generation != _training_search_generation:
+            return False
+        _training_search_state.clear()
+        _training_search_state.update(state)
+    try:
+        TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        TRAINING_SEARCH_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start):
+    """Detect on one camera's current frame and return (rows, next_seq)."""
+    import cv2
+
+    rows: list[dict[str, Any]] = []
+    seq = seq_start
+    frame = _catalog_live_frame_image(slot=slot, camera=cam_name)
+    if frame is None:
+        return rows, seq
+    diag["frames_read"] += 1
+    try:
+        detections = detector.detect(frame)
+    except Exception as exc:  # noqa: BLE001
+        _audit("training_search_detect_failed", {"slot": slot, "error": str(exc)})
+        return rows, seq
+    boxes: list[tuple[int, int, int, int]] = []
+    labels: list[str] = []
+    for det in detections or []:
+        box = getattr(det, "box", None)
+        if not box or len(box) < 4:
+            continue
+        boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+        labels.append(str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object"))
+    if not boxes:
+        return rows, seq
+    for members in _training_cluster_boxes(boxes):
+        diag["clusters"] += 1
+        xs1 = min(boxes[i][0] for i in members)
+        ys1 = min(boxes[i][1] for i in members)
+        xs2 = max(boxes[i][2] for i in members)
+        ys2 = max(boxes[i][3] for i in members)
+        crop = _catalog_detection_crop(frame, {"x1": xs1, "y1": ys1, "x2": xs2, "y2": ys2})
+        if crop is None or crop.size == 0:
+            continue
+        matched, score = _training_match_dataset(crop, refs)
+        # Prefer the dataset label when the match is confident; else the
+        # detector's own label for the biggest box in the stack.
+        biggest = max(members, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
+        name = matched if (matched and score >= 0.6) else labels[biggest]
+        norm_name = _catalog_normalize_name(name)
+        norm_label = _catalog_normalize_name(labels[biggest])
+        if term and term not in norm_name and term not in norm_label:
+            continue
+        seq += 1
+        group_id = _catalog_visual_slug(f"search-{slot}-{seq}")
+        stage = TRAINING_STAGING_DIR / group_id
+        if stage.exists():
+            for old in stage.glob("*.jpg"):
+                old.unlink()
+        stage.mkdir(parents=True, exist_ok=True)
+        ok, buffer = cv2.imencode(".jpg", crop)
+        if ok:
+            (stage / "crop_00.jpg").write_bytes(buffer.tobytes())
+        rows.append(
+            {
+                "group_id": group_id,
+                "name": name,
+                "count": len(members),
+                "camera": cam_name,
+                "slot": slot,
+                "similarity": round(score, 3),
+                "crop_url": f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg" if ok else "",
+                "keep": True,
+            }
+        )
+    return rows, seq
 
 
 def _training_search_sync(query: str) -> dict[str, Any]:
-    import cv2
-
+    """Synchronous single-pass sweep returning {rows, diagnostics}. The live
+    UI uses the background job (start/status) instead, but this keeps a simple
+    blocking entry point for internal callers and tests."""
     term = _catalog_normalize_name(query)
     health = _catalog_health_snapshot()
     cameras = _training_camera_map(health)
     detector = _training_detector()
     refs = _training_dataset_reference_embeddings()
     diag = {"cameras": len(cameras), "frames_read": 0, "clusters": 0, "model": detector is not None}
-
     if detector is None:
         return {"rows": [], "diagnostics": diag}
-
     TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     seq = 0
     for slot, cam_name in sorted(cameras.items()):
-        frame = _catalog_live_frame_image(slot=slot, camera=cam_name)
-        if frame is None:
-            continue
-        diag["frames_read"] += 1
-        try:
-            detections = detector.detect(frame)
-        except Exception as exc:  # noqa: BLE001
-            _audit("training_search_detect_failed", {"slot": slot, "error": str(exc)})
-            continue
-        boxes: list[tuple[int, int, int, int]] = []
-        labels: list[str] = []
-        for det in detections or []:
-            box = getattr(det, "box", None)
-            if not box or len(box) < 4:
-                continue
-            boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
-            labels.append(str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object"))
-        if not boxes:
-            continue
-        for members in _training_cluster_boxes(boxes):
-            diag["clusters"] += 1
-            xs1 = min(boxes[i][0] for i in members)
-            ys1 = min(boxes[i][1] for i in members)
-            xs2 = max(boxes[i][2] for i in members)
-            ys2 = max(boxes[i][3] for i in members)
-            crop = _catalog_detection_crop(frame, {"x1": xs1, "y1": ys1, "x2": xs2, "y2": ys2})
-            if crop is None or crop.size == 0:
-                continue
-            matched, score = _training_match_dataset(crop, refs)
-            # Prefer the dataset label when the match is confident; else the
-            # detector's own label for the biggest box in the stack.
-            biggest = max(members, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
-            name = matched if (matched and score >= 0.6) else labels[biggest]
-            norm_name = _catalog_normalize_name(name)
-            norm_label = _catalog_normalize_name(labels[biggest])
-            if term and term not in norm_name and term not in norm_label:
-                continue
-            seq += 1
-            group_id = _catalog_visual_slug(f"search-{slot}-{seq}")
-            stage = TRAINING_STAGING_DIR / group_id
-            if stage.exists():
-                for old in stage.glob("*.jpg"):
-                    old.unlink()
-            stage.mkdir(parents=True, exist_ok=True)
-            ok, buffer = cv2.imencode(".jpg", crop)
-            if ok:
-                (stage / "crop_00.jpg").write_bytes(buffer.tobytes())
-            rows.append(
-                {
-                    "group_id": group_id,
-                    "name": name,
-                    "count": len(members),
-                    "camera": cam_name,
-                    "slot": slot,
-                    "similarity": round(score, 3),
-                    "crop_url": f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg"
-                    if ok
-                    else "",
-                    "keep": True,
-                }
-            )
+        new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
+        rows.extend(new_rows)
     rows.sort(key=lambda r: -r["count"])
     return {"rows": rows, "diagnostics": diag}
+
+
+def _training_search_worker(query: str, generation: int) -> None:
+    started = datetime.now(timezone.utc).isoformat()
+    try:
+        term = _catalog_normalize_name(query)
+        health = _catalog_health_snapshot()
+        cameras = _training_camera_map(health)
+        detector = _training_detector()
+        refs = _training_dataset_reference_embeddings()
+    except Exception as exc:  # noqa: BLE001
+        _training_search_write_state(
+            {
+                **_training_search_idle_state(),
+                "status": "error",
+                "query": query,
+                "error": str(exc),
+                "started_at": started,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+            generation,
+        )
+        return
+
+    cam_items = sorted(cameras.items())
+    diag = {"cameras": len(cameras), "frames_read": 0, "clusters": 0, "model": detector is not None}
+    base = {"query": query, "started_at": started, "finished_at": None}
+    if not _training_search_write_state(
+        {**base, "status": "running", "rows": [], "diagnostics": diag, "progress": {"done": 0, "total": len(cam_items)}},
+        generation,
+    ):
+        return
+
+    rows: list[dict[str, Any]] = []
+    seq = 0
+    if detector is not None:
+        TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        for idx, (slot, cam_name) in enumerate(cam_items, start=1):
+            try:
+                new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
+                rows.extend(new_rows)
+            except Exception as exc:  # noqa: BLE001
+                _audit("training_search_camera_failed", {"slot": slot, "error": str(exc)})
+            rows.sort(key=lambda r: -r["count"])
+            # Publish progress + partial rows after each camera so the page can
+            # show results as they are found. Stop early if superseded.
+            if not _training_search_write_state(
+                {**base, "status": "running", "rows": rows, "diagnostics": diag, "progress": {"done": idx, "total": len(cam_items)}},
+                generation,
+            ):
+                return
+
+    rows.sort(key=lambda r: -r["count"])
+    _training_search_write_state(
+        {
+            **base,
+            "status": "done",
+            "rows": rows,
+            "diagnostics": diag,
+            "progress": {"done": len(cam_items), "total": len(cam_items)},
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        },
+        generation,
+    )
+
+
+def _training_search_start(query: str) -> dict[str, Any]:
+    global _training_search_generation
+    with _training_search_lock:
+        running = _training_search_state.get("status") == "running"
+        current_q = _training_search_state.get("query")
+        if running and _catalog_normalize_name(current_q or "") == _catalog_normalize_name(query or ""):
+            # Same search already in flight - just report it, don't duplicate.
+            return dict(_training_search_state)
+        _training_search_generation += 1
+        generation = _training_search_generation
+    _training_search_write_state(
+        {
+            **_training_search_idle_state(),
+            "status": "running",
+            "query": query,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        },
+        generation,
+    )
+    threading.Thread(target=_training_search_worker, args=(query, generation), daemon=True).start()
+    return _training_search_status()
+
+
+@app.post("/api/training/search")
+async def training_search(payload: TrainingSearch) -> dict[str, Any]:
+    """Start (or resume) a dataset-centered recognition sweep as a background
+    job: it scans every camera, groups detections into per-location stacks,
+    counts the boxes at each spot, labels each stack against the trained
+    dataset (not Gemini), and keeps only stacks matching the query. Runs to
+    completion server-side even if the browser leaves; poll the status endpoint
+    for progress and results."""
+    return await asyncio.to_thread(_training_search_start, payload.query)
+
+
+@app.get("/api/training/search/status")
+async def training_search_status() -> dict[str, Any]:
+    """Current recognition-job state (running/done/idle) with progress and the
+    rows found so far - used to restore results when the page is reopened."""
+    return _training_search_status()
 
 
 @app.post("/api/training/recount")

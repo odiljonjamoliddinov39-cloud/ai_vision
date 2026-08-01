@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import time
 
 import cv2
 import numpy as np
@@ -188,3 +189,26 @@ def test_training_search_reports_diagnostics_without_model(tmp_path, monkeypatch
     out = server._training_search_sync("baget boxes")
     assert out["rows"] == []
     assert out["diagnostics"]["model"] is False
+
+
+def test_training_search_background_job_completes_and_persists(tmp_path, monkeypatch):
+    _point_dataset(monkeypatch, tmp_path / "baget_box")
+    monkeypatch.setattr(server, "_training_detector", lambda: None)
+    monkeypatch.setattr(server, "_catalog_health_snapshot", lambda: {"cameras": []})
+    monkeypatch.setattr(server, "TRAINING_STAGING_DIR", tmp_path / "staging")
+    monkeypatch.setattr(server, "TRAINING_SEARCH_STATE_PATH", tmp_path / "staging" / "search_job.json")
+    monkeypatch.setattr(server, "_training_search_state", {})
+
+    started = server._training_search_start("baget boxes")
+    assert started["status"] in {"running", "done"}
+
+    # The daemon thread finishes quickly with no cameras/model.
+    deadline = time.time() + 5
+    while time.time() < deadline and server._training_search_status().get("status") != "done":
+        time.sleep(0.05)
+
+    state = server._training_search_status()
+    assert state["status"] == "done"
+    assert state["rows"] == []
+    # Persisted to disk so a reopened page restores the last results.
+    assert (tmp_path / "staging" / "search_job.json").exists()
