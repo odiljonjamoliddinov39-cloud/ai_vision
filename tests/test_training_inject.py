@@ -214,6 +214,25 @@ def test_training_search_background_job_completes_and_persists(tmp_path, monkeyp
     assert (tmp_path / "staging" / "search_job.json").exists()
 
 
+def test_training_search_stale_running_is_reported_done(tmp_path, monkeypatch):
+    # Simulate a job left "running" on disk after a restart killed its worker:
+    # no live worker (active False), so status must self-correct to done and
+    # not make the page poll forever.
+    monkeypatch.setattr(server, "TRAINING_STAGING_DIR", tmp_path / "staging")
+    monkeypatch.setattr(server, "TRAINING_SEARCH_STATE_PATH", tmp_path / "staging" / "search_job.json")
+    monkeypatch.setattr(server, "_training_search_state", {})
+    monkeypatch.setattr(server, "_training_search_active", False)
+    (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "staging" / "search_job.json").write_text(
+        json.dumps({"status": "running", "query": "baget", "rows": [], "progress": {"done": 1, "total": 9}}),
+        encoding="utf-8",
+    )
+
+    state = server._training_search_status()
+    assert state["status"] == "done"
+    assert state["diagnostics"]["interrupted"] is True
+
+
 def test_training_dataset_backup_and_restore_round_trip(tmp_path, monkeypatch):
     root = tmp_path / "baget_box"
     _point_dataset(monkeypatch, root)
