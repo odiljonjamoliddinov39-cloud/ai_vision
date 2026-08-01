@@ -6133,7 +6133,18 @@ def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
 
     if detector is not None:
         # Model available: detect on each camera's current frame, one at a time.
+        # Same CPU-bound reality as the recognition sweep, so cap the run with a
+        # time budget: it returns what it found instead of grinding for minutes.
+        try:
+            budget = float(os.getenv("AI_VISION_SEARCH_BUDGET_SECONDS", "150"))
+        except ValueError:
+            budget = 150.0
+        deadline = time.monotonic() + budget
         for slot, name in sorted(cameras.items()):
+            if time.monotonic() >= deadline:
+                diag["stopped_early"] = True
+                _audit("training_analytics_budget_reached", {"frames_read": diag["frames_read"]})
+                break
             frame = _catalog_live_frame_image(slot=slot, camera=name)
             if frame is None:
                 continue
@@ -6290,6 +6301,10 @@ TRAINING_SEARCH_STATE_PATH = TRAINING_STAGING_DIR / "search_job.json"
 _training_search_lock = threading.Lock()
 _training_search_state: dict[str, Any] = {}
 _training_search_generation = 0
+# True only while a worker thread is actually alive. A "running" state with no
+# live worker (e.g. after a container restart mid-sweep, whose state was
+# persisted to disk) is stale and must not make the page poll forever.
+_training_search_active = False
 
 
 def _training_search_idle_state() -> dict[str, Any]:
@@ -6306,14 +6321,24 @@ def _training_search_idle_state() -> dict[str, Any]:
 
 def _training_search_status() -> dict[str, Any]:
     """Current job state: the in-memory copy if present, else the last one
-    persisted to disk (survives a backend restart), else idle."""
+    persisted to disk (survives a backend restart), else idle. A "running"
+    state with no live worker is corrected to "done" so the page never polls
+    forever after a restart killed the worker."""
     with _training_search_lock:
-        if _training_search_state:
-            return dict(_training_search_state)
-    try:
-        return json.loads(TRAINING_SEARCH_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return _training_search_idle_state()
+        state = dict(_training_search_state) if _training_search_state else None
+    if state is None:
+        try:
+            state = json.loads(TRAINING_SEARCH_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return _training_search_idle_state()
+    if state.get("status") == "running" and not _training_search_active:
+        state["status"] = "done"
+        state["finished_at"] = state.get("finished_at") or datetime.now(timezone.utc).isoformat()
+        diag = dict(state.get("diagnostics") or {})
+        diag["stopped_early"] = True
+        diag["interrupted"] = True
+        state["diagnostics"] = diag
+    return state
 
 
 def _training_search_write_state(state: dict[str, Any], generation: int) -> bool:
@@ -6502,16 +6527,30 @@ def _training_search_worker(query: str, generation: int) -> None:
     )
 
 
+def _training_search_run(query: str, generation: int) -> None:
+    """Thread entry point that tracks worker liveness so a restart-orphaned
+    'running' state can be detected as stale."""
+    global _training_search_active
+    try:
+        _training_search_worker(query, generation)
+    finally:
+        if generation == _training_search_generation:
+            _training_search_active = False
+
+
 def _training_search_start(query: str) -> dict[str, Any]:
-    global _training_search_generation
+    global _training_search_generation, _training_search_active
     with _training_search_lock:
-        running = _training_search_state.get("status") == "running"
+        running = _training_search_active and _training_search_state.get("status") == "running"
         current_q = _training_search_state.get("query")
         if running and _catalog_normalize_name(current_q or "") == _catalog_normalize_name(query or ""):
             # Same search already in flight - just report it, don't duplicate.
             return dict(_training_search_state)
         _training_search_generation += 1
         generation = _training_search_generation
+        # Mark alive synchronously (before the thread starts) so a status poll
+        # in the start-up window doesn't mis-flag the fresh job as stale.
+        _training_search_active = True
     _training_search_write_state(
         {
             **_training_search_idle_state(),
@@ -6521,7 +6560,7 @@ def _training_search_start(query: str) -> dict[str, Any]:
         },
         generation,
     )
-    threading.Thread(target=_training_search_worker, args=(query, generation), daemon=True).start()
+    threading.Thread(target=_training_search_run, args=(query, generation), daemon=True).start()
     return _training_search_status()
 
 
