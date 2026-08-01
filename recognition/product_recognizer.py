@@ -190,15 +190,15 @@ class ProductRecognizer:
             if result is not None and result.name != "Unknown Product":
                 detection.inventory_name = result.name
                 continue
-            crop = crop_image(frame, detection.box)
-            if crop is None:
-                continue
-            local = self.recognize_local(crop)
-            if local is not None and local.name != "Unknown Product":
-                self._results[(camera_name, int(track_id))] = local
-                detection.inventory_name = local.name
-                continue
-            self.submit_crop_for_track(camera_name, int(track_id), crop)
+            # Recognition (including local embeddings/database lookup) runs
+            # entirely in the executor. The detector loop only polls completed
+            # futures and submits bounded per-track work; it never waits here.
+            self.submit_for_track(
+                camera_name,
+                int(track_id),
+                frame,
+                detection.box,
+            )
 
     def submit_crop_for_track(self, camera_name: str, track_id: int, crop, force_refresh: bool = False) -> None:
         key = (camera_name, int(track_id))
