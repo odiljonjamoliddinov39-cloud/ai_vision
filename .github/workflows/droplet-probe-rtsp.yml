@@ -1,0 +1,97 @@
+name: Probe RTSP URL formats (read-only)
+
+# Auth works but ffmpeg reports "Invalid data" on both main (…01) and sub (…02)
+# streams. This probes several RTSP path/transport variants with the stored
+# credentials (read server-side, never printed) using the backend container's
+# ffprobe, and reports which variant returns a real video stream. Read-only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Probe RTSP variants
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check Droplet secrets
+        id: secrets
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          if [ -z "$DO_HOST" ] || [ -z "$DO_USER" ] || [ -z "$DO_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Probe on Droplet
+        if: steps.secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -uo pipefail
+            cd /opt/ai_vision || { echo "No /opt/ai_vision"; exit 1; }
+
+            # Pull creds from the running backend DB (server-side, never printed).
+            CREDS="$(docker compose exec -T backend python - <<'PY'
+            import sqlite3
+            from urllib.parse import urlsplit, unquote
+            import shlex
+            try:
+                con = sqlite3.connect("/app/database/cameras.db")
+                row = con.execute("SELECT stream_url FROM cameras WHERE stream_url LIKE 'rtsp://%:%@%' LIMIT 1").fetchone()
+            except Exception:
+                row = None
+            if not row:
+                print("OK=0")
+            else:
+                u = urlsplit(row[0])
+                print("OK=1")
+                print("NVR_USER=" + shlex.quote(unquote(u.username or "")))
+                print("NVR_PASS=" + shlex.quote(unquote(u.password or "")))
+            PY
+            )"
+            eval "$CREDS"
+            if [ "${OK:-0}" != "1" ]; then echo "No stored creds found."; exit 1; fi
+
+            HOST="87.192.242.82"
+            # Probe channel 5 (a kiosk channel) across common formats/transports.
+            # %s placeholders filled with user/pass server-side; URLs never printed.
+            run_probe() {
+              local label="$1"; local transport="$2"; local path="$3"
+              local url="rtsp://${NVR_USER}:${NVR_PASS}@${HOST}:554${path}"
+              echo "----- ${label}  (transport=${transport}) -----"
+              docker compose exec -T backend ffprobe -hide_banner \
+                -rtsp_transport "${transport}" -i "$url" \
+                -show_entries stream=codec_name,codec_type,width,height \
+                -of default=noprint_wrappers=1 -timeout 8000000 2>&1 \
+                | grep -iE "codec_name|codec_type|width|height|Invalid|401|Unauthorized|404|not found|Connection|timed out|refused|Server returned|method|does not contain" \
+                | head -12 || echo "(no output)"
+              echo ""
+            }
+
+            echo "================= RTSP PROBE (channel 5) ================="
+            run_probe "Hikvision main /Streaming/Channels/501" tcp "/Streaming/Channels/501"
+            run_probe "Hikvision main /Streaming/Channels/501 (UDP)" udp "/Streaming/Channels/501"
+            run_probe "Hikvision alt /Streaming/Channels/101?... (ch as 5)" tcp "/Streaming/Channels/501?transportmode=unicast"
+            run_probe "Hikvision tracks /Streaming/tracks/501" tcp "/Streaming/tracks/501"
+            run_probe "Dahua /cam/realmonitor ch5 main" tcp "/cam/realmonitor?channel=5&subtype=0"
+            run_probe "Dahua /cam/realmonitor ch5 sub" tcp "/cam/realmonitor?channel=5&subtype=1"
+            run_probe "Generic /h264/ch5/main/av_stream" tcp "/h264/ch5/main/av_stream"
+            run_probe "Generic /live/ch5" tcp "/live/ch05"
+            run_probe "ISAPI /ISAPI/Streaming/channels/501" tcp "/ISAPI/Streaming/channels/501"
+            echo "Probe complete. A variant printing codec_name=h264/hevc + width/height is the one that works."
