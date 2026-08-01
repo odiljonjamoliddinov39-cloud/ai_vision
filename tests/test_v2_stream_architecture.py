@@ -337,7 +337,8 @@ def test_detector_stream_first_reads_every_camera_without_four_camera_cap():
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
 
     assert "if stream_first and cam.name not in inference_camera_names:" not in source
-    assert "LatestFrameInferenceScheduler(processors)" in source
+    assert "LatestFrameInferenceScheduler(" in source
+    assert 'workers=det_cfg.get("detector_workers", "AUTO")' in source
 
 
 def test_detector_direct_camera_mode_requires_explicit_dev_override():
