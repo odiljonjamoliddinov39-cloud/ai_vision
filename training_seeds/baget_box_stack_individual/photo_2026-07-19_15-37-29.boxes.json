@@ -1,0 +1,12 @@
+[
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":292,"y1":170,"x2":582,"y2":1108}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":564,"y1":91,"x2":744,"y2":521}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":610,"y1":86,"x2":783,"y2":591}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":657,"y1":82,"x2":826,"y2":658}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":707,"y1":81,"x2":868,"y2":710}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":757,"y1":86,"x2":906,"y2":755}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":806,"y1":92,"x2":944,"y2":786}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":857,"y1":99,"x2":959,"y2":805}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":429,"y1":176,"x2":475,"y2":237}},
+  {"necessary":true,"name":"baget_box_stack_individual","bbox":{"x1":456,"y1":190,"x2":507,"y2":246}}
+]

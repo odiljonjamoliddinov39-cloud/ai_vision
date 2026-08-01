@@ -5489,12 +5489,28 @@ def _ensure_training_dataset() -> None:
                         "path": "datasets/baget_box",
                         "train": "images/train",
                         "val": "images/val",
-                        "names": {0: "baget box", 1: "sack"},
+                        "names": {0: "baget_box_stack_individual", 1: "sack"},
                     },
                     sort_keys=False,
                 ),
                 encoding="utf-8",
             )
+        else:
+            # Preserve every existing class id while migrating the original
+            # Baget Box class name. Existing class-0 labels remain valid.
+            data = _yaml.safe_load(TRAINING_DATASET_YAML.read_text(encoding="utf-8")) or {}
+            names = data.get("names") or {}
+            class_zero = names.get(0, names.get("0"))
+            normalized = " ".join(str(class_zero or "").replace("_", " ").split()).lower()
+            if normalized == "baget box":
+                if 0 in names:
+                    names[0] = "baget_box_stack_individual"
+                else:
+                    names["0"] = "baget_box_stack_individual"
+                data["names"] = names
+                TRAINING_DATASET_YAML.write_text(
+                    _yaml.safe_dump(data, sort_keys=False), encoding="utf-8"
+                )
     except Exception as exc:  # noqa: BLE001
         _audit("training_dataset_seed_failed", {"error": str(exc)})
 

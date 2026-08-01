@@ -95,6 +95,36 @@ else
   docker compose up -d --build --no-deps --force-recreate backend
 fi
 
+# Import versioned, reviewed training samples into the persistent dataset.
+# Marker files inside the named volume make this idempotent across deploys.
+seed_root="$APP_DIR/training_seeds/baget_box_stack_individual"
+if [ -d "$seed_root" ]; then
+  dataset_api="http://127.0.0.1:${AI_VISION_PORT:-8080}/api/training/annotate"
+  docker compose exec -T backend mkdir -p /app/datasets/.seeded
+  for metadata in "$seed_root"/*.boxes.json; do
+    [ -e "$metadata" ] || continue
+    stem="$(basename "$metadata" .boxes.json)"
+    image="$seed_root/${stem}.jpg"
+    marker="/app/datasets/.seeded/${stem}.v1"
+    if [ ! -f "$image" ]; then
+      echo "WARNING: training seed image missing for $metadata" >&2
+      continue
+    fi
+    if docker compose exec -T backend test -f "$marker"; then
+      echo "Training seed already imported: $stem"
+      continue
+    fi
+    echo "Importing reviewed training seed: $stem"
+    curl --fail --show-error --silent \
+      --retry 20 --retry-connrefused --retry-delay 2 \
+      -F 'split=train' \
+      -F "boxes=$(cat "$metadata")" \
+      -F "file=@${image};type=image/jpeg" \
+      "$dataset_api" >/dev/null
+    docker compose exec -T backend touch "$marker"
+  done
+fi
+
 echo "Pruning unused Docker images and build cache..."
 docker image prune -f || true
 # Build cache accumulates on every 'docker compose --build' and 'docker image
