@@ -17,6 +17,7 @@ class Detection:
     class_name: str
     confidence: float
     box: tuple[int, int, int, int]
+    class_id: int = 0
     object_type: str | None = None
     inventory_name: str | None = None
     quantity: int = 1
@@ -172,6 +173,7 @@ class Detector:
                     class_name=class_name,
                     confidence=float(confidence),
                     box=(int(x1), int(y1), int(x2), int(y2)),
+                    class_id=class_id,
                     object_type=class_name,
                     method=f"ultralytics:{self.model_path}",
                 )

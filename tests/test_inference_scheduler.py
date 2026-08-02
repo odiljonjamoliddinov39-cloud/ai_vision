@@ -17,7 +17,7 @@ def test_latest_mode_processes_newest_without_unbounded_backlog():
     release = threading.Event()
     seen = []
 
-    def process(frame):
+    def process(frame, _sequence, _observed_at):
         seen.append(frame)
         if frame == "first":
             release.wait(2)
@@ -44,7 +44,7 @@ def test_fifo_mode_preserves_order_and_rejects_overflow():
     release = threading.Event()
     seen = []
 
-    def process(frame):
+    def process(frame, _sequence, _observed_at):
         seen.append(frame)
         if frame == 1:
             release.wait(2)
@@ -71,7 +71,7 @@ def test_workers_parallelize_cameras_but_not_one_camera():
     peak = 0
     lock = threading.Lock()
 
-    def process(frame):
+    def process(frame, _sequence, _observed_at):
         nonlocal active, peak
         with lock:
             active += 1
@@ -96,7 +96,7 @@ def test_workers_parallelize_cameras_but_not_one_camera():
 
 def test_metrics_include_latency_duration_rate_and_worker_configuration():
     scheduler = LatestFrameInferenceScheduler(
-        {"camera": lambda frame: [frame, frame]}, workers=1
+        {"camera": lambda frame, _sequence, _observed_at: [frame, frame]}, workers=1
     )
     try:
         scheduler.submit("camera", "frame")

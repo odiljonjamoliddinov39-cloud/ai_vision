@@ -41,13 +41,15 @@ from cameras.camera import load_cameras
 from streams.frame_source import load_processing_cameras
 from detection.detector import Detector
 from detection.scheduler import LatestFrameInferenceScheduler
+from detection.camera_processor import CameraVisionProcessor
 from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
 from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
 from database.warehouse_db import WarehouseDB
-from tracking.tracker import ObjectTracker, TrackedObject
+from tracking.tracker import TrackedObject
+from tracking.bytetrack_adapter import ByteTrackAdapter
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
 from warehouse_engine import WarehouseEngine
@@ -190,16 +192,11 @@ def main():
 
     if tracking_enabled and detector.model is not None:
         object_trackers = {
-            cam.name: ObjectTracker(
-                model=detector.model,
-                confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
-                device=detector.device,
-                classes=track_cfg.get("classes", det_cfg.get("classes")),
-                tracker_config=track_cfg.get("tracker_config", "bytetrack.yaml"),
-                image_size=det_cfg.get("image_size", 640),
-                class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
-                iou_threshold=det_cfg.get("iou_threshold", 0.55),
-                max_detections=det_cfg.get("max_detections", 300),
+            cam.name: ByteTrackAdapter(
+                camera_name=cam.name,
+                tracker_config=track_cfg.get(
+                    "tracker_config", "config/warehouse_bytetrack.yaml"
+                ),
             )
             for cam in cameras
         }
@@ -331,15 +328,17 @@ def main():
     )
     last_detection_at = {cam.name: 0.0 for cam in cameras}
     camera_frame_counts = {cam.name: 0 for cam in cameras}
+    camera_stream_interrupted = {cam.name: False for cam in cameras}
     camera_fps_started_at = time.monotonic()
-    processors = {
-        cam.name: (
-            object_trackers[cam.name].update
-            if cam.name in object_trackers
-            else detector.detect
+    camera_processors = {
+        cam.name: CameraVisionProcessor(
+            cam.name, detector, object_trackers.get(cam.name)
         )
         for cam in cameras
         if cam.name in inference_camera_names and detector.model is not None
+    }
+    processors = {
+        name: processor.process for name, processor in camera_processors.items()
     }
     inference_scheduler = (
         LatestFrameInferenceScheduler(
@@ -364,7 +363,13 @@ def main():
             for cam in cameras:
                 frame = cam.read()
                 if frame is None:
+                    camera_stream_interrupted[cam.name] = True
                     continue
+                if camera_stream_interrupted[cam.name]:
+                    processor = camera_processors.get(cam.name)
+                    if processor is not None:
+                        processor.reset("camera_reconnect")
+                    camera_stream_interrupted[cam.name] = False
                 any_frame = True
                 last_frame_seen_at = now
                 frames_read += 1
@@ -579,6 +584,9 @@ def main():
                     "model_loaded": detector.model is not None,
                     "detector": detector.health(),
                     "tracking_enabled": bool(object_trackers) or detector.model is None,
+                    "tracking_by_camera": {
+                        name: tracker.health() for name, tracker in object_trackers.items()
+                    },
                     "warehouse_counting_enabled": warehouse_enabled,
                     "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
                     if warehouse_enabled

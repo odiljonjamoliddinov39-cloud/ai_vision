@@ -48,7 +48,7 @@ class LatestFrameInferenceScheduler:
 
     def __init__(
         self,
-        processors: dict[str, Callable[[Any], list]],
+        processors: dict[str, Callable[[Any, int, float], list]],
         queue_size: int = 5,
         queue_mode: str = "latest",
         workers: Any = "AUTO",
@@ -204,7 +204,7 @@ class LatestFrameInferenceScheduler:
             queue_latency_ms = max(0.0, (time.monotonic() - submitted_at) * 1000)
             error = None
             try:
-                detections = self.processors[camera_name](frame)
+                detections = self.processors[camera_name](frame, sequence, frame_at)
             except Exception as exc:
                 detections = []
                 error = str(exc)

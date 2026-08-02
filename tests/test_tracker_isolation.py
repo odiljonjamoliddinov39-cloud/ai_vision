@@ -1,60 +1,114 @@
+import sys
+import types
 from pathlib import Path
 
-from tracking.tracker import ObjectTracker
+import numpy as np
 
-
-class Values:
-    def __init__(self, values):
-        self.values = values
-
-    def tolist(self):
-        return self.values
-
-    def __getitem__(self, index):
-        value = self.values[index]
-        return Values(value) if isinstance(value, list) else value
+from detection.detector import Detection
+from tracking.bytetrack_adapter import ByteTrackAdapter
 
 
 class FakeBoxes:
-    id = None
-    cls = Values([0])
-    conf = Values([0.9])
-    xyxy = Values([[10, 10, 50, 50]])
+    def __init__(self, rows, _shape):
+        self.rows = np.asarray(rows)
 
 
-class FakeModel:
-    def predict(self, **_kwargs):
-        return [
-            type(
-                "Result",
-                (),
-                {"names": {0: "box"}, "boxes": FakeBoxes()},
-            )()
-        ]
+class FakeBYTETracker:
+    next_instance = 0
+
+    def __init__(self, args):
+        self.args = args
+        self.instance = FakeBYTETracker.next_instance
+        FakeBYTETracker.next_instance += 1
+        self.frame_id = 0
+        self.reset_calls = 0
+
+    def update(self, boxes):
+        self.frame_id += 1
+        return np.asarray([
+            [*row[:4], self.instance * 100 + index + 1, row[4], row[5], index]
+            for index, row in enumerate(boxes.rows)
+        ], dtype=float).reshape((-1, 8))
+
+    def reset(self):
+        self.frame_id = 0
+        self.reset_calls += 1
 
 
-def test_track_ids_are_isolated_per_camera_tracker():
-    model = FakeModel()
-    first_camera = ObjectTracker(model)
-    second_camera = ObjectTracker(model)
-
-    assert first_camera.update(object())[0].track_id == 1
-    assert second_camera.update(object())[0].track_id == 1
-    assert first_camera.update(object())[0].track_id == 1
-
-    first_camera.reset()
-    assert first_camera.update(object())[0].track_id == 1
-    assert second_camera.update(object())[0].track_id == 1
+class FakeSTrack:
+    pass
 
 
-def test_main_never_reuses_old_detections_on_new_frames():
-    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
-        encoding="utf-8"
-    )
+def _install_fake_ultralytics(monkeypatch):
+    trackers = types.ModuleType("ultralytics.trackers")
+    byte_tracker = types.ModuleType("ultralytics.trackers.byte_tracker")
+    byte_tracker.BYTETracker = FakeBYTETracker
+    byte_tracker.STrack = FakeSTrack
+    engine = types.ModuleType("ultralytics.engine")
+    results = types.ModuleType("ultralytics.engine.results")
+    results.Boxes = FakeBoxes
+    for name, module in {
+        "ultralytics": types.ModuleType("ultralytics"),
+        "ultralytics.trackers": trackers,
+        "ultralytics.trackers.byte_tracker": byte_tracker,
+        "ultralytics.engine": engine,
+        "ultralytics.engine.results": results,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
 
-    assert "object_trackers = {" in source
-    assert "LatestFrameInferenceScheduler(" in source
-    assert 'queue_mode=det_cfg.get("queue_mode", "latest")' in source
-    assert "last_detections.get" not in source
-    assert '"stale": True' in source
-    assert "last_detections_by_camera[cam.name] = []" in source
+
+def _config():
+    return str(Path(__file__).resolve().parents[1] / "config" / "warehouse_bytetrack.yaml")
+
+
+def _detection(confidence=0.9):
+    return Detection("baget box", confidence, (10, 20, 50, 80), class_id=7)
+
+
+def test_trackers_are_isolated_and_preserve_detection_fields(monkeypatch):
+    _install_fake_ultralytics(monkeypatch)
+    FakeBYTETracker.next_instance = 0
+    first = ByteTrackAdapter("one", _config())
+    second = ByteTrackAdapter("two", _config())
+
+    a = first.update([_detection()], (100, 100, 3), 1, 10.0)[0]
+    b = second.update([_detection()], (100, 100, 3), 1, 10.0)[0]
+    assert a.track_id == 1
+    assert b.track_id == 101
+    assert a.class_name == "baget box"
+    assert a.class_id == 7
+    assert a.camera_name == "one"
+    assert a.frame_sequence == 1
+
+
+def test_empty_detections_age_tracker_and_out_of_order_is_rejected(monkeypatch):
+    _install_fake_ultralytics(monkeypatch)
+    tracker = ByteTrackAdapter("one", _config())
+    assert tracker.update([], (100, 100, 3), 2, 10.0) == []
+    assert tracker._tracker.frame_id == 1
+    assert tracker.update([_detection()], (100, 100, 3), 1, 11.0) == []
+    health = tracker.health()
+    assert health["empty_updates"] == 1
+    assert health["out_of_order_skips"] == 1
+
+
+def test_resolution_change_resets_only_that_tracker(monkeypatch):
+    _install_fake_ultralytics(monkeypatch)
+    tracker = ByteTrackAdapter("one", _config())
+    tracker.update([_detection()], (100, 100, 3), 1, 10.0)
+    tracker.update([_detection()], (200, 100, 3), 2, 11.0)
+    assert tracker.health()["last_reset_reason"] == "resolution_change"
+    assert tracker.health()["last_sequence"] == 2
+
+
+def test_main_has_no_tracker_inference_or_custom_iou_fallback():
+    root = Path(__file__).resolve().parents[1]
+    tracker_source = (root / "tracking" / "tracker.py").read_text(encoding="utf-8")
+    adapter_source = (root / "tracking" / "bytetrack_adapter.py").read_text(encoding="utf-8")
+    main_source = (root / "main.py").read_text(encoding="utf-8")
+    combined = tracker_source + adapter_source
+    assert ".predict(" not in combined
+    assert ".track(" not in combined
+    assert "_box_iou" not in combined
+    assert "object_proposal_boxes" not in combined
+    assert "CameraVisionProcessor" in main_source

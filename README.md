@@ -72,7 +72,7 @@ the Technical Design doc.
 ai_vision/
 ├── cameras/        # camera connection (USB / RTSP)
 ├── detection/       # YOLO detector, drawing, snapshots
-├── tracking/         # (Phase 3 — object tracking, empty for now)
+├── tracking/         # Per-camera Ultralytics ByteTrack state and counting
 ├── ai/                # (Phase 2 — AI reasoning / assistant, empty for now)
 ├── speech/          # (Phase 2 — STT/TTS, empty for now)
 ├── database/       # event logging (SQLite/Postgres later)
@@ -209,3 +209,6 @@ This MVP is the foundation for:
 Each phase builds on the `Detection` objects already produced by
 `detection/detector.py`, so none of Phase 1 needs to be rewritten to
 support them.
+
+Production detection/tracking ownership, ordering, reset behavior, metrics, and
+troubleshooting are documented in [docs/tracking_pipeline.md](docs/tracking_pipeline.md).
