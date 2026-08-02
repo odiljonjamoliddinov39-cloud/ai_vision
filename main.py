@@ -448,6 +448,8 @@ def main():
                     continue
 
                 if cam.name in object_trackers:
+                    # Turn this camera's raw detections into stable track IDs.
+                    detections = object_trackers[cam.name].update_with_detections(detections)
                     last_tracked_count = len(detections)
                     check_ins = presence_tracker.update(
                         cam.name, detections, inference_result.inference_at

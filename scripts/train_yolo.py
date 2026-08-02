@@ -203,7 +203,11 @@ def train(args: argparse.Namespace) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train YOLO for the AI Vision Baget Box detector.")
     parser.add_argument("--dataset", default="datasets/baget_box/data.yaml", help="YOLO dataset YAML path.")
-    parser.add_argument("--base-model", default="yolov8s.pt", help="Pretrained model to fine-tune.")
+    parser.add_argument(
+        "--base-model",
+        default="yolo11s.pt",
+        help="Pretrained model to fine-tune (YOLO11 is the current Ultralytics generation and trains a stronger box detector than YOLOE/World for a fixed set of classes).",
+    )
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz", type=int, default=960)
     parser.add_argument("--batch", type=int, default=8)

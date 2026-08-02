@@ -224,6 +224,8 @@ const I18N = {
     "search.summary": "Found {total} box(es) · {locations} location(s) · {cameras} camera(s)",
     "search.subtotal": "{n} box(es)",
     "search.scanning": "Scanning cameras {done}/{total}… (keeps running if you leave — come back anytime)",
+    "search.capped": "Scanned {done}/{total} cameras and stopped at the time limit. Press Recognize again to continue the rest.",
+    "busy.wait": "A detection run is already in progress — let it finish first.",
     "dataset.title": "Dataset backup",
     "dataset.note": "Your dataset lives on a persistent volume and is auto-backed-up on every save, and restored automatically if the server ever comes up empty. Download a copy to keep it safe off-server; restore from a downloaded copy anytime.",
     "dataset.download": "Download dataset",
@@ -529,6 +531,8 @@ const I18N = {
     "search.summary": "Найдено {total} коробк(и) · {locations} мест · {cameras} камер",
     "search.subtotal": "{n} коробк(и)",
     "search.scanning": "Сканирование камер {done}/{total}… (продолжается, даже если выйти — возвращайтесь в любой момент)",
+    "search.capped": "Просканировано {done}/{total} камер, остановлено по лимиту времени. Нажмите «Распознать» ещё раз, чтобы продолжить.",
+    "busy.wait": "Распознавание уже выполняется — дождитесь его завершения.",
     "dataset.title": "Резервная копия набора данных",
     "dataset.note": "Набор данных хранится на постоянном томе и резервируется при каждом сохранении, а также восстанавливается автоматически, если сервер запустился пустым. Скачайте копию, чтобы хранить её вне сервера; восстановить можно в любой момент.",
     "dataset.download": "Скачать набор данных",
@@ -4666,19 +4670,33 @@ async function renderTrainingAnalytics(container) {
   // scoped to this mount; navigating away detaches searchResults, which stops
   // the poll chain (see the document.contains guard) without killing the job.
   let pollActive = false;
+  // Recognize and Run test share one detector + CPU. Track which is active so
+  // they can't be launched on top of each other (that was the "they trigger
+  // each other" behaviour: both grinding at once).
+  let searchRunning = false;
+  let testRunning = false;
   const renderSearchState = (data) => {
     const status = data.status || "idle";
     const rows = data.rows || [];
     const prog = data.progress || {};
     const running = status === "running";
+    searchRunning = running;
+    const runBtnEl = container.querySelector("[data-run-test]");
+    if (runBtnEl && !testRunning) runBtnEl.disabled = running;
     recognizeBtn.disabled = running;
     recognizeBtn.textContent = running ? t("search.recognizing") : t("search.recognize");
+    const diag = data.diagnostics || {};
     if (rows.length) {
-      const note = running
-        ? `<p class="chart-note">${escapeHtml(
-            t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
-          )}</p>`
-        : "";
+      let note = "";
+      if (running) {
+        note = `<p class="chart-note">${escapeHtml(
+          t("search.scanning").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
+        )}</p>`;
+      } else if (diag.stopped_early) {
+        note = `<p class="chart-note">${escapeHtml(
+          t("search.capped").replace("{done}", String(prog.done || 0)).replace("{total}", String(prog.total || 0))
+        )}</p>`;
+      }
       searchResults.innerHTML = note + trainingSearchRowsHtml(rows);
       updateSearchSummary(searchResults);
       saveAllBtn.hidden = false;
@@ -4705,7 +4723,10 @@ async function renderTrainingAnalytics(container) {
     if (!document.contains(searchResults)) { pollActive = false; return; }
     let data;
     try {
-      data = await catalogRequest("/api/training/search/status");
+      // force:true — never serve the poll from the read cache, or it would
+      // return the same "running" snapshot forever and the page would spin
+      // even after the server marked the job done.
+      data = await catalogRequest("/api/training/search/status", { force: true });
     } catch {
       pollActive = false;
       return;
@@ -4725,6 +4746,10 @@ async function renderTrainingAnalytics(container) {
     }
   };
   const runSearch = async () => {
+    if (testRunning) {
+      toast(t("busy.wait"));
+      return;
+    }
     recognizeBtn.disabled = true;
     recognizeBtn.textContent = t("search.recognizing");
     try {
@@ -4780,6 +4805,11 @@ async function renderTrainingAnalytics(container) {
   const runBtn = container.querySelector("[data-run-test]");
   const results = container.querySelector("[data-test-results]");
   runBtn?.addEventListener("click", async () => {
+    if (searchRunning) {
+      toast(t("busy.wait"));
+      return;
+    }
+    testRunning = true;
     runBtn.disabled = true;
     runBtn.textContent = t("test.running");
     try {
@@ -4804,6 +4834,7 @@ async function renderTrainingAnalytics(container) {
     } catch (error) {
       results.innerHTML = `<p class="empty">${escapeHtml(error.message || "Test failed")}</p>`;
     } finally {
+      testRunning = false;
       runBtn.disabled = false;
       runBtn.textContent = t("test.run");
     }
