@@ -3130,6 +3130,121 @@ h3 .muted {
   gap: 20px;
 }
 
+.recognition-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.recognition-heading h3 {
+  margin: 2px 0 4px;
+  font-size: 1.35rem;
+}
+
+.section-eyebrow {
+  margin: 0;
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recognition-search {
+  align-items: stretch;
+}
+
+.recognition-search input {
+  min-width: min(420px, 100%);
+}
+
+.recognition-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-strong);
+}
+
+.recognition-status strong {
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.recognition-status[data-state="error"] strong {
+  color: var(--bad);
+}
+
+.recognition-status[data-state="done"] strong {
+  color: var(--good);
+}
+
+.recognition-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.recognition-table {
+  margin: 0;
+  min-width: 920px;
+}
+
+.recognition-crop {
+  width: 88px;
+  height: 66px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.recognition-source {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.recognition-name {
+  width: 100%;
+  min-width: 170px;
+  padding: 8px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.confidence-chip {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.decision-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.recognition-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.recognition-actions[hidden] {
+  display: none;
+}
+
 .training-field {
   display: block;
   margin-bottom: 12px;
