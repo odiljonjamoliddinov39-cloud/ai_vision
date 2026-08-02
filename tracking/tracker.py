@@ -3,10 +3,30 @@ tracking/tracker.py
 
 Phase 3: Per-camera object tracking with persistent IDs.
 
-Ultralytics stores persistent tracker state on the model predictor itself.
-Sharing one model.track(..., persist=True) call across cameras therefore mixes
-unrelated timelines. This adapter keeps association state inside each
-ObjectTracker instance while using the shared model only for stateless predict.
+Design
+------
+Detection and tracking are decoupled. The shared YOLO model runs ONCE per frame
+(in the detection scheduler) and produces plain detections; each camera owns an
+ObjectTracker that turns those detections into stable track IDs. Tracker state
+therefore lives on the main loop, isolated per camera, and is never touched by
+the detector's worker threads.
+
+The association is a ByteTrack-style algorithm driven by the tracker config
+(config/warehouse_bytetrack.yaml):
+
+  * two-stage matching - high-confidence detections are matched to existing
+    tracks first, then low-confidence detections recover tracks that would
+    otherwise be dropped (ByteTrack's key idea);
+  * a track buffer (`track_buffer`) keeps a briefly-missed object alive for N
+    frames so it keeps its ID instead of fragmenting into a new one;
+  * IoU thresholds derive from `match_thresh`; new tracks need `new_track_thresh`.
+
+There is no Kalman motion model: warehouse stock is near-static, so association
+uses the last box directly, which is robust and jitter-free for this domain.
+
+update_with_detections(detections) is the decoupled entry point. update(frame)
+is kept for back-compat: it runs the model itself (predict, or track for model
+doubles that supply IDs) and then feeds the same association.
 
 FR-Phase3: Object Tracking
 """
@@ -14,6 +34,7 @@ FR-Phase3: Object Tracking
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from detection.proposals import object_proposal_boxes
 
@@ -45,7 +66,7 @@ class _TrackState:
 class ObjectTracker:
     def __init__(
         self,
-        model,
+        model=None,
         confidence_threshold: float = 0.5,
         device: str = "cpu",
         classes: list[str] | None = None,
@@ -59,10 +80,12 @@ class ObjectTracker:
     ):
         """
         Args:
-            model: an already-loaded ultralytics.YOLO instance. Reusing the
-                Detector's model avoids loading the weights twice.
-            tracker_config: "bytetrack.yaml" (default, IoU-only, fast) or
-                "botsort.yaml" (adds appearance re-identification, slower).
+            model: an already-loaded ultralytics.YOLO instance (only used by the
+                back-compat update(frame) path). The decoupled
+                update_with_detections() path needs no model.
+            tracker_config: path to a ByteTrack yaml (e.g.
+                config/warehouse_bytetrack.yaml). Its thresholds drive the
+                association; missing keys fall back to the constructor defaults.
         """
         self.model = model
         self.confidence_threshold = confidence_threshold
@@ -73,17 +96,67 @@ class ObjectTracker:
         self.class_agnostic_nms = class_agnostic_nms
         self.iou_threshold = float(iou_threshold)
         self.max_detections = int(max_detections)
-        self.match_iou_threshold = float(match_iou_threshold)
-        self.max_missed_updates = int(max_missed_updates)
+
+        # Thresholds: config file wins, else the constructor defaults.
+        cfg = _load_tracker_thresholds(tracker_config)
+        self.track_high_thresh = float(cfg.get("track_high_thresh", 0.5))
+        self.track_low_thresh = float(cfg.get("track_low_thresh", 0.1))
+        self.new_track_thresh = float(cfg.get("new_track_thresh", 0.5))
+        self.max_missed_updates = int(cfg.get("track_buffer", max_missed_updates))
+        match_thresh = cfg.get("match_thresh")
+        # ByteTrack's match_thresh is a distance cap (1 - IoU); convert to a
+        # minimum IoU for the first (high-confidence) stage.
+        self._iou_min_high = (
+            max(0.1, 1.0 - float(match_thresh)) if match_thresh is not None else float(match_iou_threshold)
+        )
+        # Second (low-confidence recovery) stage stays strict to avoid false
+        # matches, per ByteTrack.
+        self._iou_min_low = max(self._iou_min_high, 0.5)
+        # Kept for backward compatibility / introspection.
+        self.match_iou_threshold = self._iou_min_high
+
         self._tracks: dict[int, _TrackState] = {}
         self._next_track_id = 1
 
+    # ------------------------------------------------------------------ #
+    # Decoupled entry point: association only, no model inference.
+    # ------------------------------------------------------------------ #
+    def update_with_detections(self, detections) -> list[TrackedObject]:
+        """Assign stable track IDs to already-computed detections.
+
+        `detections` is any iterable of objects exposing .box (x1,y1,x2,y2),
+        .class_name and .confidence (e.g. detection.detector.Detection). All
+        other fields are carried through onto the returned TrackedObjects.
+        """
+        candidates = []
+        for det in detections or []:
+            box = getattr(det, "box", None)
+            if not box or len(box) < 4:
+                continue
+            class_name = str(
+                getattr(det, "class_name", None) or getattr(det, "object_type", None) or "object"
+            )
+            if self.classes_filter and class_name not in self.classes_filter:
+                continue
+            confidence = float(getattr(det, "confidence", 0.0) or 0.0)
+            candidates.append(
+                (
+                    confidence,
+                    class_name,
+                    (int(box[0]), int(box[1]), int(box[2]), int(box[3])),
+                    None,
+                    det,
+                )
+            )
+        return self._associate(candidates)
+
+    # ------------------------------------------------------------------ #
+    # Back-compat entry point: run the model, then associate.
+    # ------------------------------------------------------------------ #
     def update(self, frame) -> list[TrackedObject]:
-        """
-        Runs detection + tracking on a single BGR frame and returns the
-        currently visible TrackedObjects, each carrying a track_id that
-        stays stable across frames for as long as the object is visible.
-        """
+        """Runs detection + tracking on a single BGR frame. Prefer the decoupled
+        update_with_detections() in the main pipeline; this remains for callers
+        (and tests) that hand the tracker a model + frame directly."""
         predict = getattr(self.model, "predict", None)
         if callable(predict):
             results = predict(
@@ -108,7 +181,6 @@ class ObjectTracker:
                 verbose=False,
             )
 
-        tracked: list[TrackedObject] = []
         candidates = []
         if results:
             result = results[0]
@@ -129,58 +201,114 @@ class ObjectTracker:
                             class_name,
                             (int(x1), int(y1), int(x2), int(y2)),
                             int(supplied_ids[i]) if supplied_ids is not None else None,
+                            None,
                         )
                     )
         if not candidates:
             candidates.extend(
-                (0.65, "object proposal", box, None)
+                (0.65, "object proposal", box, None, None)
                 for box in object_proposal_boxes(frame)
             )
-
-        matched_ids: set[int] = set()
-        for confidence, class_name, box, supplied_id in sorted(
-            candidates, key=lambda candidate: candidate[0], reverse=True
-        ):
-            track_id = supplied_id
-            if track_id is None:
-                track_id = self._match_track(class_name, box, matched_ids)
-            if track_id is None:
-                track_id = self._next_track_id
-                self._next_track_id += 1
-            self._tracks[track_id] = _TrackState(class_name=class_name, box=box)
-            matched_ids.add(track_id)
-            tracked.append(
-                TrackedObject(
-                    track_id=int(track_id),
-                    class_name=class_name,
-                    confidence=confidence,
-                    box=box,
-                )
-            )
-
-        self._age_unmatched_tracks(matched_ids)
-        return tracked
+        return self._associate(candidates)
 
     def reset(self) -> None:
         """Clear only this camera's association state."""
         self._tracks.clear()
         self._next_track_id = 1
 
-    def _match_track(
-        self,
-        class_name: str,
-        box: tuple[int, int, int, int],
-        matched_ids: set[int],
-    ) -> int | None:
-        matches = [
-            (_box_iou(state.box, box), track_id)
-            for track_id, state in self._tracks.items()
-            if track_id not in matched_ids and state.class_name == class_name
-        ]
-        if not matches:
-            return None
-        score, track_id = max(matches)
-        return track_id if score >= self.match_iou_threshold else None
+    # ------------------------------------------------------------------ #
+    # ByteTrack-style association.
+    # ------------------------------------------------------------------ #
+    def _associate(self, candidates) -> list[TrackedObject]:
+        """candidates: list of (confidence, class_name, box, supplied_id, source)."""
+        tracked: list[TrackedObject] = []
+        matched_ids: set[int] = set()
+
+        auto: list[tuple] = []
+        for confidence, class_name, box, supplied_id, source in candidates:
+            if supplied_id is not None:
+                # An upstream tracker (e.g. ultralytics track()) already owns the
+                # identity - honour it verbatim.
+                track_id = int(supplied_id)
+                self._commit(track_id, class_name, box, matched_ids)
+                tracked.append(self._make_tracked(track_id, confidence, class_name, box, source))
+            else:
+                auto.append((confidence, class_name, box, source))
+
+        if auto:
+            high = [c for c in auto if c[0] >= self.track_high_thresh]
+            low = [c for c in auto if self.track_low_thresh <= c[0] < self.track_high_thresh]
+
+            # Stage 1: high-confidence detections against all live tracks.
+            stage1, unmatched_high = self._match(high, self._iou_min_high, matched_ids)
+            for track_id, confidence, class_name, box, source in stage1:
+                self._commit(track_id, class_name, box, matched_ids)
+                tracked.append(self._make_tracked(track_id, confidence, class_name, box, source))
+
+            # Stage 2: recover remaining tracks with low-confidence detections.
+            stage2, _ = self._match(low, self._iou_min_low, matched_ids)
+            for track_id, confidence, class_name, box, source in stage2:
+                self._commit(track_id, class_name, box, matched_ids)
+                tracked.append(self._make_tracked(track_id, confidence, class_name, box, source))
+
+            # New tracks: only confident, unmatched detections start an identity.
+            for confidence, class_name, box, source in unmatched_high:
+                if confidence < self.new_track_thresh:
+                    continue
+                track_id = self._next_track_id
+                self._next_track_id += 1
+                self._commit(track_id, class_name, box, matched_ids)
+                tracked.append(self._make_tracked(track_id, confidence, class_name, box, source))
+
+        self._age_unmatched_tracks(matched_ids)
+        return tracked
+
+    def _match(self, dets, iou_min, matched_ids):
+        """Greedy IoU matching of `dets` to unmatched, same-class live tracks.
+
+        Returns (matched, unmatched) where matched is a list of
+        (track_id, confidence, class_name, box, source)."""
+        matched = []
+        unmatched = []
+        for confidence, class_name, box, source in sorted(dets, key=lambda d: d[0], reverse=True):
+            best_id = None
+            best_iou = iou_min
+            for track_id, state in self._tracks.items():
+                if track_id in matched_ids or state.class_name != class_name:
+                    continue
+                iou = _box_iou(state.box, box)
+                if iou >= best_iou:
+                    best_iou = iou
+                    best_id = track_id
+            if best_id is not None:
+                matched_ids.add(best_id)
+                matched.append((best_id, confidence, class_name, box, source))
+            else:
+                unmatched.append((confidence, class_name, box, source))
+        return matched, unmatched
+
+    def _commit(self, track_id: int, class_name: str, box, matched_ids: set[int]) -> None:
+        self._tracks[track_id] = _TrackState(class_name=class_name, box=box)
+        matched_ids.add(track_id)
+
+    def _make_tracked(self, track_id, confidence, class_name, box, source) -> TrackedObject:
+        obj = TrackedObject(
+            track_id=int(track_id),
+            class_name=class_name,
+            confidence=float(confidence),
+            box=box,
+        )
+        if source is not None:
+            obj.object_type = getattr(source, "object_type", None) or class_name
+            obj.inventory_name = getattr(source, "inventory_name", None)
+            obj.quantity = getattr(source, "quantity", 1)
+            obj.quantity_grid = getattr(source, "quantity_grid", (1, 1, 1))
+            obj.width_m = getattr(source, "width_m", None)
+            obj.height_m = getattr(source, "height_m", None)
+            obj.depth_m = getattr(source, "depth_m", None)
+            obj.distance_m = getattr(source, "distance_m", None)
+            obj.method = getattr(source, "method", None)
+        return obj
 
     def _age_unmatched_tracks(self, matched_ids: set[int]) -> None:
         expired = []
@@ -192,6 +320,23 @@ class ObjectTracker:
                 expired.append(track_id)
         for track_id in expired:
             self._tracks.pop(track_id, None)
+
+
+def _load_tracker_thresholds(tracker_config) -> dict:
+    """Read ByteTrack thresholds from a yaml path. Never raises; a missing file
+    or parse error yields {} so the constructor defaults apply."""
+    try:
+        if not tracker_config or not str(tracker_config).endswith((".yaml", ".yml")):
+            return {}
+        path = Path(tracker_config)
+        if not path.exists():
+            return {}
+        import yaml
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - tracking must degrade gracefully
+        return {}
 
 
 def _box_iou(
