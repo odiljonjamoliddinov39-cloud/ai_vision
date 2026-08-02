@@ -159,3 +159,67 @@ def test_object_tracker_keeps_stationary_detection_and_image_size():
     assert model.calls[0]["persist"] is True
     assert model.calls[0]["imgsz"] == 960
     assert model.calls[0]["agnostic_nms"] is True
+
+
+@dataclass
+class _FakeDetection:
+    class_name: str
+    confidence: float
+    box: tuple
+    inventory_name: str | None = None
+    quantity: int = 1
+
+
+def _tracker():
+    # No model needed for the decoupled path; use the warehouse config so the
+    # ByteTrack thresholds (incl. track_buffer) drive behaviour.
+    return ObjectTracker(model=None, tracker_config="config/warehouse_bytetrack.yaml")
+
+
+def test_update_with_detections_keeps_stable_id_for_stationary_box():
+    tracker = _tracker()
+    det = _FakeDetection("baget box", 0.9, (100, 100, 200, 200))
+    first = tracker.update_with_detections([det])
+    # Same box, slightly nudged, next frame -> same ID.
+    second = tracker.update_with_detections([_FakeDetection("baget box", 0.9, (102, 101, 202, 201))])
+    assert first[0].track_id == second[0].track_id
+    assert first[0].class_name == "baget box"
+
+
+def test_track_buffer_survives_a_few_missed_frames():
+    tracker = _tracker()
+    first = tracker.update_with_detections([_FakeDetection("baget box", 0.9, (100, 100, 200, 200))])
+    tid = first[0].track_id
+    # Object missing for several frames (within track_buffer=60).
+    for _ in range(5):
+        tracker.update_with_detections([])
+    # Reappears in roughly the same place -> keeps its original ID.
+    again = tracker.update_with_detections([_FakeDetection("baget box", 0.9, (101, 100, 201, 201))])
+    assert again[0].track_id == tid
+
+
+def test_new_track_needs_new_track_thresh():
+    tracker = _tracker()
+    # warehouse_bytetrack.yaml: new_track_thresh 0.08, track_low_thresh 0.04.
+    # A detection below the low threshold cannot start a track.
+    out = tracker.update_with_detections([_FakeDetection("sack", 0.02, (10, 10, 40, 40))])
+    assert out == []
+
+
+def test_detection_fields_carry_through_tracking():
+    tracker = _tracker()
+    det = _FakeDetection("baget box", 0.9, (100, 100, 200, 200), inventory_name="Baget stack", quantity=7)
+    out = tracker.update_with_detections([det])
+    assert out[0].inventory_name == "Baget stack"
+    assert out[0].quantity == 7
+
+
+def test_distinct_boxes_get_distinct_ids():
+    tracker = _tracker()
+    out = tracker.update_with_detections(
+        [
+            _FakeDetection("baget box", 0.9, (0, 0, 50, 50)),
+            _FakeDetection("baget box", 0.9, (300, 300, 360, 360)),
+        ]
+    )
+    assert len({o.track_id for o in out}) == 2

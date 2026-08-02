@@ -332,12 +332,12 @@ def main():
     last_detection_at = {cam.name: 0.0 for cam in cameras}
     camera_frame_counts = {cam.name: 0 for cam in cameras}
     camera_fps_started_at = time.monotonic()
+    # Detection and tracking are decoupled: the shared model runs detection
+    # ONCE per frame in the scheduler (never a per-camera tracker inside the
+    # worker threads), and each camera's ObjectTracker turns those detections
+    # into stable IDs on the main loop below, where its state is isolated.
     processors = {
-        cam.name: (
-            object_trackers[cam.name].update
-            if cam.name in object_trackers
-            else detector.detect
-        )
+        cam.name: detector.detect
         for cam in cameras
         if cam.name in inference_camera_names and detector.model is not None
     }
@@ -443,6 +443,8 @@ def main():
                     continue
 
                 if cam.name in object_trackers:
+                    # Turn this camera's raw detections into stable track IDs.
+                    detections = object_trackers[cam.name].update_with_detections(detections)
                     last_tracked_count = len(detections)
                     check_ins = presence_tracker.update(
                         cam.name, detections, inference_result.inference_at
