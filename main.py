@@ -394,7 +394,10 @@ def main():
 
                 if inference_result is not None:
                     frame = inference_result.frame
-                    detections = inference_result.detections
+                    downstream_objects, tracked_objects = _route_inference_objects(
+                        inference_result,
+                        tracking_enabled=cam.name in object_trackers,
+                    )
                     inference_age_ms = max(
                         0, round((time.time() - inference_result.inference_at) * 1000)
                     )
@@ -418,9 +421,10 @@ def main():
                         "error": inference_result.error,
                     }
                 elif detector.model is None:
-                    detections = _demo_tracked_objects(dummy_positions[cam.name])
+                    tracked_objects = _demo_tracked_objects(dummy_positions[cam.name])
+                    downstream_objects = tracked_objects
                     dummy_positions[cam.name] += 1
-                    last_tracked_count = len(detections)
+                    last_tracked_count = len(tracked_objects)
                     result_is_stale = False
                 else:
                     metrics = (
@@ -448,11 +452,9 @@ def main():
                     continue
 
                 if cam.name in object_trackers:
-                    # Turn this camera's raw detections into stable track IDs.
-                    detections = object_trackers[cam.name].update_with_detections(detections)
-                    last_tracked_count = len(detections)
+                    last_tracked_count = len(tracked_objects)
                     check_ins = presence_tracker.update(
-                        cam.name, detections, inference_result.inference_at
+                        cam.name, tracked_objects, inference_result.inference_at
                     )
                     for event in check_ins:
                         tracking_db.record_check_in(
@@ -464,13 +466,13 @@ def main():
                 else:
                     last_tracked_count = 0
 
-                last_detection_count = len(detections)
+                last_detection_count = len(downstream_objects)
                 if product_recognizer is not None:
-                    product_recognizer.annotate(cam.name, frame, detections)
+                    product_recognizer.annotate(cam.name, frame, downstream_objects)
                 # Class-agnostic proposals are observations, never inventory by
                 # themselves. Only a learned catalog fingerprint may promote a
                 # tracked proposal into a countable warehouse object.
-                for detection in detections:
+                for detection in downstream_objects:
                     if (
                         detection.class_name == "object proposal"
                         and getattr(detection, "inventory_name", None)
@@ -478,7 +480,7 @@ def main():
                         detection.confidence = max(float(detection.confidence), 0.85)
 
                 if spatial_analyzer is not None:
-                    measurements = spatial_analyzer.enrich(frame, detections)
+                    measurements = spatial_analyzer.enrich(frame, downstream_objects)
                     last_spatial_objects = [
                         {
                             **measurement.__dict__,
@@ -489,13 +491,13 @@ def main():
                     last_spatial_objects_by_camera[cam.name] = last_spatial_objects
 
                 last_detections_by_camera[cam.name] = [
-                    _serialize_detection(det, frame) for det in detections
+                    _serialize_detection(obj, frame) for obj in downstream_objects
                 ]
 
-                draw_detections(frame, detections, box_thickness, font_scale)
+                draw_detections(frame, downstream_objects, box_thickness, font_scale)
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
-                draw_counts(frame, detections)
+                draw_counts(frame, downstream_objects)
 
                 if warehouse_engine is not None and not result_is_stale:
                     line = engine_cfg.get(
@@ -505,7 +507,7 @@ def main():
                         draw_counting_line(frame, line)
                     learned_detections = [
                         detection
-                        for detection in detections
+                        for detection in downstream_objects
                         if getattr(detection, "inventory_name", None)
                     ]
                     engine_events = warehouse_engine.process(
@@ -522,7 +524,9 @@ def main():
                             )
 
                 if snapshot_saver is not None:
-                    saved = snapshot_saver.maybe_save(cam.name, frame, detections)
+                    saved = snapshot_saver.maybe_save(
+                        cam.name, frame, downstream_objects
+                    )
                     for path in saved:
                         print(f"[{cam.name}] Snapshot saved: {path}")
 
@@ -536,7 +540,7 @@ def main():
                     )
 
                 if event_logger is not None:
-                    event_logger.log_detections(cam.name, detections)
+                    event_logger.log_detections(cam.name, downstream_objects)
 
                 if not args.no_display:
                     cv2.imshow(f"{window_prefix} {cam.name}", frame)
@@ -667,6 +671,23 @@ def _serialize_detection(det, frame) -> dict:
             value = getattr(det, field)
             payload[field] = list(value) if field == "quantity_grid" else value
     return payload
+
+
+def _route_inference_objects(
+    inference_result, tracking_enabled: bool
+) -> tuple[list, list | None]:
+    """Return the scheduler output unchanged for all downstream consumers.
+
+    A camera processor with tracking enabled has already run ByteTrack, so its
+    result is the final tracked-object list. With tracking disabled, the same
+    result contains raw detections and must remain usable by non-tracking
+    consumers without inventing track IDs.
+    """
+    if tracking_enabled:
+        tracked_objects = inference_result.detections
+        return tracked_objects, tracked_objects
+    raw_detections = inference_result.detections
+    return raw_detections, None
 
 
 def _write_detection_health(path: str, payload: dict) -> None:

@@ -13,30 +13,42 @@ class FakeBoxes:
         self.rows = np.asarray(rows)
 
 
+class FakeSTrack:
+    _count = 0
+
+    @classmethod
+    def next_id(cls):
+        cls._count += 1
+        return cls._count
+
+    @classmethod
+    def reset_id(cls):
+        cls._count = 0
+
+
 class FakeBYTETracker:
-    next_instance = 0
+    track_class = FakeSTrack
 
     def __init__(self, args):
         self.args = args
-        self.instance = FakeBYTETracker.next_instance
-        FakeBYTETracker.next_instance += 1
         self.frame_id = 0
         self.reset_calls = 0
+        self.reset_id()
 
     def update(self, boxes):
         self.frame_id += 1
         return np.asarray([
-            [*row[:4], self.instance * 100 + index + 1, row[4], row[5], index]
+            [*row[:4], self.track_class.next_id(), row[4], row[5], index]
             for index, row in enumerate(boxes.rows)
         ], dtype=float).reshape((-1, 8))
 
     def reset(self):
         self.frame_id = 0
         self.reset_calls += 1
+        self.reset_id()
 
-
-class FakeSTrack:
-    pass
+    def reset_id(self):
+        self.track_class.reset_id()
 
 
 def _install_fake_ultralytics(monkeypatch):
@@ -67,14 +79,13 @@ def _detection(confidence=0.9):
 
 def test_trackers_are_isolated_and_preserve_detection_fields(monkeypatch):
     _install_fake_ultralytics(monkeypatch)
-    FakeBYTETracker.next_instance = 0
     first = ByteTrackAdapter("one", _config())
     second = ByteTrackAdapter("two", _config())
 
     a = first.update([_detection()], (100, 100, 3), 1, 10.0)[0]
     b = second.update([_detection()], (100, 100, 3), 1, 10.0)[0]
     assert a.track_id == 1
-    assert b.track_id == 101
+    assert b.track_id == 1
     assert a.class_name == "baget box"
     assert a.class_id == 7
     assert a.camera_name == "one"
