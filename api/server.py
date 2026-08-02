@@ -5839,32 +5839,26 @@ class TrainingSearch(BaseModel):
     query: str = Field(default="", max_length=120)
 
 
-class TrainingRecount(BaseModel):
-    group_id: str = Field(min_length=1, max_length=120)
-
-
-def _training_gemini_name(crop) -> str | None:
+def _training_gemini_suggestion(crop) -> tuple[str | None, float]:
+    """Return a best-effort naming-service label and its real confidence."""
     try:
         from recognition.gemini_client import GeminiClient
     except Exception:  # noqa: BLE001
-        return None
+        return None, 0.0
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
-    model = (config.get("recognition", {}) or {}).get("model", "gemini-3.1-flash-lite")
+    recognition = config.get("recognition", {}) or {}
     try:
-        result = GeminiClient(model=model).recognize(crop)
-        name = getattr(result, "name", None)
-        if name and str(name).strip().lower() != "unknown product":
-            return str(name).strip()
-    except Exception:  # noqa: BLE001 - naming is best-effort
-        return None
-    return None
-
-
-@app.post("/api/training/analytics/run")
-async def training_analytics_run(gemini: bool = True) -> dict[str, Any]:
-    # Detection + Gemini are heavy and synchronous; run off the event loop so
-    # the dashboard stays responsive while the test runs.
-    return await asyncio.to_thread(_training_analytics_run_sync, gemini)
+        result = GeminiClient(
+            model=recognition.get("model", "gemini-3.1-flash-lite"),
+            timeout=int(recognition.get("timeout", 30)),
+            retries=int(recognition.get("retries", 2)),
+        ).recognize(crop)
+        name = str(getattr(result, "name", "") or "").strip()
+        if not name or name.lower() == "unknown product":
+            return None, 0.0
+        return name, max(0.0, min(1.0, float(getattr(result, "confidence", 0.0) or 0.0)))
+    except Exception:  # noqa: BLE001 - naming fallback must not abort a scan
+        return None, 0.0
 
 
 def _training_camera_map(health: dict[str, Any]) -> dict[int, str]:
@@ -6098,129 +6092,6 @@ def _training_tiled_count(crop, detector, base_count: int = 0) -> int:
     return max(base_count, len(kept))
 
 
-def _training_analytics_run_sync(gemini: bool) -> dict[str, Any]:
-    """Instant test: sweep every camera one-by-one, run the light detector on
-    each live frame, group the results by type, with a sample crop, a count and
-    a Gemini-suggested real name.
-
-    Detecting per-camera here means the test does not depend on the running
-    worker publishing anything to detection health (which is empty when the
-    engines are off in kiosk mode). If a model cannot be loaded in the web
-    process (TRAINING_USE_MODEL=0 or too little memory), it falls back to the
-    running detector's last published detections."""
-    import cv2
-
-    health = _catalog_health_snapshot()
-    cameras = _training_camera_map(health)
-
-    detector = _training_detector()
-    groups: dict[str, dict[str, Any]] = {}
-    diag = {
-        "cameras": len(cameras),
-        "frames_read": 0,
-        "detections": 0,
-        "model": detector is not None,
-    }
-
-    def _add(label: str, count: int, frame, box: dict[str, Any]) -> None:
-        key = _catalog_normalize_name(label) or "object"
-        group = groups.setdefault(key, {"label": label, "count": 0, "crops": []})
-        group["count"] += max(1, int(count or 1))
-        if frame is not None and len(group["crops"]) < 6:
-            crop = _catalog_detection_crop(frame, box or {})
-            if crop is not None and crop.size:
-                group["crops"].append(crop)
-
-    if detector is not None:
-        # Model available: detect on each camera's current frame, one at a time.
-        # Same CPU-bound reality as the recognition sweep, so cap the run with a
-        # time budget: it returns what it found instead of grinding for minutes.
-        try:
-            budget = float(os.getenv("AI_VISION_SEARCH_BUDGET_SECONDS", "150"))
-        except ValueError:
-            budget = 150.0
-        deadline = time.monotonic() + budget
-        for slot, name in sorted(cameras.items()):
-            if time.monotonic() >= deadline:
-                diag["stopped_early"] = True
-                _audit("training_analytics_budget_reached", {"frames_read": diag["frames_read"]})
-                break
-            frame = _catalog_live_frame_image(slot=slot, camera=name)
-            if frame is None:
-                continue
-            diag["frames_read"] += 1
-            try:
-                detections = detector.detect(frame)
-            except Exception as exc:  # noqa: BLE001 - one bad frame must not stop the sweep
-                _audit("training_analytics_detect_failed", {"slot": slot, "error": str(exc)})
-                continue
-            for det in detections or []:
-                diag["detections"] += 1
-                box = getattr(det, "box", None)
-                bbox = (
-                    {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}
-                    if box is not None and len(box) >= 4
-                    else {}
-                )
-                label = str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object")
-                _add(label, int(getattr(det, "quantity", 1) or 1), frame, bbox)
-    else:
-        # No model in this process: fall back to the running detector's output.
-        slots_by_camera = {name: slot for slot, name in cameras.items()}
-        frame_cache: dict[str, Any] = {}
-        for camera_name, detections in (health.get("last_detections_by_camera") or {}).items():
-            for detection in detections or []:
-                if not isinstance(detection, dict):
-                    continue
-                label = str(detection.get("class_name") or detection.get("inventory_name") or "object")
-                diag["detections"] += 1
-                if camera_name not in frame_cache:
-                    slot = slots_by_camera.get(str(camera_name))
-                    frame_cache[camera_name] = _catalog_live_frame_image(
-                        slot=int(slot) if slot is not None else None, camera=str(camera_name)
-                    )
-                    if frame_cache[camera_name] is not None:
-                        diag["frames_read"] += 1
-                _add(label, int(detection.get("quantity") or 1), frame_cache[camera_name], detection.get("bbox") or {})
-
-    TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
-    ordered = sorted(groups.items(), key=lambda kv: -kv[1]["count"])
-    gemini_budget = int(os.getenv("TRAINING_ANALYTICS_GEMINI_MAX", "10"))
-    items: list[dict[str, Any]] = []
-    for index, (key, group) in enumerate(ordered):
-        group_id = _catalog_visual_slug(key)
-        stage = TRAINING_STAGING_DIR / group_id
-        if stage.exists():
-            for old in stage.glob("*.jpg"):
-                old.unlink()
-        stage.mkdir(parents=True, exist_ok=True)
-        for crop_index, crop in enumerate(group["crops"]):
-            ok, buffer = cv2.imencode(".jpg", crop)
-            if ok:
-                (stage / f"crop_{crop_index:02d}.jpg").write_bytes(buffer.tobytes())
-        crop_url = (
-            f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg"
-            if (stage / "crop_00.jpg").exists()
-            else ""
-        )
-        name = group["label"]
-        if gemini and group["crops"] and index < gemini_budget:
-            suggested = _training_gemini_name(group["crops"][0])
-            if suggested:
-                name = suggested
-        items.append(
-            {
-                "group_id": group_id,
-                "label": group["label"],
-                "count": group["count"],
-                "crop_url": crop_url,
-                "name": name,
-                "keep": True,
-            }
-        )
-    return {"items": items, "diagnostics": diag}
-
-
 @app.post("/api/training/analytics/apply")
 async def training_analytics_apply(payload: TrainingApply) -> dict[str, Any]:
     """Directly edit the dataset from an analytics row: keep = save the item's
@@ -6271,6 +6142,21 @@ async def training_analytics_apply(payload: TrainingApply) -> dict[str, Any]:
     TRAINING_APPLIED_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRAINING_APPLIED_PATH.write_text(json.dumps(applied, indent=2), encoding="utf-8")
 
+    # Keep the persisted scan result aligned with the operator's final decision
+    # so reopening Analytics and exporting Excel show the corrected values.
+    with _training_search_lock:
+        for row in _training_search_state.get("rows", []):
+            if row.get("group_id") == group_id:
+                row["name"] = name
+                row["keep"] = keep
+                break
+        current_search = dict(_training_search_state)
+    if current_search:
+        try:
+            TRAINING_SEARCH_STATE_PATH.write_text(json.dumps(current_search), encoding="utf-8")
+        except Exception:  # noqa: BLE001 - dataset save already succeeded
+            pass
+
     # Persist the human-confirmed box count for this item as inventory metadata,
     # so the exact number survives even though YOLO labels can't carry a count.
     if payload.count is not None:
@@ -6301,6 +6187,8 @@ TRAINING_SEARCH_STATE_PATH = TRAINING_STAGING_DIR / "search_job.json"
 _training_search_lock = threading.Lock()
 _training_search_state: dict[str, Any] = {}
 _training_search_generation = 0
+_training_scan_trackers: dict[str, Any] = {}
+_training_scan_sequences: dict[str, int] = {}
 # True only while a worker thread is actually alive. A "running" state with no
 # live worker (e.g. after a container restart mid-sweep, whose state was
 # persisted to disk) is stale and must not make the page poll forever.
@@ -6314,6 +6202,9 @@ def _training_search_idle_state() -> dict[str, Any]:
         "rows": [],
         "diagnostics": {"cameras": 0, "frames_read": 0, "clusters": 0, "model": True},
         "progress": {"done": 0, "total": 0},
+        "stage": "idle",
+        "message": "Ready to scan live cameras.",
+        "current_camera": None,
         "started_at": None,
         "finished_at": None,
     }
@@ -6333,6 +6224,9 @@ def _training_search_status() -> dict[str, Any]:
             return _training_search_idle_state()
     if state.get("status") == "running" and not _training_search_active:
         state["status"] = "done"
+        state["stage"] = "interrupted"
+        state["message"] = "The previous scan was interrupted before completion. Start a new scan."
+        state["current_camera"] = None
         state["finished_at"] = state.get("finished_at") or datetime.now(timezone.utc).isoformat()
         diag = dict(state.get("diagnostics") or {})
         diag["stopped_early"] = True
@@ -6357,8 +6251,18 @@ def _training_search_write_state(state: dict[str, Any], generation: int) -> bool
     return True
 
 
+def _training_scan_tracker(camera_name: str):
+    tracker = _training_scan_trackers.get(camera_name)
+    if tracker is None:
+        from tracking.bytetrack_adapter import ByteTrackAdapter
+
+        tracker = ByteTrackAdapter(camera_name, str(ROOT / "config" / "warehouse_bytetrack.yaml"))
+        _training_scan_trackers[camera_name] = tracker
+    return tracker
+
+
 def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start):
-    """Detect on one camera's current frame and return (rows, next_seq)."""
+    """Capture, detect, track, crop and name every individual object in a camera."""
     import cv2
 
     rows: list[dict[str, Any]] = []
@@ -6372,36 +6276,50 @@ def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start)
     except Exception as exc:  # noqa: BLE001
         _audit("training_search_detect_failed", {"slot": slot, "error": str(exc)})
         return rows, seq
-    boxes: list[tuple[int, int, int, int]] = []
-    labels: list[str] = []
-    for det in detections or []:
-        box = getattr(det, "box", None)
-        if not box or len(box) < 4:
-            continue
-        boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
-        labels.append(str(getattr(det, "class_name", None) or getattr(det, "inventory_name", None) or "object"))
-    if not boxes:
+    detections = [det for det in (detections or []) if getattr(det, "box", None)]
+    diag["detections"] = int(diag.get("detections", 0)) + len(detections)
+    if not detections:
         return rows, seq
-    for members in _training_cluster_boxes(boxes):
-        diag["clusters"] += 1
-        xs1 = min(boxes[i][0] for i in members)
-        ys1 = min(boxes[i][1] for i in members)
-        xs2 = max(boxes[i][2] for i in members)
-        ys2 = max(boxes[i][3] for i in members)
-        crop = _catalog_detection_crop(frame, {"x1": xs1, "y1": ys1, "x2": xs2, "y2": ys2})
+    sequence = _training_scan_sequences.get(cam_name, 0) + 1
+    _training_scan_sequences[cam_name] = sequence
+    try:
+        tracked_objects = _training_scan_tracker(cam_name).update(
+            detections,
+            frame.shape,
+            sequence,
+            time.time(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _audit("training_search_tracking_failed", {"camera": cam_name, "error": str(exc)})
+        return rows, seq
+    diag["tracked"] = int(diag.get("tracked", 0)) + len(tracked_objects)
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    match_threshold = float((config.get("recognition", {}) or {}).get("similarity_threshold", 0.62))
+    for tracked in tracked_objects:
+        box = tracked.box
+        crop = _catalog_detection_crop(
+            frame,
+            {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]},
+        )
         if crop is None or crop.size == 0:
             continue
         matched, score = _training_match_dataset(crop, refs)
-        # Prefer the dataset label when the match is confident; else the
-        # detector's own label for the biggest box in the stack.
-        biggest = max(members, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
-        name = matched if (matched and score >= 0.6) else labels[biggest]
-        norm_name = _catalog_normalize_name(name)
-        norm_label = _catalog_normalize_name(labels[biggest])
-        if term and term not in norm_name and term not in norm_label:
+        source = "dataset"
+        confidence = score
+        suggested_name = matched if (matched and score >= match_threshold) else None
+        if not suggested_name:
+            suggested_name, naming_confidence = _training_gemini_suggestion(crop)
+            confidence = naming_confidence
+            source = "naming_service" if suggested_name else "yolo"
+        if not suggested_name:
+            suggested_name = str(tracked.inventory_name or tracked.class_name or "object")
+            confidence = float(tracked.confidence or 0.0)
+        normalized = _catalog_normalize_name(suggested_name)
+        detector_name = _catalog_normalize_name(tracked.class_name or "")
+        if term and term not in normalized and term not in detector_name:
             continue
         seq += 1
-        group_id = _catalog_visual_slug(f"search-{slot}-{seq}")
+        group_id = _catalog_visual_slug(f"scan-{slot}-{tracked.track_id}-{sequence}-{seq}")
         stage = TRAINING_STAGING_DIR / group_id
         if stage.exists():
             for old in stage.glob("*.jpg"):
@@ -6413,11 +6331,13 @@ def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start)
         rows.append(
             {
                 "group_id": group_id,
-                "name": name,
-                "count": len(members),
+                "suggested_name": suggested_name,
+                "name": suggested_name,
                 "camera": cam_name,
                 "slot": slot,
-                "similarity": round(score, 3),
+                "track_id": int(tracked.track_id),
+                "confidence": round(confidence, 3),
+                "source": source,
                 "crop_url": f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg" if ok else "",
                 "keep": True,
             }
@@ -6434,7 +6354,7 @@ def _training_search_sync(query: str) -> dict[str, Any]:
     cameras = _training_camera_map(health)
     detector = _training_detector()
     refs = _training_dataset_reference_embeddings()
-    diag = {"cameras": len(cameras), "frames_read": 0, "clusters": 0, "model": detector is not None}
+    diag = {"cameras": len(cameras), "frames_read": 0, "detections": 0, "tracked": 0, "model": detector is not None}
     if detector is None:
         return {"rows": [], "diagnostics": diag}
     TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
@@ -6443,7 +6363,7 @@ def _training_search_sync(query: str) -> dict[str, Any]:
     for slot, cam_name in sorted(cameras.items()):
         new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
         rows.extend(new_rows)
-    rows.sort(key=lambda r: -r["count"])
+    rows.sort(key=lambda r: (str(r["camera"]), int(r["track_id"])))
     return {"rows": rows, "diagnostics": diag}
 
 
@@ -6460,6 +6380,8 @@ def _training_search_worker(query: str, generation: int) -> None:
             {
                 **_training_search_idle_state(),
                 "status": "error",
+                "stage": "error",
+                "message": str(exc),
                 "query": query,
                 "error": str(exc),
                 "started_at": started,
@@ -6470,10 +6392,10 @@ def _training_search_worker(query: str, generation: int) -> None:
         return
 
     cam_items = sorted(cameras.items())
-    diag = {"cameras": len(cameras), "frames_read": 0, "clusters": 0, "model": detector is not None}
+    diag = {"cameras": len(cameras), "frames_read": 0, "detections": 0, "tracked": 0, "model": detector is not None}
     base = {"query": query, "started_at": started, "finished_at": None}
     if not _training_search_write_state(
-        {**base, "status": "running", "rows": [], "diagnostics": diag, "progress": {"done": 0, "total": len(cam_items)}},
+        {**base, "status": "running", "stage": "capturing", "message": "Connecting to live cameras.", "current_camera": None, "rows": [], "diagnostics": diag, "progress": {"done": 0, "total": len(cam_items)}},
         generation,
     ):
         return
@@ -6492,18 +6414,22 @@ def _training_search_worker(query: str, generation: int) -> None:
     if detector is not None:
         TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
         for idx, (slot, cam_name) in enumerate(cam_items, start=1):
+            _training_search_write_state(
+                {**base, "status": "running", "stage": "processing", "message": f"Capturing and processing {cam_name}.", "current_camera": cam_name, "rows": rows, "diagnostics": diag, "progress": {"done": idx - 1, "total": len(cam_items)}},
+                generation,
+            )
             try:
                 new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
                 rows.extend(new_rows)
             except Exception as exc:  # noqa: BLE001
                 _audit("training_search_camera_failed", {"slot": slot, "error": str(exc)})
-            rows.sort(key=lambda r: -r["count"])
+            rows.sort(key=lambda r: (str(r["camera"]), int(r["track_id"])))
             diag["scanned"] = idx
             diag["stopped_early"] = time.monotonic() >= deadline and idx < len(cam_items)
             # Publish progress + partial rows after each camera so the page can
             # show results as they are found. Stop early if superseded.
             if not _training_search_write_state(
-                {**base, "status": "running", "rows": rows, "diagnostics": diag, "progress": {"done": idx, "total": len(cam_items)}},
+                {**base, "status": "running", "stage": "processing", "message": f"Processed {cam_name}.", "current_camera": cam_name, "rows": rows, "diagnostics": diag, "progress": {"done": idx, "total": len(cam_items)}},
                 generation,
             ):
                 return
@@ -6513,14 +6439,24 @@ def _training_search_worker(query: str, generation: int) -> None:
                 break
     diag["stopped_early"] = stopped_early
 
-    rows.sort(key=lambda r: -r["count"])
+    rows.sort(key=lambda r: (str(r["camera"]), int(r["track_id"])))
+    processed = int(diag.get("scanned", 0))
+    final_stage = "partial" if stopped_early else "completed"
+    final_message = (
+        f"Time limit reached after {processed}/{len(cam_items)} cameras. {len(rows)} object(s) found."
+        if stopped_early
+        else f"Scan complete. {len(rows)} object(s) found."
+    )
     _training_search_write_state(
         {
             **base,
             "status": "done",
+            "stage": final_stage,
+            "message": final_message,
+            "current_camera": None,
             "rows": rows,
             "diagnostics": diag,
-            "progress": {"done": len(cam_items), "total": len(cam_items)},
+            "progress": {"done": processed, "total": len(cam_items)},
             "finished_at": datetime.now(timezone.utc).isoformat(),
         },
         generation,
@@ -6542,9 +6478,9 @@ def _training_search_start(query: str) -> dict[str, Any]:
     global _training_search_generation, _training_search_active
     with _training_search_lock:
         running = _training_search_active and _training_search_state.get("status") == "running"
-        current_q = _training_search_state.get("query")
-        if running and _catalog_normalize_name(current_q or "") == _catalog_normalize_name(query or ""):
-            # Same search already in flight - just report it, don't duplicate.
+        if running:
+            # There is one recognition workflow and one tracker timeline per
+            # camera. Never overlap scans or mutate a tracker from two workers.
             return dict(_training_search_state)
         _training_search_generation += 1
         generation = _training_search_generation
@@ -6555,6 +6491,8 @@ def _training_search_start(query: str) -> dict[str, Any]:
         {
             **_training_search_idle_state(),
             "status": "running",
+            "stage": "queued",
+            "message": "Scan queued; preparing live camera capture.",
             "query": query,
             "started_at": datetime.now(timezone.utc).isoformat(),
         },
@@ -6566,12 +6504,14 @@ def _training_search_start(query: str) -> dict[str, Any]:
 
 @app.post("/api/training/search")
 async def training_search(payload: TrainingSearch) -> dict[str, Any]:
-    """Start (or resume) a dataset-centered recognition sweep as a background
-    job: it scans every camera, groups detections into per-location stacks,
-    counts the boxes at each spot, labels each stack against the trained
-    dataset (not Gemini), and keeps only stacks matching the query. Runs to
-    completion server-side even if the browser leaves; poll the status endpoint
-    for progress and results."""
+    """Start the single camera-scan workflow as a background job.
+
+    Every live frame passes through YOLO and the camera's persistent ByteTrack
+    adapter. Each tracked object is cropped and compared with the local dataset;
+    only insufficient local matches fall back to the naming service. An empty
+    query keeps every object. Poll the status endpoint for real progress and
+    individual-object rows.
+    """
     return await asyncio.to_thread(_training_search_start, payload.query)
 
 
@@ -6582,33 +6522,52 @@ async def training_search_status() -> dict[str, Any]:
     return _training_search_status()
 
 
-@app.post("/api/training/recount")
-async def training_recount(payload: TrainingRecount) -> dict[str, Any]:
-    """Re-count one stack harder (tiled high-res re-detection) - used when the
-    user marks a count as wrong. Never lowers a good count."""
-    return await asyncio.to_thread(_training_recount_sync, payload.group_id)
+@app.get("/api/training/search/export")
+async def training_search_export() -> Response:
+    """Export the latest individual-object scan without starting another scan."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
 
-
-def _training_recount_sync(group_id: str) -> dict[str, Any]:
-    import cv2
-
-    group_id = _catalog_visual_slug(group_id)
-    crop_path = TRAINING_STAGING_DIR / group_id / "crop_00.jpg"
-    if not crop_path.exists():
-        raise HTTPException(status_code=404, detail="No staged crop; run the search again.")
-    crop = cv2.imread(str(crop_path))
-    if crop is None:
-        raise HTTPException(status_code=404, detail="Could not read staged crop.")
-    detector = _training_detector()
-    if detector is None:
-        raise HTTPException(status_code=503, detail="No model available to recount.")
-    try:
-        base = detector.detect(crop)
-        base_count = len([d for d in (base or []) if getattr(d, "box", None)])
-    except Exception:  # noqa: BLE001
-        base_count = 0
-    count = _training_tiled_count(crop, detector, base_count=base_count)
-    return {"group_id": group_id, "count": count}
+    state = _training_search_status()
+    rows = list(state.get("rows") or [])
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Camera Scan"
+    headers = [
+        "Object Preview",
+        "Suggested Name",
+        "Final Name",
+        "Camera",
+        "Track ID",
+        "Confidence",
+        "Decision",
+    ]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="2563EB")
+    for row in rows:
+        sheet.append(
+            [
+                row.get("crop_url") or "",
+                row.get("suggested_name") or "",
+                row.get("name") or row.get("suggested_name") or "",
+                row.get("camera") or "",
+                row.get("track_id"),
+                row.get("confidence", 0.0),
+                "Keep" if row.get("keep", True) else "Ignore",
+            ]
+        )
+    for column, width in zip("ABCDEFG", [52, 28, 28, 28, 12, 14, 12]):
+        sheet.column_dimensions[column].width = width
+    stream = io.BytesIO()
+    workbook.save(stream)
+    filename = f"camera-scan-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.xlsx"
+    return Response(
+        content=stream.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/catalog/items")
