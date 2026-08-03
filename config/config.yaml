@@ -41,6 +41,24 @@ detection:
   target_class: baget_box
   class_prompts:
   - baget box
+  # Finite open-vocabulary prompt set used only by an empty manual camera scan.
+  # This is broad discovery, not a claim of unlimited/open-ended detection.
+  broad_discovery_prompts:
+  - person
+  - box
+  - package
+  - bag
+  - sack
+  - pallet
+  - cart
+  - forklift
+  - bottle
+  - container
+  - machine
+  - vehicle
+  - tool
+  - furniture
+  - animal
 spatial_analysis:
   enabled: false
   horizontal_fov_degrees: 90.0

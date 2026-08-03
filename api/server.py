@@ -5342,7 +5342,7 @@ _training_detector_obj = None
 _training_detector_key = None
 
 
-def _training_detector():
+def _training_detector(class_prompts: list[str] | None = None):
     """Light, cached detector for the training tools - uses config detection
     settings (conf/imgsz) instead of the heavy 1280px/0.01-conf catalog one.
 
@@ -5356,7 +5356,7 @@ def _training_detector():
     global _training_detector_obj, _training_detector_key
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     det = config.get("detection", {}) or {}
-    prompts = det.get("class_prompts") or []
+    prompts = list(det.get("class_prompts") or []) if class_prompts is None else list(class_prompts)
     key = (
         det.get("model_path"),
         tuple(prompts),
@@ -5862,22 +5862,26 @@ def _training_gemini_suggestion(crop) -> tuple[str | None, float]:
 
 
 def _training_camera_map(health: dict[str, Any]) -> dict[int, str]:
-    """Every camera we can reach, keyed by slot with a friendly name: whatever
-    detection-health knows about, plus every live-frame file on disk so all
-    channels are covered even when health is empty (kiosk mode)."""
-    import re as _re
+    """Active Stream Manager cameras, keyed by slot.
 
+    Snapshot files are deliberately not discovery inputs: they may outlive a
+    stream session and previously inflated a seven-camera deployment to 26.
+    `_catalog_live_frame_image` may still use a snapshot as a frame fallback,
+    but only after this function has established that the camera is active.
+    """
     cameras: dict[int, str] = {}
-    for camera in health.get("cameras") or []:
+    try:
+        streams = _get_stream_manager().status().get("streams", [])
+    except Exception:  # noqa: BLE001 - a stopped manager means no active cameras
+        streams = []
+    for camera in streams:
+        status = str(camera.get("status") or "").strip().lower()
         slot = camera.get("slot_number")
         if slot is None:
             continue
+        if status in {"offline", "stopped"}:
+            continue
         cameras[int(slot)] = str(camera.get("name") or f"slot-{slot}")
-    for pattern in ("latest_stream_slot_*.jpg", "latest_slot_*.jpg"):
-        for path in sorted(SNAPSHOT_DIR.glob(pattern)):
-            match = _re.search(r"(\d+)", path.stem)
-            if match:
-                cameras.setdefault(int(match.group(1)), f"slot-{match.group(1)}")
     return cameras
 
 
@@ -6200,7 +6204,15 @@ def _training_search_idle_state() -> dict[str, Any]:
         "status": "idle",
         "query": "",
         "rows": [],
-        "diagnostics": {"cameras": 0, "frames_read": 0, "clusters": 0, "model": True},
+        "diagnostics": {
+            "total_active_cameras": 0,
+            "attempted_cameras": 0,
+            "frames_read": 0,
+            "cameras_failed": 0,
+            "cameras_completed": 0,
+            "detections": 0,
+            "model": True,
+        },
         "progress": {"done": 0, "total": 0},
         "stage": "idle",
         "message": "Ready to scan live cameras.",
@@ -6261,25 +6273,86 @@ def _training_scan_tracker(camera_name: str):
     return tracker
 
 
-def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start):
-    """Capture, detect, track, crop and name every individual object in a camera."""
+def _training_detection_context(query: str) -> tuple[Any, dict[str, Any]]:
+    """Build one cached detector for the scan's explicit detection mode."""
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    detection = config.get("detection", {}) or {}
+    configured = [str(value).strip() for value in detection.get("class_prompts") or [] if str(value).strip()]
+    broad = [
+        str(value).strip()
+        for value in detection.get("broad_discovery_prompts")
+        or [
+            "person", "box", "package", "bag", "sack", "pallet", "cart", "forklift",
+            "bottle", "container", "machine", "vehicle", "tool", "furniture", "animal",
+        ]
+        if str(value).strip()
+    ]
+    query_prompt = " ".join(query.split()).strip()
+    requested_prompts = [query_prompt] if query_prompt else broad
+    try:
+        detector = _training_detector(requested_prompts)
+    except TypeError:
+        # Compatibility for tests and deployments that temporarily replace the
+        # detector factory with the historical no-argument callable.
+        detector = _training_detector()
+    model = getattr(detector, "model", None) if detector is not None else None
+    open_vocabulary = callable(getattr(model, "set_classes", None))
+    return detector, {
+        "query_prompt": query_prompt or None,
+        "configured_prompts": configured,
+        "broad_discovery": bool(not query_prompt and open_vocabulary),
+        "stock_closed_class": bool(detector is not None and not open_vocabulary),
+        "active_prompts": requested_prompts if open_vocabulary else [],
+        "detection_mode": (
+            "query_open_vocabulary"
+            if query_prompt and open_vocabulary
+            else "broad_prompt_discovery"
+            if not query_prompt and open_vocabulary
+            else "stock_closed_class"
+        ),
+    }
+
+
+def _training_track_ids(detections, tracked_objects) -> dict[int, int]:
+    """Best-effort raw-detection to track mapping; never filters detections."""
+    matches: dict[int, int] = {}
+    unused = list(tracked_objects or [])
+    for index, detection in enumerate(detections):
+        box = getattr(detection, "box", None)
+        if not box or not unused:
+            continue
+        best = max(unused, key=lambda tracked: _catalog_box_iou(tuple(box), tuple(tracked.box)))
+        if _catalog_box_iou(tuple(box), tuple(best.box)) > 0:
+            matches[index] = int(best.track_id)
+            unused.remove(best)
+    return matches
+
+
+def _training_scan_camera(slot, cam_name, term, detector, refs, diag=None, seq_start=0):
+    """Capture and create one row per raw detector result; tracking is optional enrichment."""
     import cv2
 
+    local_diag = {"frames_read": 0, "detections": 0, "tracked": 0, "failure_reason": None}
     rows: list[dict[str, Any]] = []
     seq = seq_start
     frame = _catalog_live_frame_image(slot=slot, camera=cam_name)
     if frame is None:
-        return rows, seq
-    diag["frames_read"] += 1
+        local_diag["failure_reason"] = "no_frame"
+        if diag is not None:
+            diag.update({key: int(diag.get(key, 0)) + value for key, value in local_diag.items() if isinstance(value, int)})
+        return rows, seq, local_diag
+    local_diag["frames_read"] = 1
     try:
         detections = detector.detect(frame)
     except Exception as exc:  # noqa: BLE001
         _audit("training_search_detect_failed", {"slot": slot, "error": str(exc)})
-        return rows, seq
+        local_diag["failure_reason"] = "detector_unavailable"
+        return rows, seq, local_diag
     detections = [det for det in (detections or []) if getattr(det, "box", None)]
-    diag["detections"] = int(diag.get("detections", 0)) + len(detections)
+    local_diag["detections"] = len(detections)
     if not detections:
-        return rows, seq
+        local_diag["failure_reason"] = "no_detections"
+        return rows, seq, local_diag
     sequence = _training_scan_sequences.get(cam_name, 0) + 1
     _training_scan_sequences[cam_name] = sequence
     try:
@@ -6291,12 +6364,14 @@ def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start)
         )
     except Exception as exc:  # noqa: BLE001
         _audit("training_search_tracking_failed", {"camera": cam_name, "error": str(exc)})
-        return rows, seq
-    diag["tracked"] = int(diag.get("tracked", 0)) + len(tracked_objects)
+        tracked_objects = []
+    local_diag["tracked"] = len(tracked_objects)
+    track_ids = _training_track_ids(detections, tracked_objects)
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     match_threshold = float((config.get("recognition", {}) or {}).get("similarity_threshold", 0.62))
-    for tracked in tracked_objects:
-        box = tracked.box
+    filtered = 0
+    for detection_index, detection in enumerate(detections):
+        box = detection.box
         crop = _catalog_detection_crop(
             frame,
             {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]},
@@ -6312,14 +6387,17 @@ def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start)
             confidence = naming_confidence
             source = "naming_service" if suggested_name else "yolo"
         if not suggested_name:
-            suggested_name = str(tracked.inventory_name or tracked.class_name or "object")
-            confidence = float(tracked.confidence or 0.0)
+            suggested_name = str(getattr(detection, "inventory_name", None) or detection.class_name or "object")
+            confidence = float(detection.confidence or 0.0)
         normalized = _catalog_normalize_name(suggested_name)
-        detector_name = _catalog_normalize_name(tracked.class_name or "")
+        detector_name = _catalog_normalize_name(detection.class_name or "")
         if term and term not in normalized and term not in detector_name:
+            filtered += 1
             continue
         seq += 1
-        group_id = _catalog_visual_slug(f"scan-{slot}-{tracked.track_id}-{sequence}-{seq}")
+        track_id = track_ids.get(detection_index)
+        identity = track_id if track_id is not None else f"raw-{detection_index}"
+        group_id = _catalog_visual_slug(f"scan-{slot}-{identity}-{sequence}-{seq}")
         stage = TRAINING_STAGING_DIR / group_id
         if stage.exists():
             for old in stage.glob("*.jpg"):
@@ -6335,14 +6413,19 @@ def _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq_start)
                 "name": suggested_name,
                 "camera": cam_name,
                 "slot": slot,
-                "track_id": int(tracked.track_id),
+                "track_id": track_id,
                 "confidence": round(confidence, 3),
                 "source": source,
                 "crop_url": f"/snapshots/training-staging/{quote(group_id)}/crop_00.jpg" if ok else "",
                 "keep": True,
             }
         )
-    return rows, seq
+    if term and filtered == len(detections):
+        local_diag["failure_reason"] = "all_filtered_by_query"
+    if diag is not None:
+        for key in ("frames_read", "detections", "tracked"):
+            diag[key] = int(diag.get(key, 0)) + int(local_diag[key])
+    return rows, seq, local_diag
 
 
 def _training_search_sync(query: str) -> dict[str, Any]:
@@ -6352,19 +6435,40 @@ def _training_search_sync(query: str) -> dict[str, Any]:
     term = _catalog_normalize_name(query)
     health = _catalog_health_snapshot()
     cameras = _training_camera_map(health)
-    detector = _training_detector()
+    detector, mode = _training_detection_context(query)
     refs = _training_dataset_reference_embeddings()
-    diag = {"cameras": len(cameras), "frames_read": 0, "detections": 0, "tracked": 0, "model": detector is not None}
+    diag = {
+        "total_active_cameras": len(cameras), "attempted_cameras": 0,
+        "frames_read": 0, "cameras_failed": 0, "cameras_completed": 0,
+        "detections": 0, "tracked": 0, "model": detector is not None,
+        "failures": [], **mode,
+    }
     if detector is None:
         return {"rows": [], "diagnostics": diag}
     TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     seq = 0
     for slot, cam_name in sorted(cameras.items()):
-        new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
+        new_rows, seq, camera_diag = _training_scan_camera(slot, cam_name, term, detector, refs, None, seq)
         rows.extend(new_rows)
-    rows.sort(key=lambda r: (str(r["camera"]), int(r["track_id"])))
+        _training_merge_camera_diagnostics(diag, slot, cam_name, camera_diag)
+    rows.sort(key=lambda r: (str(r["camera"]), int(r["track_id"] or -1)))
     return {"rows": rows, "diagnostics": diag}
+
+
+def _training_merge_camera_diagnostics(diag, slot, cam_name, camera_diag) -> None:
+    diag["attempted_cameras"] = int(diag.get("attempted_cameras", 0)) + 1
+    for key in ("frames_read", "detections", "tracked"):
+        diag[key] = int(diag.get(key, 0)) + int(camera_diag.get(key, 0))
+    reason = camera_diag.get("failure_reason")
+    if reason in {"no_frame", "detector_unavailable", "camera_timeout"}:
+        diag["cameras_failed"] = int(diag.get("cameras_failed", 0)) + 1
+        diag.setdefault("failures", []).append({"slot": slot, "camera": cam_name, "reason": reason})
+    else:
+        diag["cameras_completed"] = int(diag.get("cameras_completed", 0)) + 1
+    if reason:
+        reasons = diag.setdefault("outcomes", {})
+        reasons[reason] = int(reasons.get(reason, 0)) + 1
 
 
 def _training_search_worker(query: str, generation: int) -> None:
@@ -6373,7 +6477,7 @@ def _training_search_worker(query: str, generation: int) -> None:
         term = _catalog_normalize_name(query)
         health = _catalog_health_snapshot()
         cameras = _training_camera_map(health)
-        detector = _training_detector()
+        detector, mode = _training_detection_context(query)
         refs = _training_dataset_reference_embeddings()
     except Exception as exc:  # noqa: BLE001
         _training_search_write_state(
@@ -6392,7 +6496,12 @@ def _training_search_worker(query: str, generation: int) -> None:
         return
 
     cam_items = sorted(cameras.items())
-    diag = {"cameras": len(cameras), "frames_read": 0, "detections": 0, "tracked": 0, "model": detector is not None}
+    diag = {
+        "total_active_cameras": len(cameras), "attempted_cameras": 0,
+        "frames_read": 0, "cameras_failed": 0, "cameras_completed": 0,
+        "detections": 0, "tracked": 0, "model": detector is not None,
+        "failures": [], "outcomes": {}, **mode,
+    }
     base = {"query": query, "started_at": started, "finished_at": None}
     if not _training_search_write_state(
         {**base, "status": "running", "stage": "capturing", "message": "Connecting to live cameras.", "current_camera": None, "rows": [], "diagnostics": diag, "progress": {"done": 0, "total": len(cam_items)}},
@@ -6401,57 +6510,69 @@ def _training_search_worker(query: str, generation: int) -> None:
         return
 
     rows: list[dict[str, Any]] = []
-    seq = 0
-    # Hard time budget: on a CPU-only box each frame takes seconds, so a full
-    # sweep of many cameras can run for many minutes. Cap it so the job always
-    # finishes promptly with whatever it found; the user can re-run to continue.
     try:
-        budget = float(os.getenv("AI_VISION_SEARCH_BUDGET_SECONDS", "150"))
+        workers = max(1, int(os.getenv("AI_VISION_SEARCH_WORKERS", "3")))
     except ValueError:
-        budget = 150.0
-    deadline = time.monotonic() + budget
-    stopped_early = False
+        workers = 3
+    workers = min(workers, max(1, len(cam_items)), 8)
+    try:
+        camera_timeout = max(0.01, float(os.getenv("AI_VISION_CAMERA_SCAN_TIMEOUT_SECONDS", "90")))
+    except ValueError:
+        camera_timeout = 90.0
     if detector is not None:
-        TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
-        for idx, (slot, cam_name) in enumerate(cam_items, start=1):
-            _training_search_write_state(
-                {**base, "status": "running", "stage": "processing", "message": f"Capturing and processing {cam_name}.", "current_camera": cam_name, "rows": rows, "diagnostics": diag, "progress": {"done": idx - 1, "total": len(cam_items)}},
-                generation,
-            )
-            try:
-                new_rows, seq = _training_scan_camera(slot, cam_name, term, detector, refs, diag, seq)
-                rows.extend(new_rows)
-            except Exception as exc:  # noqa: BLE001
-                _audit("training_search_camera_failed", {"slot": slot, "error": str(exc)})
-            rows.sort(key=lambda r: (str(r["camera"]), int(r["track_id"])))
-            diag["scanned"] = idx
-            diag["stopped_early"] = time.monotonic() >= deadline and idx < len(cam_items)
-            # Publish progress + partial rows after each camera so the page can
-            # show results as they are found. Stop early if superseded.
-            if not _training_search_write_state(
-                {**base, "status": "running", "stage": "processing", "message": f"Processed {cam_name}.", "current_camera": cam_name, "rows": rows, "diagnostics": diag, "progress": {"done": idx, "total": len(cam_items)}},
-                generation,
-            ):
-                return
-            if time.monotonic() >= deadline and idx < len(cam_items):
-                stopped_early = True
-                _audit("training_search_budget_reached", {"scanned": idx, "total": len(cam_items)})
-                break
-    diag["stopped_early"] = stopped_early
+        from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-    rows.sort(key=lambda r: (str(r["camera"]), int(r["track_id"])))
-    processed = int(diag.get("scanned", 0))
-    final_stage = "partial" if stopped_early else "completed"
-    final_message = (
-        f"Time limit reached after {processed}/{len(cam_items)} cameras. {len(rows)} object(s) found."
-        if stopped_early
-        else f"Scan complete. {len(rows)} object(s) found."
-    )
+        TRAINING_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="camera-scan")
+        submitted = {
+            pool.submit(_training_scan_camera, slot, cam_name, term, detector, refs, None, 0):
+            (slot, cam_name, time.monotonic())
+            for slot, cam_name in cam_items
+        }
+        try:
+            while submitted:
+                completed, _ = wait(submitted, timeout=0.25, return_when=FIRST_COMPLETED)
+                now = time.monotonic()
+                timed_out = {
+                    future for future, (_, _, submitted_at) in submitted.items()
+                    if not future.done() and now - submitted_at >= camera_timeout
+                }
+                for future in completed | timed_out:
+                    slot, cam_name, _ = submitted.pop(future)
+                    camera_diag = {"frames_read": 0, "detections": 0, "tracked": 0, "failure_reason": None}
+                    if future in timed_out:
+                        future.cancel()
+                        new_rows = []
+                        camera_diag["failure_reason"] = "camera_timeout"
+                    else:
+                        try:
+                            new_rows, _, camera_diag = future.result()
+                            rows.extend(new_rows)
+                        except Exception as exc:  # noqa: BLE001
+                            camera_diag["failure_reason"] = "detector_unavailable"
+                            _audit("training_search_camera_failed", {"slot": slot, "error": str(exc)})
+                    _training_merge_camera_diagnostics(diag, slot, cam_name, camera_diag)
+                    rows.sort(key=lambda row: (str(row["camera"]), int(row["track_id"] or -1)))
+                    done = int(diag["attempted_cameras"])
+                    if not _training_search_write_state(
+                        {**base, "status": "running", "stage": "processing", "message": f"Processed {cam_name}.", "current_camera": cam_name, "rows": rows, "diagnostics": diag, "progress": {"done": done, "total": len(cam_items)}},
+                        generation,
+                    ):
+                        return
+        finally:
+            # A timed-out inference cannot be force-killed safely in Python;
+            # abandon it without blocking job completion. It owns only local
+            # result state, so a late return cannot mutate the published scan.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    rows.sort(key=lambda row: (str(row["camera"]), int(row["track_id"] or -1)))
+    processed = int(diag.get("attempted_cameras", 0))
+    final_message = f"Scan complete: {processed}/{len(cam_items)} active cameras; {len(rows)} object(s) found."
     _training_search_write_state(
         {
             **base,
             "status": "done",
-            "stage": final_stage,
+            "stage": "completed",
             "message": final_message,
             "current_camera": None,
             "rows": rows,
