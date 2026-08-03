@@ -4569,7 +4569,7 @@ async function renderTrainingAnalytics(container) {
           <div>
             <p class="section-eyebrow">Live camera workflow</p>
             <h3>Scan Cameras</h3>
-            <p class="chart-note">Optionally enter an object name. Leave it empty to detect everything visible.</p>
+            <p class="chart-note">Optionally enter an object name. Leave it empty for broad discovery across the detector's supported classes.</p>
           </div>
         </div>
         <div class="search-bar recognition-search">
@@ -4612,6 +4612,15 @@ async function renderTrainingAnalytics(container) {
     const total = Number(prog.total || 0);
     const stage = String(data.stage || status);
     const message = String(data.message || (running ? "Processing live cameras." : "Ready to scan live cameras."));
+    const diag = data.diagnostics || {};
+    const attempted = Number(diag.attempted_cameras ?? done);
+    const active = Number(diag.total_active_cameras ?? total);
+    const framesRead = Number(diag.frames_read || 0);
+    const detectionsFound = Number(diag.detections || 0);
+    const failedCameras = Number(diag.cameras_failed || 0);
+    const metrics = active
+      ? ` Scanned ${attempted}/${active} active cameras. Frames: ${framesRead}. Detections: ${detectionsFound}. Failed: ${failedCameras}.`
+      : "";
     const stageLabel = stage === "completed"
       ? "Complete"
       : stage === "partial"
@@ -4628,8 +4637,7 @@ async function renderTrainingAnalytics(container) {
                   ? "Scan failed"
                   : "Ready";
     statusBox.dataset.state = status;
-    statusBox.innerHTML = `<strong>${escapeHtml(stageLabel)}</strong><span>${escapeHtml(message)}</span>`;
-    const diag = data.diagnostics || {};
+    statusBox.innerHTML = `<strong>${escapeHtml(stageLabel)}</strong><span>${escapeHtml(message + metrics)}</span>`;
     if (rows.length) {
       searchResults.innerHTML = trainingSearchRowsHtml(rows);
       actions.hidden = false;
@@ -4644,11 +4652,16 @@ async function renderTrainingAnalytics(container) {
     } else if (status === "idle") {
       why = t("search.empty");
     } else {
-      const d = data.diagnostics || {};
+      const d = diag;
+      const outcomes = d.outcomes || {};
       if (d.model === false) why = "No model loaded (set TRAINING_USE_MODEL=1 with enough memory).";
-      else if (!d.cameras) why = "No cameras found. Start the streams first.";
-      else if (!d.frames_read) why = `Swept ${d.cameras} camera(s) but read 0 live frames.`;
-      else why = `Scanned ${d.cameras} camera(s); no objects matched this scan.`;
+      else if (!d.total_active_cameras) why = "No active cameras in Stream Manager. Start the streams first.";
+      else if (outcomes.camera_timeout) why = `${outcomes.camera_timeout} camera(s) timed out; completed ${d.cameras_completed || 0}/${d.total_active_cameras}.`;
+      else if (!d.frames_read) why = `Scanned ${d.attempted_cameras || done}/${d.total_active_cameras} active cameras but read no frames.`;
+      else if (outcomes.detector_unavailable) why = "The detector was unavailable for the captured frame(s).";
+      else if (outcomes.all_filtered_by_query) why = "Detections were found, but all were filtered by the query.";
+      else if (outcomes.no_detections) why = "Frames were read successfully, but the detector returned no objects.";
+      else why = `Scanned ${d.attempted_cameras || done}/${d.total_active_cameras} active cameras; no detections were returned.`;
     }
     searchResults.innerHTML = `<p class="chart-note">${escapeHtml(why)}</p>`;
   };
