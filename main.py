@@ -30,26 +30,30 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import time
+from uuid import uuid4
 
 import cv2
 import yaml
 
 from cameras.camera import load_cameras
 from detection.detector import Detector
-from detection.draw import draw_detections, draw_fps, draw_counts, draw_counting_line
+from detection.draw import draw_detections, draw_fps, draw_counts
 from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
 from database.camera_db import CameraDB
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
-from database.warehouse_db import WarehouseDB
-from tracking.line_counter import AppearanceCounter, LineCounter
 from tracking.tracker import ObjectTracker, TrackedObject
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
+from database.vision_db import VisionDB
+from events import EventEngine
+from pipeline import LiveVisionPipeline
+from rules import CountingRuleEngine, Line, RuleConfig
+from stream import LiveFrame
 
 
 def load_config(path: str) -> dict:
@@ -168,30 +172,13 @@ def main():
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
         )
 
-    # --- Warehouse stock counting MVP ---
-    warehouse_cfg = config.get("warehouse_counting", {})
-    warehouse_enabled = warehouse_cfg.get("enabled", False)
-    warehouse_db = None
-    warehouse_counters = {}
-    reviewed_unknown_ids: set[tuple[str, int]] = set()
-    if warehouse_enabled:
-        warehouse_db = WarehouseDB(db_path=warehouse_cfg.get("db_path", "database/warehouse.db"))
-        count_mode = warehouse_cfg.get("mode", "appearance")
-        line = warehouse_cfg.get(
-            "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
-        )
-        warehouse_counters = {
-            cam.name: (
-                LineCounter(line=line, camera_id=cam.name)
-                if count_mode == "line"
-                else AppearanceCounter(camera_id=cam.name)
-            )
-            for cam in cameras
-        }
-        print(
-            f"Warehouse counting enabled ({count_mode} mode). "
-            f"Stock DB: {warehouse_db.db_path}"
-        )
+    # The dummy adapter is still useful for smoke tests, but it enters through
+    # the exact same typed live-frame pipeline as production ByteTrack.
+    if object_tracker is None and detector.model is None:
+        object_tracker = _DemoTracker()
+
+    if object_tracker is None:
+        raise RuntimeError("tracking must be enabled: detector-only inference paths are unsupported")
 
     # --- Product recognition knowledge engine ---
     recognition_cfg = config.get("recognition", {})
@@ -244,9 +231,40 @@ def main():
     last_frame_at = None
     last_spatial_objects = []
 
+    pipeline_cfg = config.get("pipeline", {})
+    rule_cfg = config.get("counting_rules", {})
+    vision_db = VisionDB(pipeline_cfg.get("database_path", "database/vision.db"))
+    target_class_id = int(rule_cfg.get("target_class_id", 0))
+    target_class = str(rule_cfg.get("target_class", "baget_box"))
+    counting_zone = tuple(tuple(point) for point in rule_cfg.get(
+        "counting_zone", [[0, 180], [1000, 180], [1000, 500], [0, 500]]
+    ))
+    entry = rule_cfg.get("entry_line", [[0, 180], [1000, 180]])
+    exit_line = rule_cfg.get("exit_line", [[0, 500], [1000, 500]])
+    scan_runs = {}
+    pipelines = {}
+    for cam in cameras:
+        stream_id = f"rtsp:{cam.name}"
+        scan_id = vision_db.start_scan(stream_id, cam.name)
+        scan_runs[cam.name] = scan_id
+        rules = RuleConfig(
+            package_class_ids=frozenset({target_class_id}), counting_zone=counting_zone,
+            entry_line=Line(tuple(entry[0]), tuple(entry[1])),
+            exit_line=Line(tuple(exit_line[0]), tuple(exit_line[1])),
+            minimum_confidence=float(rule_cfg.get("minimum_confidence", 0.35)),
+            minimum_track_age=int(rule_cfg.get("minimum_track_age", 4)),
+            direction=int(rule_cfg.get("direction", 1)),
+        )
+        pipelines[cam.name] = LiveVisionPipeline(
+            tracker=object_tracker, rule_engine=CountingRuleEngine(rules),
+            event_engine=EventEngine(vision_db, scan_id), database=vision_db,
+            pipeline_version=str(pipeline_cfg.get("version", "1.0.0")),
+            detector_version=str(pipeline_cfg.get("detector_version", "unknown")),
+            class_ids={target_class: target_class_id, "box": target_class_id},
+        )
+
     prev_time = time.time()
     frame_number = 0
-    dummy_positions = {cam.name: 0 for cam in cameras}
 
     try:
         while True:
@@ -264,9 +282,14 @@ def main():
                 frames_read += 1
                 last_frame_at = datetime.now().isoformat(timespec="seconds")
 
-                if object_tracker is not None:
-                    detections = object_tracker.update(frame)
-                    last_tracked_count = len(detections)
+                live_frame = LiveFrame(
+                    camera_id=cam.name, stream_id=f"rtsp:{cam.name}", frame_uuid=uuid4(),
+                    captured_at=datetime.now(timezone.utc), image=frame,
+                )
+                pipeline_result = pipelines[cam.name].process(live_frame)
+                detections = list(pipeline_result.detections)
+                last_tracked_count = len(detections)
+                if presence_tracker is not None:
                     check_ins = presence_tracker.update(cam.name, detections, now)
                     for event in check_ins:
                         tracking_db.record_check_in(
@@ -275,14 +298,6 @@ def main():
                         print(
                             f"[{cam.name}] Check-in: #{event.track_id} {event.class_name}"
                         )
-                elif detector.model is None:
-                    detections = _demo_tracked_objects(dummy_positions[cam.name])
-                    dummy_positions[cam.name] += 1
-                    last_tracked_count = len(detections)
-                else:
-                    detections = detector.detect(frame)
-                    last_tracked_count = 0
-
                 last_detection_count = len(detections)
                 if spatial_analyzer is not None:
                     measurements = spatial_analyzer.enrich(frame, detections)
@@ -301,24 +316,6 @@ def main():
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
                 draw_counts(frame, detections)
-
-                if warehouse_enabled and warehouse_db is not None:
-                    line = warehouse_cfg.get(
-                        "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
-                    )
-                    count_mode = warehouse_cfg.get("mode", "appearance")
-                    if count_mode == "line":
-                        draw_counting_line(frame, line)
-                    _process_warehouse_counting(
-                        camera_name=cam.name,
-                        detections=detections,
-                        warehouse_counter=warehouse_counters[cam.name],
-                        warehouse_db=warehouse_db,
-                        confidence_threshold=warehouse_cfg.get("confidence_threshold", 0.5),
-                        reviewed_unknown_ids=reviewed_unknown_ids,
-                        count_unknown=warehouse_cfg.get("count_low_confidence_as_unknown", True),
-                        count_mode=count_mode,
-                    )
 
                 if snapshot_saver is not None:
                     saved = snapshot_saver.maybe_save(cam.name, frame, detections)
@@ -376,10 +373,8 @@ def main():
                     "last_tracked_count": last_tracked_count,
                     "model_loaded": detector.model is not None,
                     "tracking_enabled": object_tracker is not None or detector.model is None,
-                    "warehouse_counting_enabled": warehouse_enabled,
-                    "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
-                    if warehouse_enabled
-                    else None,
+                    "warehouse_counting_enabled": True,
+                    "warehouse_counting_mode": "canonical_rule_engine",
                     "product_recognition_enabled": product_recognizer is not None,
                     "product_recognition_provider": recognition_cfg.get("provider")
                     if product_recognizer is not None
@@ -401,6 +396,8 @@ def main():
                 break
 
     finally:
+        for camera_name, scan_id in scan_runs.items():
+            vision_db.finish_scan(scan_id, frames=frames_read, detections=frames_read, status="completed")
         for cam in cameras:
             cam.release()
         if product_recognizer is not None:
@@ -410,9 +407,14 @@ def main():
         print("Stopped.")
 
 
-def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
-    y = min(520, 170 + frame_index * 5)
-    return [TrackedObject(track_id=1, class_name="box", confidence=0.95, box=(430, y, 530, y + 80))]
+class _DemoTracker:
+    def __init__(self):
+        self.frame_index = 0
+
+    def update(self, frame) -> list[TrackedObject]:
+        y = min(520, 170 + self.frame_index * 5)
+        self.frame_index += 1
+        return [TrackedObject(track_id=1, class_name="box", confidence=0.95, box=(430, y, 530, y + 80))]
 
 
 def _write_detection_health(path: str, payload: dict) -> None:
@@ -476,58 +478,6 @@ def _write_atomic_bytes(path: Path, data: bytes) -> None:
 
 def _safe_live_feed_name(value: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in str(value)).strip("_") or "camera"
-
-
-def _process_warehouse_counting(
-    camera_name: str,
-    detections,
-    warehouse_counter,
-    warehouse_db: WarehouseDB,
-    confidence_threshold: float,
-    reviewed_unknown_ids: set[tuple[str, int]],
-    count_unknown: bool,
-    count_mode: str,
-) -> None:
-    tracked = [det for det in detections if hasattr(det, "track_id")]
-    if not tracked:
-        return
-
-    for det in tracked:
-        review_key = (camera_name, det.track_id)
-        if (
-            count_unknown
-            and det.confidence < confidence_threshold
-            and review_key not in reviewed_unknown_ids
-        ):
-            reviewed_unknown_ids.add(review_key)
-            warehouse_db.record_unknown_item(
-                tracking_id=det.track_id,
-                confidence=det.confidence,
-                screenshot_path=None,
-                camera_id=camera_name,
-            )
-
-    countable = [det for det in tracked if det.confidence >= confidence_threshold]
-    for event in warehouse_counter.update(countable):
-        stock = warehouse_db.record_movement(
-            product_name=event.product_name,
-            direction=event.direction,
-            camera_id=event.camera_id,
-            tracking_id=event.tracking_id,
-            confidence=event.confidence,
-            quantity=event.quantity,
-            object_type=event.object_type,
-            dimensions_m=event.dimensions_m,
-            distance_m=event.distance_m,
-            quantity_grid=event.quantity_grid,
-            measurement_method=event.measurement_method,
-        )
-        action = "recognized" if count_mode == "appearance" else f"crossed {event.direction}"
-        print(
-            f"[{event.camera_id}] {event.quantity}x {event.product_name} "
-            f"ID={event.tracking_id} "
-            f"{action} | stock {event.product_name} = {stock}"
-        )
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 import asyncio
+from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from webauthn import (
@@ -53,6 +54,7 @@ from database.company_portal_db import CompanyPortalDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
+from api.vision_routes import router as vision_router  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -82,7 +84,20 @@ DEFAULT_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
 ]
 
-app = FastAPI(title="AI Vision Control API", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    global _watchdog_task
+    if _watchdog_task is None or _watchdog_task.done():
+        _watchdog_task = asyncio.create_task(_detection_watchdog())
+    try:
+        yield
+    finally:
+        if _watchdog_task is not None:
+            _watchdog_task.cancel()
+
+
+app = FastAPI(title="AI Vision Control API", version="1.0.0", lifespan=_lifespan)
+app.include_router(vision_router)
 
 
 def _env_list(name: str, default: list[str]) -> list[str]:
@@ -1625,13 +1640,6 @@ async def _detection_watchdog() -> None:
     while _env_bool("DETECTION_WATCHDOG_ENABLED", True):
         await asyncio.to_thread(_ensure_detection_running, "watchdog")
         await asyncio.sleep(int(os.getenv("DETECTION_WATCHDOG_INTERVAL_SECONDS", "30")))
-
-
-@app.on_event("startup")
-async def start_detection_watchdog() -> None:
-    global _watchdog_task
-    if _watchdog_task is None or _watchdog_task.done():
-        _watchdog_task = asyncio.create_task(_detection_watchdog())
 
 
 _HTML_NO_CACHE = {"Cache-Control": "no-cache"}

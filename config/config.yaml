@@ -50,17 +50,24 @@ tracking:
   classes: null
   grace_period_seconds: 5.0
   db_path: database/tracking.db
-warehouse_counting:
-  enabled: true
-  mode: appearance
-  db_path: database/warehouse.db
-  confidence_threshold: 0.08
-  count_low_confidence_as_unknown: true
-  counting_line:
-    x1: 100
-    y1: 300
-    x2: 900
-    y2: 300
+stream:
+  reconnect_delay_seconds: 2.0
+  frame_timeout_seconds: 3.0
+  queue_size: 8
+  worker_count: 1
+pipeline:
+  version: 1.0.0
+  detector_version: yolo-baget-v1
+  database_path: database/vision.db
+counting_rules:
+  target_class: baget_box
+  target_class_id: 0
+  minimum_confidence: 0.35
+  minimum_track_age: 4
+  direction: 1
+  entry_line: [[0, 180], [1000, 180]]
+  exit_line: [[0, 500], [1000, 500]]
+  counting_zone: [[0, 180], [1000, 180], [1000, 500], [0, 500]]
 recognition:
   enabled: true
   provider: gemini

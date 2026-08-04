@@ -91,3 +91,38 @@ class VisionDB:
             conn.execute(self.db.sql("UPDATE scan_runs SET status=?,completed_at=?,frames=?,detections=?,error_code=? WHERE id=?"),
                          (status, self.now(), frames, detections, error_code, scan_run_id))
 
+    def list_scans(self, limit: int = 100, block_id: str | None = None) -> list[dict]:
+        query = "SELECT * FROM scan_runs"
+        params = []
+        if block_id:
+            query += " WHERE block_id = ?"
+            params.append(block_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.db.connect() as conn:
+            return [dict(row) for row in conn.execute(self.db.sql(query), tuple(params)).fetchall()]
+
+    def list_events(self, limit: int = 100, camera_id: str | None = None) -> list[dict]:
+        query = "SELECT * FROM events"
+        params = []
+        if camera_id:
+            query += " WHERE camera_id = ?"
+            params.append(camera_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.db.connect() as conn:
+            rows = [dict(row) for row in conn.execute(self.db.sql(query), tuple(params)).fetchall()]
+        for row in rows:
+            row["payload"] = json.loads(row["payload"])
+        return rows
+
+    def count_summary(self, block_id: str | None = None, camera_id: str | None = None) -> list[dict]:
+        clauses, params = [], []
+        if block_id:
+            clauses.append("block_id = ?"); params.append(block_id)
+        if camera_id:
+            clauses.append("camera_id = ?"); params.append(camera_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        query = "SELECT block_id,camera_id,class_id,SUM(quantity) AS quantity FROM counts" + where + " GROUP BY block_id,camera_id,class_id"
+        with self.db.connect() as conn:
+            return [dict(row) for row in conn.execute(self.db.sql(query), tuple(params)).fetchall()]
