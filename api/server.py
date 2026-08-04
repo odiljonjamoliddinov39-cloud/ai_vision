@@ -71,6 +71,7 @@ from database.warehouse_db import WarehouseDB  # noqa: E402
 from detection.detector import Detector  # noqa: E402
 from detection.spatial import SpatialAnalyzer  # noqa: E402
 from streams import StreamManager, StreamSessionConfig  # noqa: E402
+from api.vision_routes import router as vision_router  # noqa: E402
 from warehouse_engine.database import EngineDatabase  # noqa: E402
 from warehouse_engine.rules import parse_task_prompt  # noqa: E402
 
@@ -105,6 +106,7 @@ DEFAULT_ALLOWED_ORIGINS = [
 ]
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
+app.include_router(vision_router)
 
 
 def _env_list(name: str, default: list[str]) -> list[str]:
