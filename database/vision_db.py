@@ -83,8 +83,22 @@ class VisionDB:
             else:
                 event_id = int(conn.execute(event_sql, params).lastrowid)
             conn.execute(self.db.sql("INSERT INTO counts(event_id,block_id,camera_id,class_id,quantity,counted_at) VALUES(?,?,?,?,?,?)"),
-                         (event_id, block_id, event["camera_id"], event["class_id"], 1, created_at))
+                         (event_id, block_id, event["camera_id"], event["class_id"],
+                          int(event.get("inventory_delta", event.get("quantity", 1))), created_at))
             return event_id
+
+    def record_event(self, scan_run_id: int, detection_id: int | None, event: dict) -> int:
+        """Persist any rule event; count events additionally update counts."""
+        created_at = str(event.get("timestamp") or self.now())
+        payload = dict(event)
+        with self.db.connect() as conn:
+            sql = "INSERT INTO events(scan_run_id,detection_id,event_type,camera_id,stream_id,frame_uuid,track_id,payload,created_at) VALUES(?,?,?,?,?,?,?,?,?)"
+            params = (scan_run_id, detection_id, event["event_type"], event["camera_id"],
+                      event["stream_id"], event["frame_uuid"], event.get("track_id"),
+                      json.dumps(payload), created_at)
+            if self.db.is_postgres:
+                return int(conn.execute(self.db.sql(sql) + " RETURNING id", params).fetchone()["id"])
+            return int(conn.execute(sql, params).lastrowid)
 
     def finish_scan(self, scan_run_id: int, *, frames: int, detections: int, status: str = "completed", error_code: str | None = None) -> None:
         with self.db.connect() as conn:

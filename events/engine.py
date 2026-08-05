@@ -18,3 +18,12 @@ class EventEngine:
             if hasattr(value, "isoformat"):
                 payload[key] = value.isoformat()
         return self.database.record_count(self.scan_run_id, detection_id, payload, self.block_id)
+
+    def publish(self, detection_id: int | None, event: dict) -> int:
+        if event.get("inventory_delta"):
+            count_payload = dict(event)
+            count_payload["class_id"] = int(event.get("class_id", -1))
+            return self.database.record_count(
+                self.scan_run_id, detection_id, count_payload, self.block_id
+            )
+        return self.database.record_event(self.scan_run_id, detection_id, event)

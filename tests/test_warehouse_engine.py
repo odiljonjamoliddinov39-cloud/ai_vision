@@ -77,14 +77,15 @@ def test_ai_task_builder_produces_engine_rule():
     assert task["tracking"] == "persistent"
 
 
-def test_main_routes_inventory_through_warehouse_engine():
+def test_main_routes_inventory_through_live_pipeline():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
         encoding="utf-8"
     )
 
-    assert "warehouse_engine.process(" in source
+    assert "pipeline.process for name, pipeline in live_pipelines.items()" in source
+    assert "warehouse_engine.process(" not in source
     assert "_process_warehouse_counting(" not in source.split('if __name__ == "__main__":')[0]
 
 

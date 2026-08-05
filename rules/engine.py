@@ -28,9 +28,20 @@ def _inside(point: Point, polygon: Polygon) -> bool:
 class CountingRuleEngine:
     """Tracks each object through entry, zone, and exit exactly once."""
 
-    def __init__(self, config: RuleConfig) -> None:
+    def __init__(self, config: RuleConfig, inventory_rules=None) -> None:
         self.config = config
+        self.inventory_rules = inventory_rules
         self._states: Dict[int, TrackState] = {}
+
+    def evaluate_tracked(self, camera_id: str, detections, timestamp: float):
+        """Canonical business-rule boundary for production tracked objects.
+
+        The compatibility engine preserves identity/zone/direction parity while
+        its rules are migrated; callers never invoke it directly.
+        """
+        if self.inventory_rules is None:
+            return []
+        return self.inventory_rules.process(camera_id, detections, timestamp)
 
     def state_for(self, track_id: int) -> TrackState:
         return self._states.get(track_id, TrackState.OUTSIDE)
@@ -72,4 +83,3 @@ class CountingRuleEngine:
         if observation.track_age < self.config.minimum_track_age:
             return False
         return not any(_inside(observation.center, zone) for zone in self.config.ignore_zones)
-
