@@ -107,6 +107,7 @@ DEFAULT_ALLOWED_ORIGINS = [
 
 app = FastAPI(title="AI Vision Control API", version="0.1.0")
 app.include_router(vision_router)
+app.routes[:] = [route for route in app.routes if hasattr(route, "path")]
 
 
 def _env_list(name: str, default: list[str]) -> list[str]:
