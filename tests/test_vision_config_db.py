@@ -15,3 +15,20 @@ def test_blocks_and_camera_rules_survive_reopen(tmp_path):
     loaded = VisionConfigDB(path).get_camera_rules("camera-1")
     assert loaded["settings"]["block_id"] == block["id"]
     assert loaded["zones"]["counting_zone"] == zones["counting_zone"]
+
+
+def test_camera_block_assignment_preserves_rules_and_can_be_cleared(tmp_path):
+    path = str(tmp_path / "vision.db")
+    db = VisionConfigDB(path)
+    block = db.create_block("Warehouse A", "Primary warehouse")
+    db.save_camera_rules("7", block_id=None, confidence=.61,
+                         minimum_track_age=8, direction=-1, zones={})
+
+    assigned = db.assign_camera_block(7, block["id"])
+    loaded = db.get_camera_rules("7")
+    assert assigned["block_name"] == "Warehouse A"
+    assert loaded["settings"]["confidence"] == .61
+    assert loaded["settings"]["minimum_track_age"] == 8
+
+    cleared = db.assign_camera_block(7, None)
+    assert cleared["block_id"] is None
