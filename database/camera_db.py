@@ -160,6 +160,21 @@ class CameraDB:
             )
         return self.get_camera(camera_id, include_secret=False)
 
+    def update_camera(self, camera_id: int, *, name: str | None = None, stream_url: str | None = None) -> dict | None:
+        current = self.get_camera(camera_id, include_secret=True)
+        if current is None:
+            return None
+        next_name = current["name"] if name is None else name.strip()
+        next_url = current["stream_url"] if stream_url is None else stream_url.strip()
+        if not next_name or not next_url:
+            raise ValueError("camera name and RTSP URL are required")
+        with self._connect() as conn:
+            conn.execute(
+                self._sql("UPDATE cameras SET name=?, stream_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"),
+                (next_name, next_url, camera_id),
+            )
+        return self.get_camera(camera_id, include_secret=False)
+
     def set_active(self, camera_id: int, slot_number: int = 1) -> dict | None:
         return self.assign_slot(camera_id, slot_number)
 

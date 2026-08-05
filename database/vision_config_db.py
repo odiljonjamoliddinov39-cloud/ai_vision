@@ -33,6 +33,34 @@ class VisionConfigDB:
         with self.db.connect() as conn:
             return [dict(row) for row in conn.execute("SELECT * FROM blocks ORDER BY name").fetchall()]
 
+    def get_camera_settings_map(self, camera_ids=None):
+        """Return persisted operator configuration keyed by camera id."""
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """SELECT cs.*, b.name AS block_name, b.description AS block_description
+                   FROM camera_settings cs
+                   LEFT JOIN blocks b ON b.id = cs.block_id
+                   ORDER BY cs.camera_id"""
+            ).fetchall()
+        result = {str(row["camera_id"]): dict(row) for row in rows}
+        if camera_ids is None:
+            return result
+        return {str(camera_id): result.get(str(camera_id)) for camera_id in camera_ids}
+
+    def assign_camera_block(self, camera_id, block_id):
+        """Persist a block assignment without overwriting that camera's rules."""
+        with self.db.connect() as conn:
+            if block_id is not None:
+                block = conn.execute(self.db.sql("SELECT id FROM blocks WHERE id=?"), (block_id,)).fetchone()
+                if not block:
+                    raise ValueError("block does not exist")
+            existing = conn.execute(self.db.sql("SELECT id FROM camera_settings WHERE camera_id=?"), (str(camera_id),)).fetchone()
+            if existing:
+                conn.execute(self.db.sql("UPDATE camera_settings SET block_id=? WHERE camera_id=?"), (block_id, str(camera_id)))
+            else:
+                conn.execute(self.db.sql("INSERT INTO camera_settings(camera_id,block_id) VALUES(?,?)"), (str(camera_id), block_id))
+        return self.get_camera_settings_map([camera_id])[str(camera_id)]
+
     def save_camera_rules(self, camera_id, *, block_id, confidence, minimum_track_age, direction, zones):
         if direction not in (-1, 1):
             raise ValueError("direction must be -1 or 1")

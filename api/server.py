@@ -62,6 +62,7 @@ from discovery.portscan import DiscoveryHostError, resolve_and_guard  # noqa: E4
 from discovery.providers import StreamCredentials, enumerate_streams  # noqa: E402
 from database.access_control_db import AccessControlDB  # noqa: E402
 from database.camera_db import CameraDB  # noqa: E402
+from database.vision_config_db import VisionConfigDB  # noqa: E402
 from database.device_db import DeviceDB  # noqa: E402
 from database.accounts_db import AccountsDB  # noqa: E402
 from database.catalog_db import CatalogDB  # noqa: E402
@@ -887,6 +888,12 @@ class CameraCreate(BaseModel):
 
 class CameraTestRequest(BaseModel):
     stream_url: str = Field(min_length=1)
+
+
+class CameraOperationsUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    stream_url: str | None = Field(default=None, min_length=1)
+    block_id: int | None = None
 
 
 class CameraSlotRequest(BaseModel):
@@ -3943,6 +3950,89 @@ def list_cameras() -> dict[str, Any]:
     active_cameras = [camera for camera in cameras if camera["is_active"]]
     active = active_cameras[0] if active_cameras else None
     return {"cameras": cameras, "active_camera": active, "active_cameras": active_cameras}
+
+
+def _camera_operations_payload() -> list[dict[str, Any]]:
+    cameras = _get_camera_db().list_cameras(include_secret=False)
+    settings = VisionConfigDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db"))).get_camera_settings_map(
+        [camera["id"] for camera in cameras]
+    )
+    stream_rows = _get_stream_manager().status().get("streams", [])
+    streams = {str(row.get("channel_id")): row for row in stream_rows}
+    payload = []
+    for camera in cameras:
+        stream = streams.get(str(camera["id"])) or {}
+        operator_settings = settings.get(str(camera["id"])) or {}
+        row = dict(camera)
+        row.update({
+            "block_id": operator_settings.get("block_id"),
+            "block_name": operator_settings.get("block_name"),
+            "health": {
+                "status": stream.get("status") or ("waiting" if camera.get("is_active") else camera.get("status", "offline")),
+                "fps": stream.get("fps") or stream.get("current_fps") or 0,
+                "last_frame_at": stream.get("last_frame_at"),
+                "frame_age_ms": stream.get("frame_age_ms"),
+                "reconnect_count": stream.get("reconnect_count", 0),
+                "decode_errors": stream.get("decode_errors", 0),
+                "stream_latency_ms": stream.get("stream_latency_ms") or stream.get("latency_ms"),
+                "last_error": stream.get("last_error"),
+            },
+        })
+        payload.append(row)
+    return payload
+
+
+@app.get("/api/v1/cameras")
+def list_operator_cameras() -> dict[str, Any]:
+    rows = _camera_operations_payload()
+    blocks = VisionConfigDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db"))).list_blocks()
+    return {"data": rows, "meta": {"count": len(rows), "blocks": blocks}}
+
+
+@app.put("/api/v1/cameras/{camera_id}")
+def update_operator_camera(camera_id: int, body: CameraOperationsUpdate) -> dict[str, Any]:
+    db = _get_camera_db()
+    current = db.get_camera(camera_id, include_secret=True)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    if body.stream_url is not None:
+        _endpoint, validation_error = _camera_stream_endpoint(body.stream_url)
+        if validation_error:
+            raise HTTPException(status_code=400, detail=validation_error)
+    try:
+        db.update_camera(camera_id, name=body.name, stream_url=body.stream_url)
+        VisionConfigDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db"))).assign_camera_block(camera_id, body.block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if current.get("is_active") and (body.name is not None or body.stream_url is not None):
+        refreshed = db.get_camera(camera_id, include_secret=True)
+        _get_stream_manager().stop(str(camera_id))
+        _start_stream_for_camera(refreshed)
+        _sync_config_active_cameras(db)
+    return {"data": next(row for row in _camera_operations_payload() if row["id"] == camera_id), "meta": {}}
+
+
+@app.post("/api/v1/cameras/{camera_id}/reconnect")
+def reconnect_operator_camera(camera_id: int) -> dict[str, Any]:
+    camera = _get_camera_db().get_camera(camera_id, include_secret=True)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    if not camera.get("is_active"):
+        raise HTTPException(status_code=409, detail="Assign the camera to a live slot before reconnecting.")
+    manager = _get_stream_manager()
+    manager.stop(str(camera_id))
+    stream = _start_stream_for_camera(camera)
+    return {"data": next(row for row in _camera_operations_payload() if row["id"] == camera_id), "meta": {"stream": stream}}
+
+
+@app.post("/api/v1/cameras/{camera_id}/test-frame")
+def test_operator_camera_frame(camera_id: int) -> dict[str, Any]:
+    camera = _get_camera_db().get_camera(camera_id, include_secret=True)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    result = _test_camera_stream(camera["stream_url"])
+    _get_camera_db().set_status(camera_id, result["status"])
+    return {"data": {"camera_id": camera_id, **result}, "meta": {}}
 
 
 @app.post("/api/cameras/test")

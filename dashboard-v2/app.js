@@ -4781,6 +4781,108 @@ function trainingSearchRowsHtml(rows) {
     </div>`;
 }
 
+function operatorCameraStatus(health = {}) {
+  const status = String(health.status || "waiting").toLowerCase();
+  if (status === "online" || status === "connected") return { label: "Live", className: "healthy" };
+  if (status === "reconnecting" || status === "starting") return { label: "Recovering", className: "warning" };
+  if (status === "offline" || status === "failed" || status === "timeout") return { label: "Offline", className: "critical" };
+  return { label: "Waiting for video", className: "warning" };
+}
+
+function operatorCameraHealthText(health = {}) {
+  const details = [];
+  const age = cameraInfoNumber(health.frame_age_ms);
+  if (age != null) details.push(`Last frame: ${cameraInfoDuration(age)} ago`);
+  if (Number(health.fps || 0) > 0) details.push(`FPS: ${Number(health.fps).toFixed(1)}`);
+  details.push(`Reconnects: ${Number(health.reconnect_count || 0).toLocaleString()}`);
+  details.push(`Decode errors: ${Number(health.decode_errors || 0).toLocaleString()}`);
+  if (health.stream_latency_ms != null) details.push(`Latency: ${cameraInfoDuration(health.stream_latency_ms)}`);
+  return details.join(" · ");
+}
+
+async function renderOperatorCameraManagement(container) {
+  if (!container) return;
+  container.innerHTML = `<p class="empty">Loading persisted camera assignments and live health…</p>`;
+  try {
+    const payload = await api("/api/v1/cameras", { force: true });
+    if (!container.isConnected) return;
+    const cameras = payload.data || [];
+    const blocks = payload.meta?.blocks || [];
+    const active = cameras.filter((camera) => camera.is_active);
+    const live = active.filter((camera) => ["online", "connected"].includes(String(camera.health?.status || "").toLowerCase())).length;
+    container.innerHTML = `
+      <header class="operator-camera-head">
+        <div>
+          <h3>Camera Management</h3>
+          <p>${active.length}/${cameras.length} slots assigned · ${live} live · Assign blocks and manage streams without editing code.</p>
+        </div>
+        <button type="button" class="export-button" data-camera-refresh>Refresh</button>
+      </header>
+      <div class="operator-camera-list">
+        ${cameras.map((camera) => {
+          const health = camera.health || {};
+          const status = operatorCameraStatus(health);
+          return `
+            <article class="operator-camera-row" data-camera-row="${camera.id}">
+              <div class="operator-camera-identity">
+                <strong>${escapeHtml(camera.name)}</strong>
+                <span>${camera.slot_number != null ? `Slot ${camera.slot_number}` : "No live slot"}</span>
+                <small>${escapeHtml(camera.masked_stream_url || "")}</small>
+              </div>
+              <div class="operator-camera-health">${escapeHtml(operatorCameraHealthText(health))}</div>
+              <label class="operator-camera-block">Block
+                <select data-camera-block>
+                  <option value="">Unassigned</option>
+                  ${blocks.map((block) => `<option value="${block.id}" ${Number(camera.block_id) === Number(block.id) ? "selected" : ""}>${escapeHtml(block.name)}</option>`).join("")}
+                </select>
+              </label>
+              <div class="operator-camera-actions">
+                <button type="button" class="export-button" data-camera-test>Test frame</button>
+                <button type="button" class="export-button" data-camera-reconnect ${camera.is_active ? "" : "disabled"}>Reconnect</button>
+                <button type="button" class="primary-button" data-camera-save>Save</button>
+              </div>
+              <span class="operator-camera-state ${status.className}">${escapeHtml(status.label)}</span>
+            </article>`;
+        }).join("") || `<p class="empty">No cameras have been configured.</p>`}
+      </div>`;
+
+    container.querySelector("[data-camera-refresh]")?.addEventListener("click", () => void renderOperatorCameraManagement(container));
+    container.querySelectorAll("[data-camera-row]").forEach((row) => {
+      const cameraId = row.dataset.cameraRow;
+      row.querySelector("[data-camera-save]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const value = row.querySelector("[data-camera-block]").value;
+          await api(`/api/v1/cameras/${cameraId}`, { method: "PUT", body: JSON.stringify({ block_id: value ? Number(value) : null }) });
+          toast("Camera assignment saved.");
+        } catch (error) { toast(error.message || "Save failed."); }
+        finally { button.disabled = false; }
+      });
+      row.querySelector("[data-camera-reconnect]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await api(`/api/v1/cameras/${cameraId}/reconnect`, { method: "POST" });
+          toast("Reconnect started.");
+          window.setTimeout(() => void renderOperatorCameraManagement(container), 800);
+        } catch (error) { toast(error.message || "Reconnect failed."); button.disabled = false; }
+      });
+      row.querySelector("[data-camera-test]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const result = await api(`/api/v1/cameras/${cameraId}/test-frame`, { method: "POST" });
+          toast(result.data?.message || `Camera test: ${result.data?.status || "complete"}`);
+        } catch (error) { toast(error.message || "Camera test failed."); }
+        finally { button.disabled = false; }
+      });
+    });
+  } catch (error) {
+    if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message || "Camera management failed to load.")}</p>`;
+  }
+}
+
 async function applySearchRow(row, silent) {
   const groupId = row.dataset.group;
   const name = row.querySelector("[data-search-name]").value.trim();
@@ -4899,6 +5001,7 @@ function renderAccountModule() {
       })
       .join("");
     els.moduleContent.innerHTML = `
+      <section class="operator-camera-management" data-operator-camera-management></section>
       <p class="chart-note">${escapeHtml(t("camera.connected_devices", { count: config.nvrs.length, max: MAX_NVRS }))}</p>
       <div class="cc-list">${nvrCards || `<p class="empty">${escapeHtml(t("camera.no_devices"))}</p>`}</div>
       ${atLimit ? `<p class="empty">${escapeHtml(t("camera.device_limit", { max: MAX_NVRS }))}</p>` : `<div class="discovery-panel" data-discovery-panel></div>`}
@@ -4917,6 +5020,7 @@ function renderAccountModule() {
         </div>
       </section>
     `;
+    void renderOperatorCameraManagement(els.moduleContent.querySelector("[data-operator-camera-management]"));
     const discoveryPanel = els.moduleContent.querySelector("[data-discovery-panel]");
     if (discoveryPanel) renderDiscoveryPanel(discoveryPanel);
     return;
