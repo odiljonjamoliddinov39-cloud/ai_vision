@@ -22,11 +22,11 @@ class MemoryDB:
         return len(self.counts)
 
 
-class FakeTracker:
+class FakeProcessor:
     def __init__(self, positions):
         self.positions = iter(positions)
 
-    def update(self, image):
+    def process(self, image, frame_sequence, observed_at):
         y = next(self.positions)
         return [SimpleNamespace(track_id=4, class_name="baget_box", confidence=.95,
                                 box=(40, y - 5, 60, y + 5))]
@@ -37,7 +37,8 @@ def build_pipeline(db):
                        Line((0, 10), (100, 10)), Line((0, 90), (100, 90)),
                        minimum_track_age=1)
     events = EventEngine(db, scan_run_id=3, block_id="block-a")
-    return LiveVisionPipeline(tracker=FakeTracker((0, 20, 80, 100)),
+    return LiveVisionPipeline(camera_id="camera-1", stream_id="stream-1",
+        processor=FakeProcessor((0, 20, 80, 100)),
         rule_engine=CountingRuleEngine(rules), event_engine=events, database=db,
         pipeline_version="1", detector_version="yolo-baget", class_ids={"baget_box": 0})
 
@@ -50,7 +51,7 @@ def test_canonical_pipeline_persists_every_detection_and_counts_once():
     db = MemoryDB()
     pipeline = build_pipeline(db)
     for _ in range(4):
-        pipeline.process(live_frame())
+        pipeline.process(object(), 1, datetime.now(timezone.utc).timestamp())
     assert len(db.detections) == 4
     assert len(db.counts) == 1
     assert db.counts[0][1]["frame_uuid"] == db.detections[-1]["frame_uuid"]

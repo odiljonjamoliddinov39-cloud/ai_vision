@@ -53,6 +53,10 @@ from tracking.bytetrack_adapter import ByteTrackAdapter
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
 from warehouse_engine import WarehouseEngine
+from database.vision_db import VisionDB
+from events import EventEngine
+from pipeline import LiveVisionPipeline
+from rules import CountingRuleEngine, Line, RuleConfig
 
 
 def load_config(path: str) -> dict:
@@ -337,8 +341,41 @@ def main():
         for cam in cameras
         if cam.name in inference_camera_names and detector.model is not None
     }
+    pipeline_cfg = config.get("pipeline", {})
+    counting_cfg = config.get("counting_rules", {})
+    vision_db = VisionDB(pipeline_cfg.get("database_path", "database/vision.db"))
+    scan_runs = {}
+    live_pipelines = {}
+    target_class_id = int(counting_cfg.get("target_class_id", 0))
+    target_class = str(counting_cfg.get("target_class", "baget_box"))
+    zone = tuple(tuple(p) for p in counting_cfg.get(
+        "counting_zone", [[0, 180], [1000, 180], [1000, 500], [0, 500]]
+    ))
+    entry = counting_cfg.get("entry_line", [[0, 180], [1000, 180]])
+    exit_line = counting_cfg.get("exit_line", [[0, 500], [1000, 500]])
+    for camera_name, processor in camera_processors.items():
+        stream_id = f"rtsp:{camera_name}"
+        scan_id = vision_db.start_scan(stream_id, camera_name)
+        scan_runs[camera_name] = scan_id
+        rule_config = RuleConfig(
+            package_class_ids=frozenset({target_class_id}), counting_zone=zone,
+            entry_line=Line(tuple(entry[0]), tuple(entry[1])),
+            exit_line=Line(tuple(exit_line[0]), tuple(exit_line[1])),
+            minimum_confidence=float(counting_cfg.get("minimum_confidence", .35)),
+            minimum_track_age=int(counting_cfg.get("minimum_track_age", 4)),
+            direction=int(counting_cfg.get("direction", 1)),
+        )
+        live_pipelines[camera_name] = LiveVisionPipeline(
+            camera_id=camera_name, stream_id=stream_id, processor=processor,
+            rule_engine=CountingRuleEngine(rule_config, inventory_rules=warehouse_engine),
+            event_engine=EventEngine(vision_db, scan_id), database=vision_db,
+            pipeline_version=str(pipeline_cfg.get("version", "1.0.0")),
+            detector_version=str(pipeline_cfg.get("detector_version", detector.health().get("active_model"))),
+            class_ids={target_class: target_class_id, "box": target_class_id},
+            recognizer=product_recognizer,
+        )
     processors = {
-        name: processor.process for name, processor in camera_processors.items()
+        name: pipeline.process for name, pipeline in live_pipelines.items()
     }
     inference_scheduler = (
         LatestFrameInferenceScheduler(
@@ -366,9 +403,9 @@ def main():
                     camera_stream_interrupted[cam.name] = True
                     continue
                 if camera_stream_interrupted[cam.name]:
-                    processor = camera_processors.get(cam.name)
-                    if processor is not None:
-                        processor.reset("camera_reconnect")
+                    pipeline = live_pipelines.get(cam.name)
+                    if pipeline is not None:
+                        pipeline.reset("camera_reconnect")
                     camera_stream_interrupted[cam.name] = False
                 any_frame = True
                 last_frame_seen_at = now
@@ -467,8 +504,6 @@ def main():
                     last_tracked_count = 0
 
                 last_detection_count = len(downstream_objects)
-                if product_recognizer is not None:
-                    product_recognizer.annotate(cam.name, frame, downstream_objects)
                 # Class-agnostic proposals are observations, never inventory by
                 # themselves. Only a learned catalog fingerprint may promote a
                 # tracked proposal into a countable warehouse object.
@@ -498,30 +533,6 @@ def main():
                 if display_cfg.get("show_fps", True):
                     draw_fps(frame, fps)
                 draw_counts(frame, downstream_objects)
-
-                if warehouse_engine is not None and not result_is_stale:
-                    line = engine_cfg.get(
-                        "counting_line", {"x1": 100, "y1": 300, "x2": 900, "y2": 300}
-                    )
-                    if line:
-                        draw_counting_line(frame, line)
-                    learned_detections = [
-                        detection
-                        for detection in downstream_objects
-                        if getattr(detection, "inventory_name", None)
-                    ]
-                    engine_events = warehouse_engine.process(
-                        camera_id=cam.name,
-                        detections=learned_detections,
-                        timestamp=inference_result.inference_at,
-                    )
-                    for engine_event in engine_events:
-                        if engine_event.inventory_delta:
-                            print(
-                                f"[{cam.name}] {engine_event.event_type}: "
-                                f"{engine_event.object_id} {engine_event.product_name} "
-                                f"delta={engine_event.inventory_delta}"
-                            )
 
                 if snapshot_saver is not None:
                     saved = snapshot_saver.maybe_save(
@@ -624,6 +635,8 @@ def main():
     finally:
         if inference_scheduler is not None:
             inference_scheduler.close()
+        for scan_id in scan_runs.values():
+            vision_db.finish_scan(scan_id, frames=frames_read, detections=last_detection_count)
         for cam in cameras:
             cam.release()
         if product_recognizer is not None:
