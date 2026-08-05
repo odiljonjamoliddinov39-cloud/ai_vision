@@ -6,7 +6,7 @@ import logging
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -34,7 +34,7 @@ class ProductRecognition:
     estimated_size: str | None = None
     possible_usage: str | None = None
     confidence: float = 0.0
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     source: str = "unknown"
 
     @classmethod
@@ -67,7 +67,7 @@ class ProductRecognition:
             estimated_size=_optional_str(payload.get("estimated_size")),
             possible_usage=_optional_str(payload.get("possible_usage")),
             confidence=_safe_confidence(payload.get("confidence")),
-            created_at=str(payload.get("created_at") or datetime.utcnow().isoformat()),
+            created_at=str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
             source=source,
         )
 
