@@ -4788,7 +4788,7 @@ function trainingSearchRowsHtml(rows) {
 
 function operatorCameraStatus(health = {}) {
   const status = String(health.status || "waiting").toLowerCase();
-  if (status === "online" || status === "connected") return { label: "Live", className: "healthy" };
+  if (status === "live" || status === "online" || status === "connected") return { label: "Live", className: "healthy" };
   if (status === "reconnecting" || status === "starting") return { label: "Recovering", className: "warning" };
   if (status === "offline" || status === "failed" || status === "timeout") return { label: "Offline", className: "critical" };
   return { label: "Waiting for video", className: "warning" };
@@ -4797,61 +4797,86 @@ function operatorCameraStatus(health = {}) {
 function operatorCameraHealthText(health = {}) {
   const details = [];
   const age = cameraInfoNumber(health.frame_age_ms);
-  if (age != null) details.push(`Last frame: ${cameraInfoDuration(age)} ago`);
-  if (Number(health.fps || 0) > 0) details.push(`FPS: ${Number(health.fps).toFixed(1)}`);
+  details.push(`FPS: ${Number(health.fps || 0).toFixed(1)}`);
+  details.push(age != null ? `Last frame: ${cameraInfoDuration(age)} ago` : "Last frame: waiting");
   details.push(`Reconnects: ${Number(health.reconnect_count || 0).toLocaleString()}`);
   details.push(`Decode errors: ${Number(health.decode_errors || 0).toLocaleString()}`);
-  if (health.stream_latency_ms != null) details.push(`Latency: ${cameraInfoDuration(health.stream_latency_ms)}`);
   return details.join(" · ");
+}
+
+let operatorCameraRefreshTimer = null;
+
+async function refreshOperatorCameraStatuses(container) {
+  if (!container?.isConnected || accountModule !== "camera") {
+    window.clearInterval(operatorCameraRefreshTimer);
+    operatorCameraRefreshTimer = null;
+    return;
+  }
+  try {
+    const payload = await api("/api/v1/cameras", { force: true });
+    (payload.data || []).forEach((camera) => {
+      const row = container.querySelector(`[data-camera-row="${camera.camera_id}"]`);
+      if (!row) return;
+      const health = camera.health || {};
+      const status = operatorCameraStatus(health);
+      const healthNode = row.querySelector("[data-camera-health]");
+      const stateNode = row.querySelector("[data-camera-state]");
+      if (healthNode) healthNode.textContent = operatorCameraHealthText(health);
+      if (stateNode) { stateNode.textContent = status.label; stateNode.className = `operator-camera-state ${status.className}`; }
+    });
+  } catch {
+    // Keep the last known values; the next poll retries automatically.
+  }
 }
 
 async function renderOperatorCameraManagement(container) {
   if (!container) return;
   container.innerHTML = `<p class="empty">Loading persisted camera assignments and live health…</p>`;
   try {
-    const payload = await api("/api/v1/cameras", { force: true });
+    const [payload, blocksPayload] = await Promise.all([
+      api("/api/v1/cameras", { force: true }),
+      api("/api/v1/blocks", { force: true }),
+    ]);
     if (!container.isConnected) return;
     const cameras = payload.data || [];
-    const blocks = payload.meta?.blocks || [];
+    const blocks = blocksPayload.data || [];
     const active = cameras.filter((camera) => camera.is_active);
-    const live = active.filter((camera) => ["online", "connected"].includes(String(camera.health?.status || "").toLowerCase())).length;
+    const live = active.filter((camera) => ["live", "online", "connected"].includes(String(camera.status || camera.health?.status || "").toLowerCase())).length;
     container.innerHTML = `
       <header class="operator-camera-head">
         <div>
           <h3>Camera Management</h3>
-          <p>${active.length}/${cameras.length} slots assigned · ${live} live · Assign blocks and manage streams without editing code.</p>
+          <p class="operator-camera-connection">Connected via stream manager · ${active.length}/${cameras.length} slots assigned · ${live} live. Waiting for live video frames.</p>
         </div>
-        <button type="button" class="export-button" data-camera-refresh>Refresh</button>
       </header>
       <div class="operator-camera-list">
         ${cameras.map((camera) => {
           const health = camera.health || {};
           const status = operatorCameraStatus(health);
           return `
-            <article class="operator-camera-row" data-camera-row="${camera.id}">
+            <article class="operator-camera-row" data-camera-row="${camera.camera_id}">
               <div class="operator-camera-identity">
-                <strong>${escapeHtml(camera.name)}</strong>
-                <span>${camera.slot_number != null ? `Slot ${camera.slot_number}` : "No live slot"}</span>
-                <small>${escapeHtml(camera.masked_stream_url || "")}</small>
+                <strong>${escapeHtml(camera.camera_name)} · ${camera.slot_number != null ? `Slot ${camera.slot_number}` : "No live slot"}</strong>
+                <small>${escapeHtml(camera.rtsp_url || "")}</small>
               </div>
-              <div class="operator-camera-health">${escapeHtml(operatorCameraHealthText(health))}</div>
+              <div class="operator-camera-health" data-camera-health>${escapeHtml(operatorCameraHealthText(health))}</div>
               <label class="operator-camera-block">Block
                 <select data-camera-block>
-                  <option value="">Unassigned</option>
+                  <option value="" disabled ${camera.block_id == null ? "selected" : ""}>Select block</option>
                   ${blocks.map((block) => `<option value="${block.id}" ${Number(camera.block_id) === Number(block.id) ? "selected" : ""}>${escapeHtml(block.name)}</option>`).join("")}
                 </select>
               </label>
               <div class="operator-camera-actions">
-                <button type="button" class="export-button" data-camera-test>Test frame</button>
                 <button type="button" class="export-button" data-camera-reconnect ${camera.is_active ? "" : "disabled"}>Reconnect</button>
                 <button type="button" class="primary-button" data-camera-save>Save</button>
               </div>
-              <span class="operator-camera-state ${status.className}">${escapeHtml(status.label)}</span>
+              <span class="operator-camera-state ${status.className}" data-camera-state>${escapeHtml(status.label)}</span>
             </article>`;
         }).join("") || `<p class="empty">No cameras have been configured.</p>`}
       </div>`;
 
-    container.querySelector("[data-camera-refresh]")?.addEventListener("click", () => void renderOperatorCameraManagement(container));
+    window.clearInterval(operatorCameraRefreshTimer);
+    operatorCameraRefreshTimer = window.setInterval(() => void refreshOperatorCameraStatuses(container), 5000);
     container.querySelectorAll("[data-camera-row]").forEach((row) => {
       const cameraId = row.dataset.cameraRow;
       row.querySelector("[data-camera-save]")?.addEventListener("click", async (event) => {
@@ -4859,9 +4884,10 @@ async function renderOperatorCameraManagement(container) {
         button.disabled = true;
         try {
           const value = row.querySelector("[data-camera-block]").value;
+          if (!value) { toast("Select a block before saving."); return; }
           await api(`/api/v1/cameras/${cameraId}`, { method: "PUT", body: JSON.stringify({ block_id: value ? Number(value) : null }) });
           toast("Camera assignment saved.");
-        } catch (error) { toast(error.message || "Save failed."); }
+        } catch { toast("Could not save the camera assignment. Please try again."); }
         finally { button.disabled = false; }
       });
       row.querySelector("[data-camera-reconnect]")?.addEventListener("click", async (event) => {
@@ -4870,16 +4896,8 @@ async function renderOperatorCameraManagement(container) {
         try {
           await api(`/api/v1/cameras/${cameraId}/reconnect`, { method: "POST" });
           toast("Reconnect started.");
-          window.setTimeout(() => void renderOperatorCameraManagement(container), 800);
-        } catch (error) { toast(error.message || "Reconnect failed."); button.disabled = false; }
-      });
-      row.querySelector("[data-camera-test]")?.addEventListener("click", async (event) => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-          const result = await api(`/api/v1/cameras/${cameraId}/test-frame`, { method: "POST" });
-          toast(result.data?.message || `Camera test: ${result.data?.status || "complete"}`);
-        } catch (error) { toast(error.message || "Camera test failed."); }
+          window.setTimeout(() => void refreshOperatorCameraStatuses(container), 800);
+        } catch { toast("Could not reconnect this camera. Other streams were not interrupted."); }
         finally { button.disabled = false; }
       });
     });

@@ -3963,23 +3963,50 @@ def _camera_operations_payload() -> list[dict[str, Any]]:
     for camera in cameras:
         stream = streams.get(str(camera["id"])) or {}
         operator_settings = settings.get(str(camera["id"])) or {}
+        raw_status = str(stream.get("status") or camera.get("status") or "").lower()
+        if raw_status in {"online", "connected"}:
+            operator_status = "live"
+        elif camera.get("is_active") and raw_status not in {"offline", "failed", "timeout", "stopped"}:
+            operator_status = "waiting"
+        else:
+            operator_status = "offline"
+        fps = stream.get("fps") or stream.get("current_fps") or 0
+        last_frame = stream.get("last_frame_at")
+        decode_errors = stream.get("decode_errors", 0)
+        reconnect_count = stream.get("reconnect_count", 0)
         row = dict(camera)
         row.update({
+            "camera_id": camera["id"],
+            "camera_name": camera["name"],
+            "rtsp_url": camera.get("masked_stream_url", ""),
+            "status": operator_status,
+            "fps": fps,
+            "last_frame": last_frame,
+            "decode_errors": decode_errors,
+            "reconnect_count": reconnect_count,
             "block_id": operator_settings.get("block_id"),
             "block_name": operator_settings.get("block_name"),
             "health": {
-                "status": stream.get("status") or ("waiting" if camera.get("is_active") else camera.get("status", "offline")),
-                "fps": stream.get("fps") or stream.get("current_fps") or 0,
-                "last_frame_at": stream.get("last_frame_at"),
+                "status": operator_status,
+                "fps": fps,
+                "last_frame_at": last_frame,
                 "frame_age_ms": stream.get("frame_age_ms"),
-                "reconnect_count": stream.get("reconnect_count", 0),
-                "decode_errors": stream.get("decode_errors", 0),
+                "reconnect_count": reconnect_count,
+                "decode_errors": decode_errors,
                 "stream_latency_ms": stream.get("stream_latency_ms") or stream.get("latency_ms"),
                 "last_error": stream.get("last_error"),
             },
         })
         payload.append(row)
     return payload
+
+
+@app.get("/api/v1/blocks")
+def list_camera_assignment_blocks() -> dict[str, Any]:
+    blocks = VisionConfigDB(
+        os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db"))
+    ).list_blocks()
+    return {"data": blocks, "meta": {"count": len(blocks)}}
 
 
 @app.get("/api/v1/cameras")
@@ -3995,6 +4022,8 @@ def update_operator_camera(camera_id: int, body: CameraOperationsUpdate) -> dict
     current = db.get_camera(camera_id, include_secret=True)
     if current is None:
         raise HTTPException(status_code=404, detail="Camera not found.")
+    if body.block_id is None:
+        raise HTTPException(status_code=422, detail="Select a block before saving this camera.")
     if body.stream_url is not None:
         _endpoint, validation_error = _camera_stream_endpoint(body.stream_url)
         if validation_error:
