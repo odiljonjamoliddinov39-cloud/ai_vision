@@ -363,8 +363,27 @@ def _start_stream_for_camera(camera: dict[str, Any]) -> dict[str, Any]:
             source=str(camera["stream_url"]),
             slot_number=camera.get("slot_number"),
             snapshot_dir=SNAPSHOT_DIR,
+            width=_bounded_stream_int("STREAM_FRAME_WIDTH", 1280, 240, 1280),
+            jpeg_quality=_bounded_stream_int("STREAM_JPEG_QUALITY", 85, 20, 90),
+            preview_fps=_bounded_stream_float("STREAM_PREVIEW_FPS", 12.0, 0.5, 30.0),
         )
     )
+
+
+def _bounded_stream_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _bounded_stream_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
 
 
 def _seed_cameras_from_environment(db: CameraDB) -> None:
@@ -377,13 +396,6 @@ def _seed_cameras_from_environment(db: CameraDB) -> None:
 
     host = os.getenv("CAMERA_CONTROLLER_HOST", "").strip()
     if not host:
-        return
-
-    existing_active = db.list_active_cameras(include_secret=False)
-    if existing_active and not (
-        len(existing_active) == 1
-        and str(existing_active[0].get("masked_stream_url", "")).strip().lower() == "dummy"
-    ):
         return
 
     protocol = os.getenv("CAMERA_CONTROLLER_PROTOCOL", "rtsp").strip().lower()
@@ -405,6 +417,37 @@ def _seed_cameras_from_environment(db: CameraDB) -> None:
     except ValueError:
         return
 
+    legacy_channels = {2, 5, 6, 16, 20, 23, 25}
+    expand_legacy_seed = (
+        os.getenv("CAMERA_CONTROLLER_EXPAND_ALL", "true").strip().lower()
+        in {"1", "true", "yes", "on"}
+        and channels is not None
+        and set(channels) == legacy_channels
+    )
+    existing_active = db.list_active_cameras(include_secret=False)
+    only_dummy = (
+        len(existing_active) == 1
+        and str(existing_active[0].get("masked_stream_url", "")).strip().lower() == "dummy"
+    )
+    if existing_active and not only_dummy and not expand_legacy_seed:
+        return
+
+    stream_template = os.getenv(
+        "CAMERA_CONTROLLER_STREAM_TEMPLATE",
+        "/Streaming/Channels/{channel}01",
+    )
+    if expand_legacy_seed:
+        channels = list(range(1, 27))
+        stream_template = re.sub(r"01$", "02", stream_template)
+        os.environ.setdefault("STREAM_FRAME_WIDTH", "640")
+        os.environ.setdefault("STREAM_PREVIEW_FPS", "6")
+        os.environ.setdefault("STREAM_JPEG_QUALITY", "70")
+        for camera in db.list_cameras(include_secret=True):
+            stream_url = str(camera.get("stream_url") or "")
+            endpoint = urlsplit(stream_url)
+            if endpoint.hostname == host and re.search(r"/Streaming/Channels/\d+01$", endpoint.path):
+                db.delete_camera(int(camera["id"]))
+
     controller = CameraControllerCreate(
         name=os.getenv("CAMERA_CONTROLLER_NAME", "Warehouse NVR Substream"),
         host=host,
@@ -416,10 +459,7 @@ def _seed_cameras_from_environment(db: CameraDB) -> None:
         channel_start=max(1, channel_start),
         channels=channels,
         start_slot=max(1, min(start_slot, MAX_CAMERA_SLOTS)),
-        stream_path_template=os.getenv(
-            "CAMERA_CONTROLLER_STREAM_TEMPLATE",
-            "/Streaming/Channels/{channel}01",
-        ),
+        stream_path_template=stream_template,
         camera_name_template=os.getenv(
             "CAMERA_CONTROLLER_CAMERA_NAME_TEMPLATE",
             "{controller} Camera {channel}",

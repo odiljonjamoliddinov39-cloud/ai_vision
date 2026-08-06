@@ -188,6 +188,9 @@ class StreamManager:
     def ensure_from_cameras(self, cameras: list[dict[str, Any]]) -> dict[str, Any]:
         seen: set[str] = set()
         statuses = []
+        frame_width = _bounded_env_int("STREAM_FRAME_WIDTH", 1280, 240, 1280)
+        jpeg_quality = _bounded_env_int("STREAM_JPEG_QUALITY", 85, 20, 90)
+        preview_fps = _bounded_env_float("STREAM_PREVIEW_FPS", 12.0, 0.5, 30.0)
         for camera in cameras:
             if not camera.get("is_active"):
                 continue
@@ -201,6 +204,9 @@ class StreamManager:
                         source=str(camera.get("stream_url") or camera.get("source") or ""),
                         slot_number=camera.get("slot_number"),
                         snapshot_dir=self.snapshot_dir,
+                        width=frame_width,
+                        jpeg_quality=jpeg_quality,
+                        preview_fps=preview_fps,
                     )
                 )
             )
@@ -610,6 +616,22 @@ def _ffmpeg_executable() -> str:
         return get_ffmpeg_exe()
     except Exception:
         return "ffmpeg"
+
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _bounded_env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
 
 
 def _ffmpeg_command(
