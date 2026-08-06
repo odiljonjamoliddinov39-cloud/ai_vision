@@ -2402,7 +2402,7 @@ input {
 .operator-camera-health { color: var(--muted); }
 .operator-camera-identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .operator-camera-block { display: grid; gap: 5px; font-size: 12px; }
-.operator-camera-block select { min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: var(--panel); color: var(--ink); }
+.operator-camera-block input { min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: var(--panel); color: var(--ink); }
 .operator-camera-state { justify-self: end; font-weight: 700; }
 .operator-camera-state.healthy { color: #16a34a; }
 .operator-camera-state.warning { color: #d97706; }
