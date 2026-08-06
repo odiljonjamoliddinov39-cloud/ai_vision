@@ -82,9 +82,46 @@ def test_camera_management_ui_has_only_approved_controls():
     source = (server.ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
     camera_section = source[source.index("async function renderOperatorCameraManagement"):source.index("async function applySearchRow")]
     assert 'api("/api/v1/cameras"' in camera_section
-    assert 'api("/api/v1/blocks"' in camera_section
+    assert 'data-camera-block-name' in camera_section
+    assert 'JSON.stringify({ block_name: blockName })' in camera_section
+    assert '<select data-camera-block' not in camera_section
     assert "data-camera-reconnect" in camera_section
     assert "data-camera-save" in camera_section
     assert "data-camera-test" not in camera_section
     assert "data-camera-refresh" not in camera_section
     assert "window.setInterval" in camera_section
+
+
+def test_typed_block_name_is_created_and_assigned(tmp_path, monkeypatch):
+    camera_db = CameraDB(str(tmp_path / "cameras.db"))
+    camera = camera_db.add_camera("Camera 1", "rtsp://example.test/1")
+    vision_path = str(tmp_path / "vision.db")
+    monkeypatch.setattr(server, "_get_camera_db", lambda: camera_db)
+    monkeypatch.setattr(server, "_camera_operations_payload", lambda: [{"id": camera["id"], "block_name": "Warehouse North"}])
+    monkeypatch.setenv("VISION_DB_PATH", vision_path)
+
+    response = server.update_operator_camera(
+        camera["id"], server.CameraOperationsUpdate(block_name="  Warehouse North  ")
+    )
+
+    blocks = VisionConfigDB(vision_path).list_blocks()
+    settings = VisionConfigDB(vision_path).get_camera_settings_map([camera["id"]])[str(camera["id"])]
+    assert response["data"]["block_name"] == "Warehouse North"
+    assert [block["name"] for block in blocks] == ["Warehouse North"]
+    assert settings["block_id"] == blocks[0]["id"]
+
+
+def test_typed_block_name_reuses_existing_block_case_insensitively(tmp_path, monkeypatch):
+    camera_db = CameraDB(str(tmp_path / "cameras.db"))
+    camera = camera_db.add_camera("Camera 1", "rtsp://example.test/1")
+    vision_path = str(tmp_path / "vision.db")
+    config_db = VisionConfigDB(vision_path)
+    existing = config_db.create_block("Packaging")
+    monkeypatch.setattr(server, "_get_camera_db", lambda: camera_db)
+    monkeypatch.setattr(server, "_camera_operations_payload", lambda: [{"id": camera["id"]}])
+    monkeypatch.setenv("VISION_DB_PATH", vision_path)
+
+    server.update_operator_camera(camera["id"], server.CameraOperationsUpdate(block_name="packaging"))
+
+    assert len(config_db.list_blocks()) == 1
+    assert config_db.get_camera_settings_map([camera["id"]])[str(camera["id"])]["block_id"] == existing["id"]

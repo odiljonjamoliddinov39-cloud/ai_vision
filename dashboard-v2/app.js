@@ -4835,13 +4835,9 @@ async function renderOperatorCameraManagement(container) {
   if (!container) return;
   container.innerHTML = `<p class="empty">Loading persisted camera assignments and live health…</p>`;
   try {
-    const [payload, blocksPayload] = await Promise.all([
-      api("/api/v1/cameras", { force: true }),
-      api("/api/v1/blocks", { force: true }),
-    ]);
+    const payload = await api("/api/v1/cameras", { force: true });
     if (!container.isConnected) return;
     const cameras = payload.data || [];
-    const blocks = blocksPayload.data || [];
     const active = cameras.filter((camera) => camera.is_active);
     const live = active.filter((camera) => ["live", "online", "connected"].includes(String(camera.status || camera.health?.status || "").toLowerCase())).length;
     container.innerHTML = `
@@ -4863,10 +4859,7 @@ async function renderOperatorCameraManagement(container) {
               </div>
               <div class="operator-camera-health" data-camera-health>${escapeHtml(operatorCameraHealthText(health))}</div>
               <label class="operator-camera-block">Block
-                <select data-camera-block>
-                  <option value="" disabled ${camera.block_id == null ? "selected" : ""}>Select block</option>
-                  ${blocks.map((block) => `<option value="${block.id}" ${Number(camera.block_id) === Number(block.id) ? "selected" : ""}>${escapeHtml(block.name)}</option>`).join("")}
-                </select>
+                <input type="text" data-camera-block-name value="${escapeHtml(camera.block_name || "")}" placeholder="Type block name" maxlength="200" autocomplete="off">
               </label>
               <div class="operator-camera-actions">
                 <button type="button" class="export-button" data-camera-reconnect ${camera.is_active ? "" : "disabled"}>Reconnect</button>
@@ -4885,9 +4878,9 @@ async function renderOperatorCameraManagement(container) {
         const button = event.currentTarget;
         button.disabled = true;
         try {
-          const value = row.querySelector("[data-camera-block]").value;
-          if (!value) { toast("Select a block before saving."); return; }
-          await api(`/api/v1/cameras/${cameraId}`, { method: "PUT", body: JSON.stringify({ block_id: value ? Number(value) : null }) });
+          const blockName = row.querySelector("[data-camera-block-name]").value.trim();
+          if (!blockName) { toast("Enter a block name before saving."); return; }
+          await api(`/api/v1/cameras/${cameraId}`, { method: "PUT", body: JSON.stringify({ block_name: blockName }) });
           toast("Camera assignment saved.");
         } catch { toast("Could not save the camera assignment. Please try again."); }
         finally { button.disabled = false; }

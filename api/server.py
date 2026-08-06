@@ -934,6 +934,7 @@ class CameraOperationsUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     stream_url: str | None = Field(default=None, min_length=1)
     block_id: int | None = None
+    block_name: str | None = Field(default=None, max_length=200)
 
 
 class CameraSlotRequest(BaseModel):
@@ -4093,15 +4094,23 @@ def update_operator_camera(camera_id: int, body: CameraOperationsUpdate) -> dict
     current = db.get_camera(camera_id, include_secret=True)
     if current is None:
         raise HTTPException(status_code=404, detail="Camera not found.")
-    if body.block_id is None:
-        raise HTTPException(status_code=422, detail="Select a block before saving this camera.")
+    block_name = body.block_name.strip() if body.block_name is not None else None
+    if body.block_id is None and not block_name:
+        raise HTTPException(status_code=422, detail="Enter a block name before saving this camera.")
     if body.stream_url is not None:
         _endpoint, validation_error = _camera_stream_endpoint(body.stream_url)
         if validation_error:
             raise HTTPException(status_code=400, detail=validation_error)
     try:
         db.update_camera(camera_id, name=body.name, stream_url=body.stream_url)
-        VisionConfigDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db"))).assign_camera_block(camera_id, body.block_id)
+        config_db = VisionConfigDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db")))
+        block_id = body.block_id
+        if block_name:
+            block = next((row for row in config_db.list_blocks() if row["name"].casefold() == block_name.casefold()), None)
+            if block is None:
+                block = config_db.create_block(block_name)
+            block_id = int(block["id"])
+        config_db.assign_camera_block(camera_id, block_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if current.get("is_active") and (body.name is not None or body.stream_url is not None):
