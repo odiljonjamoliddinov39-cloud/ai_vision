@@ -30,6 +30,18 @@ def create_block(body: BlockInput):
     try: return {"data": config().create_block(body.name, body.description), "meta": {}}
     except Exception as exc: raise HTTPException(409, detail={"error_code": "BLOCK_CONFLICT", "message": str(exc), "service": "config"}) from exc
 
+@router.put("/blocks/{block_id}")
+def update_block(block_id: int, body: BlockInput):
+    try: value = config().update_block(block_id, name=body.name, description=body.description)
+    except Exception as exc: raise HTTPException(409, detail={"error_code": "BLOCK_CONFLICT", "message": str(exc), "service": "config"}) from exc
+    if value is None: raise HTTPException(404, detail={"error_code": "BLOCK_NOT_FOUND", "message": "Block not found", "service": "config"})
+    return {"data": value, "meta": {}}
+
+@router.delete("/blocks/{block_id}", status_code=204)
+def delete_block(block_id: int):
+    if not config().delete_block(block_id):
+        raise HTTPException(404, detail={"error_code": "BLOCK_NOT_FOUND", "message": "Block not found", "service": "config"})
+
 @router.get("/cameras/{camera_id}/rules")
 def get_rules(camera_id: str): return {"data": config().get_camera_rules(camera_id), "meta": {}}
 
@@ -46,12 +58,24 @@ def scans(limit: int = Query(100, ge=1, le=500), block_id: str | None = None):
     data = history().list_scans(limit, block_id)
     return {"data": data, "meta": {"count": len(data), "limit": limit}}
 
+@router.get("/scan-runs/{scan_run_id}")
+def scan_details(scan_run_id: int):
+    data = history().scan_details(scan_run_id)
+    if data is None: raise HTTPException(404, detail={"error_code": "SCAN_NOT_FOUND", "message": "Scan not found", "service": "history"})
+    return {"data": data, "meta": {}}
+
 @router.get("/events")
-def events(limit: int = Query(100, ge=1, le=500), camera_id: str | None = None):
-    data = history().list_events(limit, camera_id)
+def events(limit: int = Query(100, ge=1, le=500), camera_id: str | None = None,
+           block_id: str | None = None, class_id: int | None = None,
+           date_from: str | None = None, date_to: str | None = None):
+    data = history().list_events(limit, camera_id, block_id, class_id, date_from, date_to)
     return {"data": data, "meta": {"count": len(data), "limit": limit}}
 
 @router.get("/counts")
 def counts(block_id: str | None = None, camera_id: str | None = None):
     data = history().count_summary(block_id, camera_id)
     return {"data": data, "meta": {"count": len(data)}}
+
+@router.get("/analytics/summary")
+def analytics_summary(block_id: str | None = None, camera_id: str | None = None):
+    return {"data": history().analytics_summary(block_id, camera_id), "meta": {}}

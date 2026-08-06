@@ -40,13 +40,15 @@ def _live_frame_request(slot: int) -> Request:
 def test_dashboard_continuously_refreshes_mounted_live_frames():
     source = (ROOT / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
-    assert source.count("data-live-frame data-live-slot") == 3
+    # Live monitoring, feed cards, camera tools, and the persisted zone editor
+    # all mount canvases serviced by the same WebSocket frame transport.
+    assert source.count("data-live-frame data-live-slot") == 4
     assert "new WebSocket(liveWebSocketUrl(slots))" in source
     assert 'socket.binaryType = "arraybuffer";' in source
     assert 'socket.addEventListener("message"' in source
     assert "new IntersectionObserver(" not in source
     assert "window.setInterval(reconcileLiveStreams" not in source
-    assert source.count("<canvas data-live-frame") == 2
+    assert source.count("<canvas data-live-frame") == 3
     assert '<canvas class="feed-stale" data-live-frame' in source
     assert 'document.addEventListener("visibilitychange"' not in source
 

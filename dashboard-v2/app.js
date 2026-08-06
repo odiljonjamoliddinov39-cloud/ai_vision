@@ -2571,14 +2571,19 @@ async function deleteNvrCameras(nvr) {
 }
 
 function accountMenus(role) {
-  // Training-focused deployment: only camera control, the live feed, and the
-  // YOLO Training workspace. The analytics / AI Check-in / warehouse modules
-  // are intentionally hidden here.
   const menus = [];
-  if (role.access?.camera) menus.push({ id: "camera", label: "Camera Control", sub: "NVR & vision quality" });
-  if (role.access?.camera) menus.push({ id: "feed", label: "Camera Feed", sub: "Live slots" });
+  menus.push({ id: "home", label: "Dashboard", sub: "Operations overview" });
+  if (role.access?.camera) menus.push({ id: "feed", label: "Live Cameras", sub: "Live slots" });
+  if (role.access?.camera) menus.push({ id: "camera", label: "Camera Management", sub: "Streams & health" });
+  if (role.access?.camera) menus.push({ id: "blocks", label: "Blocks", sub: "Factory areas" });
+  if (role.access?.camera) menus.push({ id: "zone_editor", label: "Zone Editor", sub: "Draw camera zones" });
+  if (role.access?.camera) menus.push({ id: "rules", label: "Rules", sub: "Counting configuration" });
+  menus.push({ id: "ops_analytics", label: "Analytics", sub: "Block performance" });
+  menus.push({ id: "vision_events", label: "Events", sub: "Detection timeline" });
+  menus.push({ id: "scan_history", label: "Scan History", sub: "Persistent scans" });
   menus.push({ id: "training", label: "YOLO Training", sub: "Dataset & injection" });
-  menus.push({ id: "analytics", label: "Analytics", sub: "Scan live cameras" });
+  menus.push({ id: "settings", label: "Settings", sub: "Global configuration" });
+  menus.push({ id: "health", label: "System Health", sub: "Runtime diagnostics" });
   return menus;
 }
 
@@ -4905,6 +4910,103 @@ async function applySearchRow(row, silent) {
   }
 }
 
+let operatorRuleDraft = { cameraId: null, mode: "counting_zone", zones: {} };
+
+async function renderBlocksPage(container) {
+  try {
+    const [blocksPayload, camerasPayload, countsPayload] = await Promise.all([
+      api("/api/v1/blocks", { force: true }), api("/api/v1/cameras", { force: true }), api("/api/v1/counts", { force: true }),
+    ]);
+    if (!container.isConnected || accountModule !== "blocks") return;
+    const cameras = camerasPayload.data || [];
+    const countByBlock = new Map();
+    (countsPayload.data || []).forEach((row) => countByBlock.set(String(row.block_id), (countByBlock.get(String(row.block_id)) || 0) + Number(row.quantity || 0)));
+    container.innerHTML = `
+      <section class="detected-list platform-page">
+        <header class="detected-list-head"><div><h3>Block Management</h3><p>Factory areas, assigned cameras, and canonical live counts.</p></div></header>
+        <form class="ops-inline-form" data-block-create><input name="name" required maxlength="100" placeholder="Block name"/><input name="description" maxlength="500" placeholder="Description"/><button class="primary-button">Add block</button></form>
+        <div class="platform-card-grid">${(blocksPayload.data || []).map((block) => {
+          const assigned = cameras.filter((camera) => Number(camera.block_id) === Number(block.id));
+          return `<article class="platform-card" data-block-id="${block.id}"><div><strong>${escapeHtml(block.name)}</strong><span>${assigned.length} cameras</span></div><p>${escapeHtml(block.description || "No description")}</p><p>Total count: <strong>${Number(countByBlock.get(String(block.id)) || 0).toLocaleString()}</strong></p><small>${escapeHtml(assigned.map((camera) => camera.name).join(", ") || "No cameras assigned")}</small><button type="button" class="cc-remove" data-delete-block>Delete</button></article>`;
+        }).join("") || `<p class="empty">Create the first factory block.</p>`}</div>
+      </section>`;
+    container.querySelector("[data-block-create]")?.addEventListener("submit", async (event) => {
+      event.preventDefault(); const form = new FormData(event.currentTarget);
+      try { await api("/api/v1/blocks", { method: "POST", body: JSON.stringify({ name: form.get("name"), description: form.get("description") || null }) }); await renderBlocksPage(container); }
+      catch (error) { toast(error.message); }
+    });
+    container.querySelectorAll("[data-block-id]").forEach((card) => card.querySelector("[data-delete-block]")?.addEventListener("click", async () => {
+      try { await api(`/api/v1/blocks/${card.dataset.blockId}`, { method: "DELETE" }); await renderBlocksPage(container); }
+      catch (error) { toast(error.message); }
+    }));
+  } catch (error) { if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
+function drawOperatorZones(canvas, zones, activeMode) {
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(rect.width)); canvas.height = Math.max(1, Math.round(rect.height));
+  const ctx = canvas.getContext("2d"); ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const colors = { counting_zone: "#22c55e", ignore_zone: "#ef4444", entry_line: "#3b82f6", exit_line: "#f59e0b" };
+  Object.entries(zones || {}).forEach(([kind, points]) => {
+    if (!points?.length) return; ctx.beginPath(); ctx.strokeStyle = colors[kind] || "#fff"; ctx.lineWidth = kind === activeMode ? 4 : 2;
+    points.forEach((point, index) => { const x = point[0] * canvas.width, y = point[1] * canvas.height; index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    if (kind.endsWith("zone") && points.length > 2) ctx.closePath(); ctx.stroke();
+    points.forEach((point) => { ctx.beginPath(); ctx.fillStyle = colors[kind] || "#fff"; ctx.arc(point[0] * canvas.width, point[1] * canvas.height, 5, 0, Math.PI * 2); ctx.fill(); });
+  });
+}
+
+async function renderRuleEditor(container, zoneMode = false) {
+  try {
+    const cameraPayload = await api("/api/v1/cameras", { force: true });
+    const cameras = (cameraPayload.data || []).filter((camera) => camera.is_active);
+    const selected = cameras.find((camera) => String(camera.id) === String(operatorRuleDraft.cameraId)) || cameras[0];
+    operatorRuleDraft.cameraId = selected?.id || null;
+    const rulesPayload = selected ? await api(`/api/v1/cameras/${selected.id}/rules`, { force: true }) : { data: {} };
+    const settings = rulesPayload.data?.settings || {};
+    operatorRuleDraft.zones = rulesPayload.data?.zones || {};
+    if (!container.isConnected || !["rules", "zone_editor"].includes(accountModule)) return;
+    container.innerHTML = `<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>${zoneMode ? "Zone Editor" : "Counting Rules"}</h3><p>Configuration is persisted per camera in VisionConfigDB.</p></div></header>
+      ${cameras.length ? `<div class="rule-editor-toolbar"><label>Camera<select data-rule-camera>${cameras.map((camera) => `<option value="${camera.id}" ${camera.id === selected.id ? "selected" : ""}>${escapeHtml(camera.name)} · Slot ${camera.slot_number}</option>`).join("")}</select></label>
+      <label>Minimum confidence<input data-rule-confidence type="number" min="0" max="1" step="0.01" value="${Number(settings.confidence ?? .35)}"/></label><label>Minimum track age<input data-rule-age type="number" min="1" max="1000" value="${Number(settings.minimum_track_age ?? 4)}"/></label><label>Direction<select data-rule-direction><option value="1" ${Number(settings.direction ?? 1) === 1 ? "selected" : ""}>Entry → Exit</option><option value="-1" ${Number(settings.direction) === -1 ? "selected" : ""}>Exit → Entry</option></select></label></div>
+      <div class="zone-mode-buttons">${["counting_zone","ignore_zone","entry_line","exit_line"].map((mode) => `<button type="button" class="cc-chip ${operatorRuleDraft.mode === mode ? "on" : ""}" data-zone-mode="${mode}">${mode.replaceAll("_", " ")}</button>`).join("")}<button type="button" class="cc-chip" data-zone-clear>Clear selected</button></div>
+      <div class="zone-editor-stage"><canvas data-live-frame data-live-slot="${selected.slot_number}" role="img" aria-label="Latest frame for ${escapeAttr(selected.name)}"></canvas><canvas data-zone-overlay></canvas></div>
+      <p class="chart-note">Click the live frame to add normalized points. Lines use two points; zones use three or more.</p><button type="button" class="primary-button" data-rule-save>Save configuration</button>` : `<p class="empty">Activate a camera before configuring rules.</p>`}</section>`;
+    if (!selected) return;
+    reconcileLiveStreams();
+    const overlay = container.querySelector("[data-zone-overlay]");
+    const repaint = () => drawOperatorZones(overlay, operatorRuleDraft.zones, operatorRuleDraft.mode);
+    requestAnimationFrame(repaint); window.setTimeout(repaint, 250);
+    container.querySelector("[data-rule-camera]")?.addEventListener("change", (event) => { operatorRuleDraft.cameraId = event.target.value; void renderRuleEditor(container, zoneMode); });
+    container.querySelectorAll("[data-zone-mode]").forEach((button) => button.addEventListener("click", () => { operatorRuleDraft.mode = button.dataset.zoneMode; void renderRuleEditor(container, zoneMode); }));
+    container.querySelector("[data-zone-clear]")?.addEventListener("click", () => { operatorRuleDraft.zones[operatorRuleDraft.mode] = []; repaint(); });
+    overlay?.addEventListener("click", (event) => { const rect = overlay.getBoundingClientRect(); const point = [(event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height]; const max = operatorRuleDraft.mode.endsWith("line") ? 2 : 20; const points = operatorRuleDraft.zones[operatorRuleDraft.mode] || []; operatorRuleDraft.zones[operatorRuleDraft.mode] = points.length >= max ? [point] : [...points, point]; repaint(); });
+    container.querySelector("[data-rule-save]")?.addEventListener("click", async () => {
+      try { await api(`/api/v1/cameras/${selected.id}/rules`, { method: "PUT", body: JSON.stringify({ block_id: selected.block_id, confidence: Number(container.querySelector("[data-rule-confidence]").value), minimum_track_age: Number(container.querySelector("[data-rule-age]").value), direction: Number(container.querySelector("[data-rule-direction]").value), zones: operatorRuleDraft.zones }) }); toast("Camera rules saved."); }
+      catch (error) { toast(error.message); }
+    });
+  } catch (error) { if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
+async function renderScanHistoryPage(container) {
+  try {
+    const payload = await api("/api/v1/scan-runs?limit=200", { force: true }); if (!container.isConnected || accountModule !== "scan_history") return;
+    container.innerHTML = `<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>Persistent Scan History</h3><p>Every canonical LiveVisionPipeline scan remains traceable to its camera and block.</p></div></header><div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Date / time</th><th>Block</th><th>Camera</th><th>Frames</th><th>Objects</th><th>Status</th></tr></thead><tbody>${(payload.data || []).map((scan) => `<tr data-scan-id="${scan.id}"><td>${escapeHtml(formatCatalogTime(scan.started_at))}</td><td>${escapeHtml(scan.block_id || "Unassigned")}</td><td>${escapeHtml(scan.camera_id)}</td><td>${Number(scan.frames).toLocaleString()}</td><td>${Number(scan.detections).toLocaleString()}</td><td>${escapeHtml(scan.status)}</td></tr>`).join("") || `<tr><td colspan="6">No scans yet.</td></tr>`}</tbody></table></div><div data-scan-detail></div></section>`;
+    container.querySelectorAll("[data-scan-id]").forEach((row) => row.addEventListener("click", async () => { const detail = await api(`/api/v1/scan-runs/${row.dataset.scanId}`, { force: true }); const data = detail.data; container.querySelector("[data-scan-detail]").innerHTML = `<section class="scan-detail"><h4>Scan ${data.scan.id}</h4><p>${data.detections.length} detections · ${data.events.length} events · Stream ${escapeHtml(data.scan.stream_id)}</p><pre>${escapeHtml(JSON.stringify(data.events.slice(0, 20), null, 2))}</pre></section>`; }));
+  } catch (error) { if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
+async function renderVisionEventsPage(container) {
+  try {
+    const [events, cameras, blocks] = await Promise.all([api("/api/v1/events?limit=250", { force: true }), api("/api/v1/cameras", { force: true }), api("/api/v1/blocks", { force: true })]); if (!container.isConnected || accountModule !== "vision_events") return;
+    container.innerHTML = `<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>Event Viewer</h3><p>Canonical events traceable to live frames.</p></div></header><div class="ops-filter-row"><select data-event-block><option value="">All blocks</option>${(blocks.data || []).map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join("")}</select><select data-event-camera><option value="">All cameras</option>${(cameras.data || []).map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("")}</select><input type="date" data-event-date/><button class="export-button" data-event-filter>Filter</button></div><div data-event-results>${eventsTableHtml((events.data || []).map((event) => ({ time: event.created_at, source: event.block_id || "Unassigned", type: String(event.event_type).replaceAll("_", " "), camera: event.camera_id, object: event.payload?.product_name || `Track ${event.track_id ?? "-"}`, status: event.confidence != null ? `${(Number(event.confidence) * 100).toFixed(1)}%` : "Recorded", severity: "done" })))}</div></section>`;
+    container.querySelector("[data-event-filter]")?.addEventListener("click", async () => { const block = container.querySelector("[data-event-block]").value, camera = container.querySelector("[data-event-camera]").value, date = container.querySelector("[data-event-date]").value; const query = new URLSearchParams({ limit: "250" }); if (block) query.set("block_id", block); if (camera) query.set("camera_id", camera); if (date) { query.set("date_from", `${date}T00:00:00`); query.set("date_to", `${date}T23:59:59`); } const filtered = await api(`/api/v1/events?${query}`, { force: true }); container.querySelector("[data-event-results]").innerHTML = eventsTableHtml((filtered.data || []).map((event) => ({ time: event.created_at, source: event.block_id || "Unassigned", type: String(event.event_type).replaceAll("_", " "), camera: event.camera_id, object: event.payload?.product_name || `Track ${event.track_id ?? "-"}`, status: "Recorded", severity: "done" }))); });
+  } catch (error) { if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
+async function renderOperationsAnalytics(container) {
+  try { const [summary, counts, cameras] = await Promise.all([api("/api/v1/analytics/summary", { force: true }), api("/api/v1/counts", { force: true }), api("/api/v1/cameras", { force: true })]); if (!container.isConnected || accountModule !== "ops_analytics") return; const health = cameras.data || [], live = health.filter((c) => ["online","connected"].includes(String(c.health?.status).toLowerCase())).length; container.innerHTML = `<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>Operations Analytics</h3><p>Counts and scan statistics from VisionDB.</p></div></header>${platformSummaryHtml([{label:"Total Count",value:Number(summary.data.total_count||0).toLocaleString()},{label:"Active Cameras",value:live.toLocaleString()},{label:"Offline Cameras",value:(health.length-live).toLocaleString()},{label:"Events",value:Number(summary.data.events||0).toLocaleString()},{label:"Scan History",value:Number(summary.data.scans||0).toLocaleString()}])}<pre>${escapeHtml(JSON.stringify(counts.data || [], null, 2))}</pre></section>`; } catch (error) { if (container.isConnected) container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
 function renderAccountModule() {
   const { company, role } = accountState;
   companyConfig(company);
@@ -4932,6 +5034,20 @@ function renderAccountModule() {
   }
 
   const config = company.cameraConfig;
+
+  if (menu.id === "home") {
+    els.moduleContent.innerHTML = `<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>Factory Operations</h3><p>Configure cameras, blocks, zones, rules, and review canonical live-pipeline history from this workspace.</p></div></header>${platformSummaryHtml([{label:"Configured NVRs",value:config.nvrs.length.toLocaleString()},{label:"Assigned channels",value:config.nvrs.reduce((sum,nvr)=>sum+(nvr.channelsDetail||[]).filter((channel)=>channel.slot_number!=null).length,0).toLocaleString()},{label:"Navigation",value:"Operator ready"}])}</section>`;
+    return;
+  }
+
+  if (menu.id === "blocks") { els.moduleContent.innerHTML = `<p class="empty">Loading blocks…</p>`; void renderBlocksPage(els.moduleContent); return; }
+  if (menu.id === "zone_editor") { els.moduleContent.innerHTML = `<p class="empty">Loading zone editor…</p>`; void renderRuleEditor(els.moduleContent, true); return; }
+  if (menu.id === "rules") { els.moduleContent.innerHTML = `<p class="empty">Loading rules…</p>`; void renderRuleEditor(els.moduleContent, false); return; }
+  if (menu.id === "scan_history") { els.moduleContent.innerHTML = `<p class="empty">Loading scan history…</p>`; void renderScanHistoryPage(els.moduleContent); return; }
+  if (menu.id === "vision_events") { els.moduleContent.innerHTML = `<p class="empty">Loading events…</p>`; void renderVisionEventsPage(els.moduleContent); return; }
+  if (menu.id === "ops_analytics") { els.moduleContent.innerHTML = `<p class="empty">Loading analytics…</p>`; void renderOperationsAnalytics(els.moduleContent); return; }
+  if (menu.id === "settings") { renderSettings(els.moduleContent); return; }
+  if (menu.id === "health") { els.moduleContent.innerHTML = `<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>System Health</h3><p>Live camera health is available in Camera Management; runtime services are monitored continuously by the backend watchdog.</p></div></header></section>`; return; }
 
   if (menu.id === "camera") {
     const atLimit = config.nvrs.length >= MAX_NVRS;
