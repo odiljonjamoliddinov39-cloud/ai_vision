@@ -116,19 +116,71 @@ class VisionDB:
         with self.db.connect() as conn:
             return [dict(row) for row in conn.execute(self.db.sql(query), tuple(params)).fetchall()]
 
-    def list_events(self, limit: int = 100, camera_id: str | None = None) -> list[dict]:
-        query = "SELECT * FROM events"
-        params = []
+    def scan_details(self, scan_run_id: int) -> dict | None:
+        with self.db.connect() as conn:
+            scan = conn.execute(self.db.sql("SELECT * FROM scan_runs WHERE id=?"), (scan_run_id,)).fetchone()
+            if not scan:
+                return None
+            detections = [dict(row) for row in conn.execute(
+                self.db.sql("SELECT * FROM detections WHERE scan_run_id=? ORDER BY id"), (scan_run_id,)
+            ).fetchall()]
+            events = [dict(row) for row in conn.execute(
+                self.db.sql("SELECT * FROM events WHERE scan_run_id=? ORDER BY id"), (scan_run_id,)
+            ).fetchall()]
+        for detection in detections:
+            detection["bbox"] = json.loads(detection["bbox"])
+        for event in events:
+            event["payload"] = json.loads(event["payload"])
+        return {"scan": dict(scan), "detections": detections, "events": events}
+
+    def list_events(self, limit: int = 100, camera_id: str | None = None,
+                    block_id: str | None = None, class_id: int | None = None,
+                    date_from: str | None = None, date_to: str | None = None) -> list[dict]:
+        query = """SELECT e.*, sr.block_id, d.class_id, d.confidence, d.recognition_source
+                   FROM events e
+                   LEFT JOIN scan_runs sr ON sr.id=e.scan_run_id
+                   LEFT JOIN detections d ON d.id=e.detection_id"""
+        clauses, params = [], []
         if camera_id:
-            query += " WHERE camera_id = ?"
+            clauses.append("e.camera_id = ?")
             params.append(camera_id)
-        query += " ORDER BY id DESC LIMIT ?"
+        if block_id:
+            clauses.append("sr.block_id = ?")
+            params.append(block_id)
+        if class_id is not None:
+            clauses.append("d.class_id = ?")
+            params.append(class_id)
+        if date_from:
+            clauses.append("e.created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            clauses.append("e.created_at <= ?")
+            params.append(date_to)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY e.id DESC LIMIT ?"
         params.append(max(1, min(limit, 500)))
         with self.db.connect() as conn:
             rows = [dict(row) for row in conn.execute(self.db.sql(query), tuple(params)).fetchall()]
         for row in rows:
             row["payload"] = json.loads(row["payload"])
         return rows
+
+    def analytics_summary(self, block_id: str | None = None, camera_id: str | None = None) -> dict:
+        clauses, params = [], []
+        if block_id:
+            clauses.append("block_id=?"); params.append(block_id)
+        if camera_id:
+            clauses.append("camera_id=?"); params.append(camera_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.db.connect() as conn:
+            scans = conn.execute(self.db.sql(
+                "SELECT COUNT(*) AS scans, COALESCE(SUM(frames),0) AS frames, COALESCE(SUM(detections),0) AS detections FROM scan_runs" + where
+            ), tuple(params)).fetchone()
+            counts = conn.execute(self.db.sql(
+                "SELECT COALESCE(SUM(quantity),0) AS total_count, COUNT(*) AS events FROM counts" + where
+            ), tuple(params)).fetchone()
+        return {**dict(scans), **dict(counts)}
 
     def count_summary(self, block_id: str | None = None, camera_id: str | None = None) -> list[dict]:
         clauses, params = [], []

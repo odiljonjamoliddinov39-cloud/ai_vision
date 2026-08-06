@@ -22,6 +22,13 @@ def test_live_detection_and_count_are_persistent_and_traceable(tmp_path):
     assert event["frame_uuid"] == "frame-1"
     assert count["quantity"] == 1
     assert scan["status"] == "completed"
+    details = db.scan_details(scan_id)
+    assert details["detections"][0]["bbox"] == [1, 2, 3, 4]
+    assert details["events"][0]["frame_uuid"] == "frame-1"
+    assert db.list_events(block_id="block-a", class_id=0)[0]["id"] == event_id
+    assert db.analytics_summary("block-a", "camera-1") == {
+        "scans": 1, "frames": 1, "detections": 1, "total_count": 1, "events": 1,
+    }
 
 
 def test_detection_rejects_missing_trace_fields(tmp_path):

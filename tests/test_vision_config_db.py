@@ -32,3 +32,13 @@ def test_camera_block_assignment_preserves_rules_and_can_be_cleared(tmp_path):
 
     cleared = db.assign_camera_block(7, None)
     assert cleared["block_id"] is None
+
+
+def test_blocks_report_camera_count_and_support_update_delete(tmp_path):
+    db = VisionConfigDB(str(tmp_path / "vision.db"))
+    block = db.create_block("Block A")
+    db.assign_camera_block("camera-1", block["id"])
+    assert db.list_blocks()[0]["camera_count"] == 1
+    assert db.update_block(block["id"], name="Warehouse A", description="Main")["name"] == "Warehouse A"
+    assert db.delete_block(block["id"]) is True
+    assert db.get_camera_settings_map(["camera-1"])["camera-1"]["block_id"] is None

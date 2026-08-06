@@ -31,7 +31,28 @@ class VisionConfigDB:
 
     def list_blocks(self):
         with self.db.connect() as conn:
-            return [dict(row) for row in conn.execute("SELECT * FROM blocks ORDER BY name").fetchall()]
+            rows = conn.execute(
+                """SELECT b.*, COUNT(cs.id) AS camera_count
+                   FROM blocks b LEFT JOIN camera_settings cs ON cs.block_id = b.id
+                   GROUP BY b.id, b.name, b.description ORDER BY b.name"""
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def update_block(self, block_id, *, name, description=None):
+        with self.db.connect() as conn:
+            cursor = conn.execute(
+                self.db.sql("UPDATE blocks SET name=?,description=? WHERE id=?"),
+                (name, description, block_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return next((row for row in self.list_blocks() if int(row["id"]) == int(block_id)), None)
+
+    def delete_block(self, block_id):
+        with self.db.connect() as conn:
+            conn.execute(self.db.sql("UPDATE camera_settings SET block_id=NULL WHERE block_id=?"), (block_id,))
+            cursor = conn.execute(self.db.sql("DELETE FROM blocks WHERE id=?"), (block_id,))
+            return cursor.rowcount > 0
 
     def get_camera_settings_map(self, camera_ids=None):
         """Return persisted operator configuration keyed by camera id."""
