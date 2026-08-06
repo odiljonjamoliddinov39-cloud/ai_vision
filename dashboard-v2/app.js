@@ -1925,11 +1925,13 @@ function renderSettings(container) {
     container.innerHTML = `<p class="chart-note">${escapeHtml(uiText("Loading settings...", "Загрузка настроек..."))}</p>`;
     Promise.all([ensureProfileLoaded(), ensureSystemConfigLoaded()])
       .then(() => {
-        if (state.activeModule === "settings") renderSettings(els.moduleContent);
+        const settingsVisible = accountState ? accountModule === "settings" : state.activeModule === "settings";
+        if (container.isConnected && settingsVisible) renderSettings(container);
       })
       .catch((error) => {
-        if (state.activeModule === "settings") {
-          els.moduleContent.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+        const settingsVisible = accountState ? accountModule === "settings" : state.activeModule === "settings";
+        if (container.isConnected && settingsVisible) {
+          container.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
         }
       });
     return;
@@ -2578,7 +2580,7 @@ function accountMenus(role) {
   if (role.access?.camera) menus.push({ id: "blocks", label: "Blocks", sub: "Factory areas" });
   if (role.access?.camera) menus.push({ id: "zone_editor", label: "Zone Editor", sub: "Draw camera zones" });
   if (role.access?.camera) menus.push({ id: "rules", label: "Rules", sub: "Counting configuration" });
-  menus.push({ id: "ops_analytics", label: "Analytics", sub: "Block performance" });
+  menus.push({ id: "analytics", label: "Analytics", sub: "Scan live cameras" });
   menus.push({ id: "vision_events", label: "Events", sub: "Detection timeline" });
   menus.push({ id: "scan_history", label: "Scan History", sub: "Persistent scans" });
   menus.push({ id: "training", label: "YOLO Training", sub: "Dataset & injection" });
@@ -5063,7 +5065,7 @@ function renderAccountModule() {
   if (menu.id === "rules") { els.moduleContent.innerHTML = `<p class="empty">Loading rules…</p>`; void renderRuleEditor(els.moduleContent, false); return; }
   if (menu.id === "scan_history") { els.moduleContent.innerHTML = `<p class="empty">Loading scan history…</p>`; void renderScanHistoryPage(els.moduleContent); return; }
   if (menu.id === "vision_events") { els.moduleContent.innerHTML = `<p class="empty">Loading events…</p>`; void renderVisionEventsPage(els.moduleContent); return; }
-  if (menu.id === "ops_analytics") { els.moduleContent.innerHTML = `<p class="empty">Loading analytics…</p>`; void renderOperationsAnalytics(els.moduleContent); return; }
+  if (menu.id === "analytics") { void renderTrainingAnalytics(els.moduleContent); return; }
   if (menu.id === "settings") { renderSettings(els.moduleContent); return; }
   if (menu.id === "health") { els.moduleContent.innerHTML = `<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>System Health</h3><p>Live camera health is available in Camera Management; runtime services are monitored continuously by the backend watchdog.</p></div></header></section>`; return; }
 
