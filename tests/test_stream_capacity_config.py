@@ -92,3 +92,5 @@ def test_hikvision_profile_fallback_works_in_both_directions():
     assert _rtsp_source_for_attempt("rtsp://nvr/Streaming/Channels/1102", 1).endswith("1102")
     assert _rtsp_source_for_attempt("rtsp://nvr/Streaming/Channels/1102", 2).endswith("1101")
     assert _rtsp_source_for_attempt("rtsp://nvr/Streaming/Channels/1101", 2).endswith("1102")
+    assert server._alternate_hikvision_stream_profile("rtsp://nvr/Streaming/Channels/1102").endswith("1101")
+    assert server._alternate_hikvision_stream_profile("rtsp://nvr/Streaming/Channels/2601").endswith("2602")

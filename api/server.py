@@ -1289,7 +1289,25 @@ def _delete_duplicate_stream_url_cameras(db: CameraDB, stream_url: str, keep_id:
         db.delete_camera(stale_id)
 
 
-def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str, Any]:
+def _alternate_hikvision_stream_profile(stream_url: str) -> str:
+    main = re.sub(
+        r"(/Streaming/Channels/\d+)02(?=($|[/?#]))", r"\g<1>01", stream_url,
+        count=1, flags=re.IGNORECASE,
+    )
+    if main != stream_url:
+        return main
+    return re.sub(
+        r"(/Streaming/Channels/\d+)01(?=($|[/?#]))", r"\g<1>02", stream_url,
+        count=1, flags=re.IGNORECASE,
+    )
+
+
+def _test_camera_stream(
+    stream_url: str,
+    timeout_seconds: int = 10,
+    *,
+    allow_profile_fallback: bool = True,
+) -> dict[str, Any]:
     endpoint, validation_error = _camera_stream_endpoint(stream_url)
     if validation_error:
         return {"status": "failed", "message": validation_error}
@@ -1335,6 +1353,19 @@ def _test_camera_stream(stream_url: str, timeout_seconds: int = 10) -> dict[str,
 
     last_error = status.get("last_error")
     if last_error:
+        fallback_url = _alternate_hikvision_stream_profile(stream_url)
+        if allow_profile_fallback and fallback_url != stream_url:
+            fallback = _test_camera_stream(
+                fallback_url,
+                timeout_seconds,
+                allow_profile_fallback=False,
+            )
+            if fallback.get("status") == "connected":
+                fallback["message"] = (
+                    "Stream Manager opened the camera through its alternate "
+                    "Hikvision stream profile."
+                )
+                return fallback
         response = {
             "status": "failed",
             "message": _redact_sensitive_text(
