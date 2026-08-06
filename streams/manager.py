@@ -746,20 +746,22 @@ def _ffmpeg_command(
 
 
 def _rtsp_source_for_attempt(source: str, reconnect_count: int) -> str:
-    """Fall back from a Hikvision main stream (..01) to its substream (..02).
+    """Alternate Hikvision main/sub profiles after repeated failures.
 
-    Some NVR channels are registered but have a broken/unsupported main profile
-    while their substream remains healthy. Keep the configured URL unchanged
-    and select the fallback only inside the persistent worker.
+    Some channels expose only one profile. Keep the configured URL unchanged and
+    use the sibling profile only inside the persistent worker.
     """
     if reconnect_count < 2:
         return source
+    substream_fallback = re.sub(
+        r"(/Streaming/Channels/\d+)02(?=($|[/?#]))", r"\g<1>01", source,
+        count=1, flags=re.IGNORECASE,
+    )
+    if substream_fallback != source:
+        return substream_fallback
     return re.sub(
-        r"(/Streaming/Channels/\d+)01(?=($|[/?#]))",
-        r"\g<1>02",
-        source,
-        count=1,
-        flags=re.IGNORECASE,
+        r"(/Streaming/Channels/\d+)01(?=($|[/?#]))", r"\g<1>02", source,
+        count=1, flags=re.IGNORECASE,
     )
 
 

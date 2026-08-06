@@ -1,5 +1,5 @@
 import api.server as server
-from streams.manager import StreamManager
+from streams.manager import StreamManager, _rtsp_source_for_attempt
 from database.camera_db import CameraDB
 
 
@@ -86,3 +86,9 @@ def test_legacy_seven_camera_seed_expands_to_all_26_substreams(tmp_path, monkeyp
     assert captured["controller"].stream_path_template.endswith("{channel}02")
     assert len(db.list_active_cameras(include_secret=False)) == 26
     assert all(row["masked_stream_url"].endswith("02") for row in db.list_active_cameras(include_secret=False))
+
+
+def test_hikvision_profile_fallback_works_in_both_directions():
+    assert _rtsp_source_for_attempt("rtsp://nvr/Streaming/Channels/1102", 1).endswith("1102")
+    assert _rtsp_source_for_attempt("rtsp://nvr/Streaming/Channels/1102", 2).endswith("1101")
+    assert _rtsp_source_for_attempt("rtsp://nvr/Streaming/Channels/1101", 2).endswith("1102")
