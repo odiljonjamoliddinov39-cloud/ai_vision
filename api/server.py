@@ -6075,10 +6075,14 @@ def _training_gemini_suggestion(crop) -> tuple[str | None, float]:
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     recognition = config.get("recognition", {}) or {}
     try:
+        scan_timeout = max(
+            1,
+            int(os.getenv("AI_VISION_SCAN_NAMING_TIMEOUT_SECONDS", "5")),
+        )
         result = GeminiClient(
             model=recognition.get("model", "gemini-3.1-flash-lite"),
-            timeout=int(recognition.get("timeout", 30)),
-            retries=int(recognition.get("retries", 2)),
+            timeout=min(int(recognition.get("timeout", 30)), scan_timeout),
+            retries=0,
         ).recognize(crop)
         name = str(getattr(result, "name", "") or "").strip()
         if not name or name.lower() == "unknown product":
@@ -6610,12 +6614,28 @@ def _training_scan_camera(slot, cam_name, term, detector, refs, diag=None, seq_s
         confidence = score
         suggested_name = matched if (matched and score >= match_threshold) else None
         if not suggested_name:
-            suggested_name, naming_confidence = _training_gemini_suggestion(crop)
-            confidence = naming_confidence
-            source = "naming_service" if suggested_name else "yolo"
-        if not suggested_name:
-            suggested_name = str(getattr(detection, "inventory_name", None) or detection.class_name or "object")
-            confidence = float(detection.confidence or 0.0)
+            detector_label = str(
+                getattr(detection, "inventory_name", None)
+                or detection.class_name
+                or "object"
+            ).strip()
+            detector_label_key = _catalog_normalize_name(detector_label)
+            generic_detector_labels = {
+                "", "object", "object proposal", "unknown", "unknown object",
+            }
+            if detector_label_key not in generic_detector_labels:
+                # YOLO already identified this object. Returning that label is
+                # immediate; Gemini is reserved for genuinely unknown boxes.
+                suggested_name = detector_label
+                confidence = float(detection.confidence or 0.0)
+                source = "yolo"
+            else:
+                suggested_name, naming_confidence = _training_gemini_suggestion(crop)
+                confidence = naming_confidence
+                source = "naming_service" if suggested_name else "yolo"
+                if not suggested_name:
+                    suggested_name = detector_label or "object"
+                    confidence = float(detection.confidence or 0.0)
         normalized = _catalog_normalize_name(suggested_name)
         detector_name = _catalog_normalize_name(detection.class_name or "")
         if term and term not in normalized and term not in detector_name:

@@ -27,12 +27,13 @@ class FakeTrackedObject:
 
 
 class FakeDetector:
-    def __init__(self):
+    def __init__(self, class_name="baget_box"):
         self.calls = 0
+        self.class_name = class_name
 
     def detect(self, frame):
         self.calls += 1
-        return [FakeDetection()]
+        return [FakeDetection(class_name=self.class_name)]
 
 
 class FakeTracker:
@@ -46,8 +47,8 @@ class FakeTracker:
         return [FakeTrackedObject()]
 
 
-def _scan(monkeypatch, tmp_path, match, gemini):
-    detector = FakeDetector()
+def _scan(monkeypatch, tmp_path, match, gemini, class_name="baget_box"):
+    detector = FakeDetector(class_name)
     tracker = FakeTracker()
     frame = np.full((48, 64, 3), 128, dtype=np.uint8)
     monkeypatch.setattr(server, "TRAINING_STAGING_DIR", tmp_path / "staging")
@@ -88,16 +89,33 @@ def test_scan_uses_yolo_and_bytetrack_once_and_prefers_local_dataset(monkeypatch
     assert rows[0]["crop_url"].endswith("/crop_00.jpg")
 
 
-def test_scan_uses_naming_service_only_when_dataset_confidence_is_insufficient(monkeypatch, tmp_path):
+def test_scan_uses_yolo_label_without_waiting_for_naming_service(monkeypatch, tmp_path):
+    def unexpected_gemini(_crop):
+        raise AssertionError("a useful YOLO label must not wait on the naming service")
+
     detector, tracker, _, rows = _scan(
         monkeypatch,
         tmp_path,
         ("uncertain", 0.31),
-        ("Corrected Baget Box", 0.84),
+        unexpected_gemini,
     )
 
     assert detector.calls == 1
     assert tracker.calls == 1
+    assert rows[0]["suggested_name"] == "baget_box"
+    assert rows[0]["confidence"] == 0.88
+    assert rows[0]["source"] == "yolo"
+
+
+def test_scan_uses_naming_service_for_genuinely_unknown_detection(monkeypatch, tmp_path):
+    _, _, _, rows = _scan(
+        monkeypatch,
+        tmp_path,
+        ("uncertain", 0.31),
+        ("Corrected Baget Box", 0.84),
+        class_name="unknown object",
+    )
+
     assert rows[0]["suggested_name"] == "Corrected Baget Box"
     assert rows[0]["confidence"] == 0.84
     assert rows[0]["source"] == "naming_service"
