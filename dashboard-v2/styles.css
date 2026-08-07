@@ -2408,6 +2408,13 @@ input {
 .operator-camera-state.warning { color: #d97706; }
 .operator-camera-state.critical { color: #dc2626; }
 
+.block-scan-controls { display: grid; grid-template-columns: minmax(220px, .55fr) minmax(300px, 1fr); gap: 20px; margin: 18px 0; }
+.block-scan-controls label, .block-scan-cameras { display: grid; align-content: start; gap: 7px; font-size: 13px; font-weight: 700; }
+.block-scan-controls select { min-height: 42px; border: 1px solid var(--line); border-radius: 9px; padding: 0 12px; background: var(--panel); color: var(--ink); }
+.block-scan-camera-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.block-scan-camera-list li { display: inline-flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); font-weight: 600; }
+.block-scan-camera-list li span { color: #16a34a; font-weight: 800; }
+
 @media (max-width: 1180px) {
   .operator-camera-row { grid-template-columns: 1fr 1fr; }
   .operator-camera-state { justify-self: start; }

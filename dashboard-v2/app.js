@@ -4569,6 +4569,14 @@ async function renderYoloTraining(container) {
 }
 
 async function renderTrainingAnalytics(container) {
+  let blocks;
+  try {
+    const payload = await api("/api/v1/blocks", { force: true });
+    blocks = payload.data || [];
+  } catch {
+    container.innerHTML = `<p class="empty">Block configuration is temporarily unavailable. Please try again.</p>`;
+    return;
+  }
   container.innerHTML = `
     <div class="training-page recognition-workflow">
       <section class="acc-block recognition-panel">
@@ -4576,12 +4584,24 @@ async function renderTrainingAnalytics(container) {
           <div>
             <p class="section-eyebrow">Live camera workflow</p>
             <h3>Scan Cameras</h3>
-            <p class="chart-note">Optionally enter an object name. Leave it empty for broad discovery across the detector's supported classes.</p>
+            <p class="chart-note">Choose a factory Block. Every available camera assigned to it is selected automatically.</p>
+          </div>
+        </div>
+        <div class="block-scan-controls">
+          <label>Block
+            <select data-scan-block>
+              <option value="">Select a Block</option>
+              ${blocks.map((block) => `<option value="${block.id}">${escapeHtml(block.name)}</option>`).join("")}
+            </select>
+          </label>
+          <div class="block-scan-cameras">
+            <strong>Available Cameras</strong>
+            <div data-block-cameras><p class="chart-note">Select a Block to load its cameras.</p></div>
           </div>
         </div>
         <div class="search-bar recognition-search">
           <input type="search" data-search-input placeholder="Optional object name" aria-label="Optional object name" />
-          <button type="button" class="export-button" data-recognize>Scan Cameras</button>
+          <button type="button" class="export-button" data-recognize disabled>Start Scan</button>
         </div>
         <div class="recognition-status" data-scan-status role="status" aria-live="polite">
           <strong>Ready</strong><span>Waiting for a camera scan.</span>
@@ -4596,6 +4616,8 @@ async function renderTrainingAnalytics(container) {
 
   // --- Recognition search (dataset-centered, per-location counting) ---
   const searchInput = container.querySelector("[data-search-input]");
+  const blockSelect = container.querySelector("[data-scan-block]");
+  const blockCameras = container.querySelector("[data-block-cameras]");
   const recognizeBtn = container.querySelector("[data-recognize]");
   const saveDatasetBtn = container.querySelector("[data-save-dataset]");
   const actions = container.querySelector("[data-recognition-actions]");
@@ -4608,13 +4630,38 @@ async function renderTrainingAnalytics(container) {
   // scoped to this mount; navigating away detaches searchResults, which stops
   // the poll chain (see the document.contains guard) without killing the job.
   let pollActive = false;
+  let selectedBlockCameras = [];
+  const loadBlockCameras = async () => {
+    const blockId = blockSelect.value;
+    selectedBlockCameras = [];
+    recognizeBtn.disabled = true;
+    if (!blockId) {
+      blockCameras.innerHTML = `<p class="chart-note">Select a Block to load its cameras.</p>`;
+      return;
+    }
+    blockCameras.innerHTML = `<p class="chart-note">Loading cameras…</p>`;
+    try {
+      const payload = await api(`/api/v1/blocks/${blockId}/cameras`, { force: true });
+      if (blockSelect.value !== blockId) return;
+      selectedBlockCameras = payload.data || [];
+      if (!selectedBlockCameras.length) {
+        blockCameras.innerHTML = `<p class="chart-note">No cameras are assigned to this Block.</p>`;
+        return;
+      }
+      blockCameras.innerHTML = `<ul class="block-scan-camera-list">${selectedBlockCameras.map((camera) => `<li><span aria-hidden="true">✓</span>${escapeHtml(camera.camera_name)}</li>`).join("")}</ul>`;
+      recognizeBtn.disabled = false;
+    } catch {
+      blockCameras.innerHTML = `<p class="chart-note">Could not load cameras for this Block. Please try again.</p>`;
+    }
+  };
+  blockSelect.addEventListener("change", () => void loadBlockCameras());
   const renderSearchState = (data) => {
     const status = data.status || "idle";
     const rows = data.rows || [];
     const prog = data.progress || {};
     const running = status === "running";
-    recognizeBtn.disabled = running;
-    recognizeBtn.textContent = "Scan Cameras";
+    recognizeBtn.disabled = running || !selectedBlockCameras.length;
+    recognizeBtn.textContent = "Start Scan";
     const done = Number(prog.done || 0);
     const total = Number(prog.total || 0);
     const stage = String(data.stage || status);
@@ -4705,10 +4752,14 @@ async function renderTrainingAnalytics(container) {
     statusBox.dataset.state = "running";
     statusBox.innerHTML = "<strong>Starting</strong><span>Requesting current frames from the backend.</span>";
     try {
-      await catalogRequest("/api/training/search", {
+      await catalogRequest("/api/v1/scan/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: searchInput.value.trim() }),
+        body: JSON.stringify({
+          block_id: Number(blockSelect.value),
+          camera_ids: selectedBlockCameras.map((camera) => Number(camera.camera_id)),
+          query: searchInput.value.trim(),
+        }),
       });
     } catch (error) {
       statusBox.dataset.state = "error";

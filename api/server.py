@@ -4081,6 +4081,25 @@ def list_camera_assignment_blocks() -> dict[str, Any]:
     return {"data": blocks, "meta": {"count": len(blocks)}}
 
 
+@app.get("/api/v1/blocks/{block_id}/cameras")
+def list_block_cameras(block_id: int) -> dict[str, Any]:
+    config_db = VisionConfigDB(
+        os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db"))
+    )
+    block = next(
+        (row for row in config_db.list_blocks() if int(row["id"]) == block_id),
+        None,
+    )
+    if block is None:
+        raise HTTPException(status_code=404, detail="Block not found.")
+    cameras = [
+        row
+        for row in _camera_operations_payload()
+        if row.get("block_id") is not None and int(row["block_id"]) == block_id
+    ]
+    return {"data": cameras, "meta": {"count": len(cameras), "block": block}}
+
+
 @app.get("/api/v1/cameras")
 def list_operator_cameras() -> dict[str, Any]:
     rows = _camera_operations_payload()
@@ -6041,6 +6060,12 @@ class TrainingSearch(BaseModel):
     query: str = Field(default="", max_length=120)
 
 
+class BlockScanStart(BaseModel):
+    block_id: int = Field(ge=1)
+    camera_ids: list[int] = Field(min_length=1)
+    query: str = Field(default="", max_length=120)
+
+
 def _training_gemini_suggestion(crop) -> tuple[str | None, float]:
     """Return a best-effort naming-service label and its real confidence."""
     try:
@@ -6673,12 +6698,22 @@ def _training_merge_camera_diagnostics(diag, slot, cam_name, camera_diag) -> Non
         reasons[reason] = int(reasons.get(reason, 0)) + 1
 
 
-def _training_search_worker(query: str, generation: int) -> None:
+def _training_search_worker(
+    query: str,
+    generation: int,
+    selected_slots: set[int] | None = None,
+    block_id: int | None = None,
+    camera_ids: list[int] | None = None,
+) -> None:
     started = datetime.now(timezone.utc).isoformat()
     try:
         term = _catalog_normalize_name(query)
         health = _catalog_health_snapshot()
         cameras = _training_camera_map(health)
+        if selected_slots is not None:
+            cameras = {
+                slot: name for slot, name in cameras.items() if slot in selected_slots
+            }
         detector, mode = _training_detection_context(query)
         refs = _training_dataset_reference_embeddings()
     except Exception as exc:  # noqa: BLE001
@@ -6704,7 +6739,13 @@ def _training_search_worker(query: str, generation: int) -> None:
         "detections": 0, "tracked": 0, "model": detector is not None,
         "failures": [], "outcomes": {}, **mode,
     }
-    base = {"query": query, "started_at": started, "finished_at": None}
+    base = {
+        "query": query,
+        "block_id": block_id,
+        "camera_ids": camera_ids or [],
+        "started_at": started,
+        "finished_at": None,
+    }
     if not _training_search_write_state(
         {**base, "status": "running", "stage": "capturing", "message": "Connecting to live cameras.", "current_camera": None, "rows": [], "diagnostics": diag, "progress": {"done": 0, "total": len(cam_items)}},
         generation,
@@ -6786,18 +6827,31 @@ def _training_search_worker(query: str, generation: int) -> None:
     )
 
 
-def _training_search_run(query: str, generation: int) -> None:
+def _training_search_run(
+    query: str,
+    generation: int,
+    selected_slots: set[int] | None = None,
+    block_id: int | None = None,
+    camera_ids: list[int] | None = None,
+) -> None:
     """Thread entry point that tracks worker liveness so a restart-orphaned
     'running' state can be detected as stale."""
     global _training_search_active
     try:
-        _training_search_worker(query, generation)
+        _training_search_worker(
+            query, generation, selected_slots, block_id, camera_ids
+        )
     finally:
         if generation == _training_search_generation:
             _training_search_active = False
 
 
-def _training_search_start(query: str) -> dict[str, Any]:
+def _training_search_start(
+    query: str,
+    selected_slots: set[int] | None = None,
+    block_id: int | None = None,
+    camera_ids: list[int] | None = None,
+) -> dict[str, Any]:
     global _training_search_generation, _training_search_active
     with _training_search_lock:
         running = _training_search_active and _training_search_state.get("status") == "running"
@@ -6817,12 +6871,53 @@ def _training_search_start(query: str) -> dict[str, Any]:
             "stage": "queued",
             "message": "Scan queued; preparing live camera capture.",
             "query": query,
+            "block_id": block_id,
+            "camera_ids": camera_ids or [],
             "started_at": datetime.now(timezone.utc).isoformat(),
         },
         generation,
     )
-    threading.Thread(target=_training_search_run, args=(query, generation), daemon=True).start()
+    threading.Thread(
+        target=_training_search_run,
+        args=(query, generation, selected_slots, block_id, camera_ids),
+        daemon=True,
+    ).start()
     return _training_search_status()
+
+
+@app.post("/api/v1/scan/start")
+async def start_block_scan(payload: BlockScanStart) -> dict[str, Any]:
+    assigned = {
+        int(row["camera_id"]): row
+        for row in _camera_operations_payload()
+        if row.get("block_id") is not None
+        and int(row["block_id"]) == payload.block_id
+    }
+    requested = set(payload.camera_ids)
+    outside_block = sorted(requested - set(assigned))
+    if outside_block:
+        raise HTTPException(
+            status_code=422,
+            detail="Every selected camera must belong to the selected Block.",
+        )
+    selected_slots = {
+        int(assigned[camera_id]["slot_number"])
+        for camera_id in requested
+        if assigned[camera_id].get("is_active")
+        and assigned[camera_id].get("slot_number") is not None
+    }
+    if not selected_slots:
+        raise HTTPException(
+            status_code=409,
+            detail="This Block has no active cameras available to scan.",
+        )
+    return await asyncio.to_thread(
+        _training_search_start,
+        payload.query,
+        selected_slots,
+        payload.block_id,
+        sorted(requested),
+    )
 
 
 @app.post("/api/training/search")
