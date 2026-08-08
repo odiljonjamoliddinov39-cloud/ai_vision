@@ -56,12 +56,65 @@ class VisionDB:
                 id {id_column_sql(self.db)}, action TEXT NOT NULL,
                 actor TEXT NOT NULL, payload TEXT NOT NULL,
                 created_at {timestamp} NOT NULL)""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS inventory_results (
+                id {id_column_sql(self.db)}, camera_id TEXT NOT NULL,
+                block_id TEXT, frame_uuid TEXT NOT NULL, target_product TEXT NOT NULL,
+                requested_model TEXT, loaded_model TEXT, detector_mode TEXT NOT NULL,
+                fallback_used INTEGER NOT NULL, raw_detection_count INTEGER NOT NULL,
+                accepted_detection_count INTEGER NOT NULL,
+                rejected_detection_count INTEGER NOT NULL,
+                final_inventory_count INTEGER NOT NULL, detections TEXT NOT NULL,
+                evidence_path TEXT, created_at {timestamp} NOT NULL)""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS vision_benchmarks (
+                id {id_column_sql(self.db)}, inventory_result_id INTEGER NOT NULL,
+                camera_id TEXT NOT NULL, block_id TEXT, target_product TEXT NOT NULL,
+                ground_truth_count INTEGER NOT NULL, predicted_count INTEGER NOT NULL,
+                accuracy REAL NOT NULL, notes TEXT, created_at {timestamp} NOT NULL,
+                FOREIGN KEY(inventory_result_id) REFERENCES inventory_results(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS vision_datasets (
+                id TEXT PRIMARY KEY, product_id TEXT NOT NULL, product_name TEXT NOT NULL,
+                class_name TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0, created_at {timestamp} NOT NULL,
+                updated_at {timestamp} NOT NULL)""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS vision_dataset_images (
+                id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, camera_id TEXT,
+                block_id TEXT, source TEXT NOT NULL, original_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL, perceptual_hash TEXT NOT NULL,
+                capture_timestamp {timestamp} NOT NULL, annotation_status TEXT NOT NULL,
+                instance_count INTEGER NOT NULL DEFAULT 0, split TEXT,
+                created_at {timestamp} NOT NULL, updated_at {timestamp} NOT NULL,
+                FOREIGN KEY(dataset_id) REFERENCES vision_datasets(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS vision_dataset_annotations (
+                id TEXT PRIMARY KEY, image_id TEXT NOT NULL, class_name TEXT NOT NULL,
+                x1 REAL NOT NULL, y1 REAL NOT NULL, x2 REAL NOT NULL, y2 REAL NOT NULL,
+                provenance TEXT NOT NULL, status TEXT NOT NULL, confidence REAL,
+                created_at {timestamp} NOT NULL, updated_at {timestamp} NOT NULL,
+                FOREIGN KEY(image_id) REFERENCES vision_dataset_images(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS vision_models (
+                id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, name TEXT NOT NULL UNIQUE,
+                base_model TEXT NOT NULL, weights_path TEXT, status TEXT NOT NULL,
+                training_config TEXT NOT NULL, metrics TEXT NOT NULL,
+                benchmark_accuracy REAL, deployment_status TEXT NOT NULL,
+                started_at {timestamp}, finished_at {timestamp}, deployed_at {timestamp},
+                created_at {timestamp} NOT NULL,
+                FOREIGN KEY(dataset_id) REFERENCES vision_datasets(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS vision_model_deployments (
+                id {id_column_sql(self.db)}, product_id TEXT NOT NULL, model_id TEXT NOT NULL,
+                previous_model_id TEXT, deployed_at {timestamp} NOT NULL,
+                FOREIGN KEY(model_id) REFERENCES vision_models(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS vision_review_queue (
+                id TEXT PRIMARY KEY, product_id TEXT NOT NULL, dataset_id TEXT,
+                camera_id TEXT, image_path TEXT NOT NULL, reason TEXT NOT NULL,
+                confidence REAL, status TEXT NOT NULL, payload TEXT NOT NULL,
+                created_at {timestamp} NOT NULL, reviewed_at {timestamp})""")
             conn.execute(f"""CREATE TABLE IF NOT EXISTS counts (
                 id {id_column_sql(self.db)}, event_id INTEGER NOT NULL UNIQUE,
                 block_id TEXT, camera_id TEXT NOT NULL, class_id INTEGER NOT NULL,
                 quantity INTEGER NOT NULL, counted_at {timestamp} NOT NULL,
                 FOREIGN KEY(event_id) REFERENCES events(id))""")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_detection_frame_track ON detections(camera_id, frame_uuid, track_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_dataset_images_dataset ON vision_dataset_images(dataset_id, annotation_status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_dataset_annotations_image ON vision_dataset_annotations(image_id, status)")
 
     @staticmethod
     def now() -> str:
@@ -142,6 +195,75 @@ class VisionDB:
             if self.db.is_postgres:
                 return int(conn.execute(self.db.sql(sql) + " RETURNING id", values).fetchone()["id"])
             return int(conn.execute(sql, values).lastrowid)
+
+    def record_inventory_result(self, result: dict) -> int:
+        columns = (
+            "camera_id", "block_id", "frame_uuid", "target_product",
+            "requested_model", "loaded_model", "detector_mode", "fallback_used",
+            "raw_detection_count", "accepted_detection_count",
+            "rejected_detection_count", "final_inventory_count", "detections",
+            "evidence_path", "created_at",
+        )
+        values = tuple(
+            json.dumps(result.get(name, [])) if name == "detections"
+            else int(bool(result.get(name))) if name == "fallback_used"
+            else result.get(name)
+            for name in columns[:-1]
+        ) + (self.now(),)
+        sql = f"INSERT INTO inventory_results({','.join(columns)}) VALUES({','.join('?' for _ in columns)})"
+        with self.db.connect() as conn:
+            if self.db.is_postgres:
+                return int(conn.execute(self.db.sql(sql) + " RETURNING id", values).fetchone()["id"])
+            return int(conn.execute(sql, values).lastrowid)
+
+    def record_benchmark(self, inventory_result_id: int, ground_truth_count: int,
+                         notes: str | None = None) -> int:
+        with self.db.connect() as conn:
+            result = conn.execute(
+                self.db.sql("SELECT * FROM inventory_results WHERE id=?"),
+                (inventory_result_id,),
+            ).fetchone()
+            if result is None:
+                raise ValueError("inventory result not found")
+            predicted = int(result["final_inventory_count"])
+            truth = int(ground_truth_count)
+            accuracy = 1.0 if truth == predicted == 0 else (
+                max(0.0, 1.0 - abs(predicted - truth) / truth) if truth else 0.0
+            )
+            values = (
+                inventory_result_id, result["camera_id"], result["block_id"],
+                result["target_product"], truth, predicted, accuracy, notes, self.now(),
+            )
+            sql = """INSERT INTO vision_benchmarks(
+                inventory_result_id,camera_id,block_id,target_product,
+                ground_truth_count,predicted_count,accuracy,notes,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)"""
+            if self.db.is_postgres:
+                return int(conn.execute(self.db.sql(sql) + " RETURNING id", values).fetchone()["id"])
+            return int(conn.execute(sql, values).lastrowid)
+
+    def list_benchmarks(self, limit: int = 200) -> list[dict]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                self.db.sql("SELECT * FROM vision_benchmarks ORDER BY id DESC LIMIT ?"),
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def dataset_execute(self, sql: str, params: tuple = ()):
+        """Execute Dataset Builder SQL through the shared VisionDB connection."""
+        with self.db.connect() as conn:
+            return conn.execute(self.db.sql(sql), params)
+
+    def dataset_fetchone(self, sql: str, params: tuple = ()) -> dict | None:
+        with self.db.connect() as conn:
+            row = conn.execute(self.db.sql(sql), params).fetchone()
+        return dict(row) if row is not None else None
+
+    def dataset_fetchall(self, sql: str, params: tuple = ()) -> list[dict]:
+        with self.db.connect() as conn:
+            rows = conn.execute(self.db.sql(sql), params).fetchall()
+        return [dict(row) for row in rows]
 
     def record_event(self, scan_run_id: int, detection_id: int | None, event: dict) -> int:
         """Persist any rule event; count events additionally update counts."""
