@@ -6555,16 +6555,19 @@ def _scan_product_database():
 def _scan_products() -> list[dict[str, Any]]:
     """Load scan products from the recognition store or legacy warehouse store."""
     try:
-        return _scan_product_database().list_products()
+        products = _scan_product_database().list_products()
+        if products:
+            return products
     except Exception:
-        warehouse = WarehouseDB(
-            os.getenv("WAREHOUSE_DB_PATH", str(ROOT / "database" / "warehouse.db"))
-        )
-        with warehouse.db.connect() as connection:
-            rows = connection.execute(
-                "SELECT id, name, category FROM products ORDER BY name"
-            ).fetchall()
-        return [dict(row) for row in rows]
+        pass
+    warehouse = WarehouseDB(
+        os.getenv("WAREHOUSE_DB_PATH", str(ROOT / "database" / "warehouse.db"))
+    )
+    with warehouse.db.connect() as connection:
+        rows = connection.execute(
+            "SELECT id, name, category FROM products ORDER BY name"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 @app.get("/api/v1/products")

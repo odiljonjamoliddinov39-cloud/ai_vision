@@ -48,6 +48,30 @@ def test_scan_products_falls_back_to_warehouse_database(monkeypatch):
     assert server._scan_products() == [
         {"id": 9, "name": "Baget Box", "category": "box"}
     ]
+
+
+def test_scan_products_falls_back_when_recognition_catalog_is_empty(monkeypatch):
+    class EmptyProducts:
+        def list_products(self):
+            return []
+
+    rows = type("Rows", (), {
+        "fetchall": lambda self: [{"id": 3, "name": "Bread Tray", "category": "tray"}]
+    })()
+    connection = type("Connection", (), {
+        "__enter__": lambda self: self,
+        "__exit__": lambda self, *args: None,
+        "execute": lambda self, *args: rows,
+    })()
+    database = type("DB", (), {"connect": lambda self: connection})()
+    warehouse = type("Warehouse", (), {"db": database})()
+
+    monkeypatch.setattr(server, "_scan_product_database", lambda: EmptyProducts())
+    monkeypatch.setattr(server, "WarehouseDB", lambda path: warehouse)
+
+    assert server._scan_products() == [
+        {"id": 3, "name": "Bread Tray", "category": "tray"}
+    ]
     monkeypatch.setattr(
         server, "VisionDB",
         lambda path: type("Audit", (), {"record_operator_action": lambda self, *args: 1})(),
