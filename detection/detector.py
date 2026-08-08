@@ -43,6 +43,8 @@ class Detector:
         max_detections: int = 300,
         compile_model: bool | str = False,
         fallback_model_path: str | None = None,
+        allow_fallback: bool = True,
+        detector_mode: str = "universal",
     ):
         self.confidence_threshold = float(confidence_threshold)
         self.device = _resolve_device(device)
@@ -61,6 +63,8 @@ class Detector:
             fallback_model_path
             or os.getenv("ULTRALYTICS_FALLBACK_MODEL", "yolov8s-worldv2.pt")
         )
+        self.allow_fallback = bool(allow_fallback)
+        self.detector_mode = str(detector_mode)
         self.model = None
         self.load_error: str | None = None
         self._lock = threading.Lock()
@@ -79,12 +83,11 @@ class Detector:
         # This never touches config.yaml; it only widens what the code can
         # recover from when a weights file is missing.
         candidates: list[str] = []
-        for candidate in (
-            self.requested_model_path,
-            self.fallback_model_path,
-            _DEFAULT_OPEN_VOCAB_MODEL,
-            _DEFAULT_STOCK_MODEL,
-        ):
+        model_candidates = ((self.requested_model_path,) if not self.allow_fallback else (
+            self.requested_model_path, self.fallback_model_path,
+            _DEFAULT_OPEN_VOCAB_MODEL, _DEFAULT_STOCK_MODEL,
+        ))
+        for candidate in model_candidates:
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
         for candidate in candidates:
@@ -188,6 +191,7 @@ class Detector:
             "active_model": self.model_path if self.model is not None else None,
             "fallback_used": self.model is not None
             and self.model_path != self.requested_model_path,
+            "detector_mode": self.detector_mode,
             "device": self.device,
             "image_size": self.image_size,
             "prompts": list(self.class_prompts),

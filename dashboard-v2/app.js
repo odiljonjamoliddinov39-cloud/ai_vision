@@ -2584,10 +2584,94 @@ function accountMenus(role) {
   menus.push({ id: "vision_events", label: "Events", sub: "Detection timeline" });
   menus.push({ id: "scan_history", label: "Scan History", sub: "Persistent scans" });
   menus.push({ id: "training", label: "YOLO Training", sub: "Dataset & injection" });
+  menus.push({ id: "dataset_builder", label: "Dataset Builder", sub: "Capture & annotate" });
+  menus.push({ id: "my_datasets", label: "My Datasets", sub: "Versioned datasets" });
+  menus.push({ id: "dataset_models", label: "Models", sub: "Train, benchmark & deploy" });
   menus.push({ id: "settings", label: "Settings", sub: "Global configuration" });
   menus.push({ id: "health", label: "System Health", sub: "Runtime diagnostics" });
   return menus;
 }
+
+const datasetBuilderState = {
+  datasetId: "", productId: "", blockId: "", cameraId: "", imageIndex: 0,
+  annotations: [], undo: [], redo: [], mode: "draw", selected: -1, zoom: 1,
+};
+
+function datasetBoxSvg(box, index) {
+  const selected = index === datasetBuilderState.selected;
+  const handles = selected ? [["nw",box.x1,box.y1],["ne",box.x2,box.y1],["sw",box.x1,box.y2],["se",box.x2,box.y2]].map(([handle,x,y])=>`<circle data-resize="${handle}" cx="${x*100}%" cy="${y*100}%" r="6" fill="#f59e0b" vector-effect="non-scaling-stroke"/>`).join("") : "";
+  return `<g data-dataset-box="${index}"><rect x="${box.x1 * 100}%" y="${box.y1 * 100}%" width="${(box.x2-box.x1)*100}%" height="${(box.y2-box.y1)*100}%" fill="rgba(37,99,235,.08)" stroke="${selected ? "#f59e0b" : "#2563eb"}" stroke-width="3" vector-effect="non-scaling-stroke"/><text x="${box.x1 * 100}%" y="${Math.max(3,box.y1*100)}%" fill="#fff" stroke="#111827" stroke-width=".5">${escapeHtml(box.class_name || "product")}</text>${handles}</g>`;
+}
+
+function datasetAnnotationStats(boxes) {
+  const ai = boxes.filter((box) => String(box.provenance || "").startsWith("ai_")).length;
+  const manual = boxes.filter((box) => box.provenance === "manual").length;
+  return `AI Found: ${ai} · You Added: ${manual} · Final Labels: ${boxes.length}`;
+}
+
+function pushDatasetUndo() {
+  datasetBuilderState.undo.push(JSON.stringify(datasetBuilderState.annotations));
+  if (datasetBuilderState.undo.length > 100) datasetBuilderState.undo.shift();
+  datasetBuilderState.redo = [];
+}
+
+async function loadDatasetAnnotation(container, dataset, images, index) {
+  if (!images.length) { container.querySelector("[data-dataset-workspace]").innerHTML = `<p class="empty">Capture or upload images to begin annotation.</p>`; return; }
+  datasetBuilderState.imageIndex = Math.max(0, Math.min(index, images.length - 1));
+  const image = images[datasetBuilderState.imageIndex];
+  const detail = await api(`/api/v1/datasets/${dataset.id}/images/${image.id}?metadata=true`, { force: true });
+  datasetBuilderState.annotations = (detail.data.annotations || []).map((box) => ({...box}));
+  datasetBuilderState.undo = []; datasetBuilderState.redo = []; datasetBuilderState.selected = -1;
+  const workspace = container.querySelector("[data-dataset-workspace]");
+  workspace.innerHTML = `<div class="ops-filter-row"><button data-ann-mode="select">Select / Move (A)</button><button data-ann-mode="draw">Draw Box (D)</button><button data-ann-suggest>Auto Suggestions</button><button data-ann-accept>Accept AI Boxes</button><button data-ann-delete>Delete</button><button data-ann-undo>Undo (Z)</button><button data-ann-redo>Redo (Y)</button><button data-ann-zoom-out>−</button><button data-ann-fit>Fit</button><button data-ann-zoom-in>+</button></div><div style="overflow:auto;max-height:68vh;background:#111827;padding:12px"><div data-ann-stage style="position:relative;transform-origin:top left;transform:scale(${datasetBuilderState.zoom});width:max-content"><img data-ann-image src="${API_BASE}/api/v1/datasets/${dataset.id}/images/${image.id}" style="display:block;max-width:1000px;max-height:62vh"><svg data-ann-overlay style="position:absolute;inset:0;width:100%;height:100%;touch-action:none">${datasetBuilderState.annotations.map(datasetBoxSvg).join("")}</svg></div></div><div class="ops-filter-row"><button data-ann-prev>← Previous</button><strong>${datasetBuilderState.imageIndex+1} / ${images.length}</strong><button data-ann-next>Next →</button><span data-ann-stats>${datasetAnnotationStats(datasetBuilderState.annotations)}</span><button class="export-button" data-ann-save>Save Draft</button><button class="primary" data-ann-approve>Approve Frame (Enter)</button></div>`;
+  const redraw = () => { workspace.querySelector("[data-ann-overlay]").innerHTML = datasetBuilderState.annotations.map(datasetBoxSvg).join(""); workspace.querySelector("[data-ann-stats]").textContent = datasetAnnotationStats(datasetBuilderState.annotations); };
+  workspace.querySelectorAll("[data-ann-mode]").forEach((button) => button.addEventListener("click", () => { datasetBuilderState.mode = button.dataset.annMode; }));
+  const overlay = workspace.querySelector("[data-ann-overlay]"); let start = null; let moving = null; let resizing = null;
+  overlay.addEventListener("pointerdown", (event) => { const rect=overlay.getBoundingClientRect(), x=(event.clientX-rect.left)/rect.width, y=(event.clientY-rect.top)/rect.height; const target=event.target.closest("[data-dataset-box]"),handle=event.target.dataset.resize; if (datasetBuilderState.mode === "select" && target) { datasetBuilderState.selected=Number(target.dataset.datasetBox); pushDatasetUndo(); if(handle)resizing={handle};else moving={x,y,box:{...datasetBuilderState.annotations[datasetBuilderState.selected]}}; redraw(); } else if (datasetBuilderState.mode === "draw") { start={x,y}; pushDatasetUndo(); } overlay.setPointerCapture(event.pointerId); });
+  overlay.addEventListener("pointermove", (event) => { const rect=overlay.getBoundingClientRect(), x=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)), y=Math.max(0,Math.min(1,(event.clientY-rect.top)/rect.height)); if (moving) { const box=datasetBuilderState.annotations[datasetBuilderState.selected], dx=x-moving.x,dy=y-moving.y,w=moving.box.x2-moving.box.x1,h=moving.box.y2-moving.box.y1; box.x1=Math.max(0,Math.min(1-w,moving.box.x1+dx));box.y1=Math.max(0,Math.min(1-h,moving.box.y1+dy));box.x2=box.x1+w;box.y2=box.y1+h;redraw(); } else if(resizing){const box=datasetBuilderState.annotations[datasetBuilderState.selected],h=resizing.handle;if(h.includes("w"))box.x1=Math.min(x,box.x2-.005);if(h.includes("e"))box.x2=Math.max(x,box.x1+.005);if(h.includes("n"))box.y1=Math.min(y,box.y2-.005);if(h.includes("s"))box.y2=Math.max(y,box.y1+.005);redraw();} });
+  overlay.addEventListener("pointerup", (event) => { const rect=overlay.getBoundingClientRect(), x=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)), y=Math.max(0,Math.min(1,(event.clientY-rect.top)/rect.height)); if(start && Math.abs(x-start.x)>.005 && Math.abs(y-start.y)>.005) datasetBuilderState.annotations.push({x1:Math.min(start.x,x),y1:Math.min(start.y,y),x2:Math.max(start.x,x),y2:Math.max(start.y,y),provenance:"manual",class_name:dataset.class_name}); start=null;moving=null;resizing=null;redraw(); });
+  const save = async () => api(`/api/v1/datasets/${dataset.id}/images/${image.id}/annotations`, {method:"PUT",body:JSON.stringify({annotations:datasetBuilderState.annotations})});
+  workspace.querySelector("[data-ann-save]").addEventListener("click", async()=>{try{await save();toast("Annotation draft saved.");}catch(error){toast(error.message);}});
+  workspace.querySelector("[data-ann-suggest]").addEventListener("click",async()=>{try{const result=await api(`/api/v1/datasets/${dataset.id}/images/${image.id}/suggestions`,{method:"POST"});datasetBuilderState.annotations=result.data.annotations||[];redraw();toast(`${result.meta.count} unverified suggestion(s) loaded.`);}catch(error){toast(error.message);}});
+  workspace.querySelector("[data-ann-accept]").addEventListener("click",()=>{pushDatasetUndo();datasetBuilderState.annotations=datasetBuilderState.annotations.map(box=>box.provenance==="ai_suggested"?{...box,provenance:"ai_suggested_approved"}:box);redraw();toast("AI boxes accepted for frame review.");});
+  workspace.querySelector("[data-ann-approve]").addEventListener("click", async()=>{try{await save();await api(`/api/v1/datasets/${dataset.id}/images/${image.id}/approve`,{method:"POST"});toast("Frame verified and added to the YOLO dataset.");await renderDatasetBuilder(container);}catch(error){toast(error.message);}});
+  workspace.querySelector("[data-ann-delete]").addEventListener("click",()=>{if(datasetBuilderState.selected>=0){pushDatasetUndo();datasetBuilderState.annotations.splice(datasetBuilderState.selected,1);datasetBuilderState.selected=-1;redraw();}});
+  workspace.querySelector("[data-ann-undo]").addEventListener("click",()=>{if(datasetBuilderState.undo.length){datasetBuilderState.redo.push(JSON.stringify(datasetBuilderState.annotations));datasetBuilderState.annotations=JSON.parse(datasetBuilderState.undo.pop());redraw();}});
+  workspace.querySelector("[data-ann-redo]").addEventListener("click",()=>{if(datasetBuilderState.redo.length){datasetBuilderState.undo.push(JSON.stringify(datasetBuilderState.annotations));datasetBuilderState.annotations=JSON.parse(datasetBuilderState.redo.pop());redraw();}});
+  workspace.querySelector("[data-ann-prev]").addEventListener("click",()=>loadDatasetAnnotation(container,dataset,images,datasetBuilderState.imageIndex-1));
+  workspace.querySelector("[data-ann-next]").addEventListener("click",()=>loadDatasetAnnotation(container,dataset,images,datasetBuilderState.imageIndex+1));
+  workspace.querySelector("[data-ann-zoom-in]").addEventListener("click",()=>{datasetBuilderState.zoom=Math.min(3,datasetBuilderState.zoom+.25);workspace.querySelector("[data-ann-stage]").style.transform=`scale(${datasetBuilderState.zoom})`;});
+  workspace.querySelector("[data-ann-zoom-out]").addEventListener("click",()=>{datasetBuilderState.zoom=Math.max(.5,datasetBuilderState.zoom-.25);workspace.querySelector("[data-ann-stage]").style.transform=`scale(${datasetBuilderState.zoom})`;});
+  workspace.querySelector("[data-ann-fit]").addEventListener("click",()=>{datasetBuilderState.zoom=1;workspace.querySelector("[data-ann-stage]").style.transform="scale(1)";});
+  workspace.tabIndex = 0;
+  workspace.onkeydown = (event) => {
+    if (event.key.toLowerCase() === "a") datasetBuilderState.mode = "select";
+    if (event.key.toLowerCase() === "d") datasetBuilderState.mode = "draw";
+    if (event.key === "Delete") workspace.querySelector("[data-ann-delete]").click();
+    if (event.key.toLowerCase() === "z") workspace.querySelector("[data-ann-undo]").click();
+    if (event.key.toLowerCase() === "y") workspace.querySelector("[data-ann-redo]").click();
+    if (event.key === "Enter") workspace.querySelector("[data-ann-approve]").click();
+    if (event.key === "ArrowLeft") workspace.querySelector("[data-ann-prev]").click();
+    if (event.key === "ArrowRight") workspace.querySelector("[data-ann-next]").click();
+  };
+}
+
+async function renderDatasetBuilder(container) {
+  try {
+    const [products, blocks, cameras, datasets] = await Promise.all([api("/api/v1/products",{force:true}),api("/api/v1/blocks",{force:true}),api("/api/v1/cameras",{force:true}),api("/api/v1/datasets",{force:true})]);
+    const rows=datasets.data||[]; if(!datasetBuilderState.datasetId&&rows.length)datasetBuilderState.datasetId=rows[0].id;
+    const selected=rows.find((row)=>row.id===datasetBuilderState.datasetId);
+    container.innerHTML=`<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>Dataset Builder</h3><p>Teach the system what to count. AI suggestions remain unverified until you approve the frame.</p></div></header><div class="ops-filter-row"><label>Product <select data-ds-product><option value="">Select product</option>${(products.data||[]).map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}</select></label><label>Block <select data-ds-block><option value="">Select block</option>${(blocks.data||[]).map(b=>`<option value="${b.id}">${escapeHtml(b.name)}</option>`).join("")}</select></label><label>Camera <select data-ds-camera><option value="">Select camera</option>${(cameras.data||[]).map(c=>`<option value="${c.id}" data-block="${c.block_id||""}">${escapeHtml(c.name)}</option>`).join("")}</select></label><button class="primary" data-ds-create>Create Dataset Version</button><select data-ds-select><option value="">Select dataset</option>${rows.map(d=>`<option value="${d.id}" ${d.id===datasetBuilderState.datasetId?"selected":""}>${escapeHtml(d.product_name)} v${d.version}</option>`).join("")}</select></div>${selected?`<div class="ops-filter-row"><strong>Capture → Annotate → Dataset → Train → Benchmark → Deploy</strong><button data-ds-capture>Capture Live Frame</button><label>Every <input data-auto-interval type="number" value="3" min="0.5" style="width:70px"> sec</label><label>Frames <input data-auto-frames type="number" value="30" min="1" style="width:70px"></label><button data-ds-auto>Start Auto Capture</button><button data-ds-import>Import Legacy Images</button><label>Upload images <input data-ds-upload type="file" accept=".jpg,.jpeg,.png,.webp" multiple></label></div><div data-ds-health></div><div data-dataset-workspace><p class="empty">Loading annotation workspace…</p></div><section class="scan-detail"><h4>Train Model</h4><div class="ops-filter-row"><input data-model-name value="${escapeHtml(selected.class_name)}_v${selected.version}" placeholder="Model name"><input data-base-model value="yolov8s.pt" placeholder="Base model"><label>Epochs <input data-epochs type="number" value="100" min="1" style="width:80px"></label><button class="primary" data-start-training>Start Training</button></div><p class="chart-note">Training runs asynchronously from verified labels only. Real progress and outcome are read from the training process.</p></section>`:`<p class="empty">Create or select a product dataset to begin.</p>`}</section>`;
+    container.querySelector("[data-ds-block]").addEventListener("change",event=>{container.querySelectorAll("[data-ds-camera] option[data-block]").forEach(option=>option.hidden=Boolean(event.target.value)&&option.dataset.block!==event.target.value);container.querySelector("[data-ds-camera]").value="";});
+    container.querySelector("[data-ds-create]").addEventListener("click",async()=>{const productId=container.querySelector("[data-ds-product]").value,product=(products.data||[]).find(p=>String(p.id)===productId);if(!product)return toast("Select a product.");try{const result=await api("/api/v1/datasets",{method:"POST",body:JSON.stringify({product_id:String(product.id),product_name:product.name})});datasetBuilderState.datasetId=result.data.id;await renderDatasetBuilder(container);}catch(error){toast(error.message);}});
+    container.querySelector("[data-ds-select]")?.addEventListener("change",event=>{datasetBuilderState.datasetId=event.target.value;void renderDatasetBuilder(container);});
+    if(selected){container.querySelector("[data-ds-capture]").addEventListener("click",async()=>{const cameraId=container.querySelector("[data-ds-camera]").value,blockId=container.querySelector("[data-ds-block]").value;if(!cameraId)return toast("Select a camera.");try{const result=await api(`/api/v1/datasets/${selected.id}/capture`,{method:"POST",body:JSON.stringify({camera_id:cameraId,block_id:blockId||null})});toast(result.data.skipped?"Near-duplicate frame skipped.":"Live frame captured.");await renderDatasetBuilder(container);}catch(error){toast(error.message);}});container.querySelector("[data-ds-auto]").addEventListener("click",async()=>{const cameraId=container.querySelector("[data-ds-camera]").value,blockId=container.querySelector("[data-ds-block]").value;if(!cameraId)return toast("Select a camera.");try{await api(`/api/v1/datasets/${selected.id}/auto-capture`,{method:"POST",body:JSON.stringify({camera_id:cameraId,block_id:blockId||null,interval_seconds:Number(container.querySelector("[data-auto-interval]").value),frames:Number(container.querySelector("[data-auto-frames]").value)})});toast("Auto capture started in background.");}catch(error){toast(error.message);}});container.querySelector("[data-ds-import]").addEventListener("click",async()=>{try{const result=await api(`/api/v1/datasets/${selected.id}/import-legacy`,{method:"POST"});toast(`${result.meta.accepted} legacy image(s) imported without old labels.`);await renderDatasetBuilder(container);}catch(error){toast(error.message);}});container.querySelector("[data-ds-upload]").addEventListener("change",async event=>{const body=new FormData();[...event.target.files].forEach(file=>body.append("files",file));try{const response=await fetch(`${API_BASE}/api/v1/datasets/${selected.id}/upload`,{method:"POST",body});if(!response.ok)throw new Error((await response.json()).detail||"Upload failed");toast("Images processed.");await renderDatasetBuilder(container);}catch(error){toast(error.message);}});container.querySelector("[data-start-training]").addEventListener("click",async()=>{try{const result=await api(`/api/v1/datasets/${selected.id}/train`,{method:"POST",body:JSON.stringify({model_name:container.querySelector("[data-model-name]").value,base_model:container.querySelector("[data-base-model]").value,epochs:Number(container.querySelector("[data-epochs]").value),image_size:960})});toast(`Training ${result.data.status.toLowerCase()}.`);}catch(error){toast(error.message);}});const [detail,health]=await Promise.all([api(`/api/v1/datasets/${selected.id}`,{force:true}),api(`/api/v1/datasets/${selected.id}/health`,{force:true})]);container.querySelector("[data-ds-health]").innerHTML=platformSummaryHtml([{label:"Images",value:health.data.images},{label:"Instances",value:health.data.instances},{label:"Labeled",value:`${health.data.labeled_percent}%`},{label:"Train / Validation",value:`${health.data.train} / ${health.data.validation}`}]);await loadDatasetAnnotation(container,detail.data,detail.data.images||[],datasetBuilderState.imageIndex);}
+  } catch(error){if(container.isConnected)container.innerHTML=`<p class="empty">${escapeHtml(error.message)}</p>`;}
+}
+
+async function renderMyDatasets(container){try{const payload=await api("/api/v1/datasets",{force:true});container.innerHTML=`<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>My Datasets</h3><p>Immutable, reproducible product dataset versions.</p></div></header><div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Product</th><th>Version</th><th>Images</th><th>Instances</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${(payload.data||[]).map(d=>`<tr><td>${escapeHtml(d.product_name)}</td><td>v${d.version}</td><td>${d.images}</td><td>${d.instances}</td><td>${escapeHtml(d.status)}</td><td>${escapeHtml(formatCatalogTime(d.updated_at))}</td><td><button data-dataset-open="${d.id}">Open</button><button data-dataset-duplicate="${d.id}">Duplicate Version</button><a class="export-button" href="${API_BASE}/api/v1/datasets/${d.id}/export">Export</a><button data-dataset-archive="${d.id}">Archive</button></td></tr>`).join("")||`<tr><td colspan="7">No datasets yet.</td></tr>`}</tbody></table></div></section>`;container.querySelectorAll("[data-dataset-open]").forEach(button=>button.addEventListener("click",()=>{datasetBuilderState.datasetId=button.dataset.datasetOpen;accountModule="dataset_builder";renderAccountModule();}));container.querySelectorAll("[data-dataset-duplicate]").forEach(button=>button.addEventListener("click",async()=>{try{await api(`/api/v1/datasets/${button.dataset.datasetDuplicate}/duplicate`,{method:"POST"});toast("New immutable dataset version created.");await renderMyDatasets(container);}catch(error){toast(error.message);}}));container.querySelectorAll("[data-dataset-archive]").forEach(button=>button.addEventListener("click",async()=>{try{await api(`/api/v1/datasets/${button.dataset.datasetArchive}/archive`,{method:"POST"});toast("Dataset archived.");await renderMyDatasets(container);}catch(error){toast(error.message);}}));}catch(error){container.innerHTML=`<p class="empty">${escapeHtml(error.message)}</p>`;}}
+
+async function renderDatasetModels(container){try{const [models,benchmarks]=await Promise.all([api("/api/v1/datasets/models",{force:true}),api("/api/v1/benchmarks",{force:true})]);const benchmarkIds=(benchmarks.data||[]).map(row=>row.id);container.innerHTML=`<section class="detected-list platform-page"><header class="detected-list-head"><div><h3>Models</h3><p>Training status is process-derived. Deployment requires a real-camera benchmark of at least 90%.</p></div></header><div class="detected-table-wrap"><table class="detected-table"><thead><tr><th>Model</th><th>Status</th><th>Base</th><th>Benchmark</th><th>Deployment</th><th>Actions</th></tr></thead><tbody>${(models.data||[]).map(m=>`<tr><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.status)}</td><td>${escapeHtml(m.base_model)}</td><td>${m.benchmark_accuracy==null?"Not run":`${(m.benchmark_accuracy*100).toFixed(1)}%`}</td><td>${escapeHtml(m.deployment_status)}</td><td><button data-model-benchmark="${m.id}" ${m.status!=="COMPLETED"||!benchmarkIds.length?"disabled":""}>Run Real Benchmark</button><button data-model-deploy="${m.id}" ${m.status!=="COMPLETED"||Number(m.benchmark_accuracy||0)<.9?"disabled":""}>Deploy</button><button data-model-rollback="${m.id}" ${m.deployment_status!=="ACTIVE"?"disabled":""}>Roll Back</button></td></tr>`).join("")||`<tr><td colspan="6">No trained models yet.</td></tr>`}</tbody></table></div><p class="chart-note">Real-camera benchmark records available: ${benchmarkIds.length}. The benchmark aggregates real operator ground truth; YOLO validation metrics are not used as inventory accuracy.</p></section>`;container.querySelectorAll("[data-model-benchmark]").forEach(button=>button.addEventListener("click",async()=>{try{await api(`/api/v1/datasets/models/${button.dataset.modelBenchmark}/benchmark`,{method:"POST",body:JSON.stringify({benchmark_ids:benchmarkIds})});toast("Real-camera benchmark recorded.");await renderDatasetModels(container);}catch(error){toast(error.message);}}));container.querySelectorAll("[data-model-deploy]").forEach(button=>button.addEventListener("click",async()=>{try{await api(`/api/v1/datasets/models/${button.dataset.modelDeploy}/deploy`,{method:"POST"});toast("Model deployed.");await renderDatasetModels(container);}catch(error){toast(error.message);}}));container.querySelectorAll("[data-model-rollback]").forEach(button=>button.addEventListener("click",async()=>{try{await api(`/api/v1/datasets/models/${button.dataset.modelRollback}/rollback`,{method:"POST"});toast("Model rolled back.");await renderDatasetModels(container);}catch(error){toast(error.message);}}));}catch(error){container.innerHTML=`<p class="empty">${escapeHtml(error.message)}</p>`;}}
 
 function accountMenuLabel(item) {
   return tOrNull(`menu.${item.id}`) || item.label;
@@ -4690,9 +4774,12 @@ async function renderTrainingAnalytics(container) {
     const active = Number(diag.total_active_cameras ?? total);
     const framesRead = Number(diag.frames_read || 0);
     const detectionsFound = Number(diag.detections || 0);
+    const acceptedCount = Number(diag.accepted_detection_count || 0);
+    const rejectedCount = Number(diag.rejected_detection_count || 0);
+    const inventoryCount = Number(diag.final_inventory_count || 0);
     const failedCameras = Number(diag.cameras_failed || 0);
     const metrics = active
-      ? ` Scanned ${attempted}/${active} active cameras. Frames: ${framesRead}. Detections: ${detectionsFound}. Failed: ${failedCameras}.`
+      ? ` Scanned ${attempted}/${active} active cameras. Frames: ${framesRead}. Raw: ${detectionsFound}. Accepted: ${acceptedCount}. Rejected: ${rejectedCount}. Visible inventory: ${inventoryCount}. Failed: ${failedCameras}. Model: ${diag.loaded_model || "unavailable"}. Mode: ${diag.detector_mode || diag.detection_mode || "unknown"}. Fallback: ${diag.fallback_used ? "yes" : "no"}.`
       : "";
     const stageLabel = stage === "completed"
       ? "Complete"
@@ -5224,6 +5311,21 @@ function renderAccountModule() {
 
   if (menu.id === "training") {
     void renderYoloTraining(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "dataset_builder") {
+    void renderDatasetBuilder(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "my_datasets") {
+    void renderMyDatasets(els.moduleContent);
+    return;
+  }
+
+  if (menu.id === "dataset_models") {
+    void renderDatasetModels(els.moduleContent);
     return;
   }
 
