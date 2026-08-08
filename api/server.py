@@ -6552,9 +6552,24 @@ def _scan_product_database():
     return ProductDatabase(path)
 
 
+def _scan_products() -> list[dict[str, Any]]:
+    """Load scan products from the recognition store or legacy warehouse store."""
+    try:
+        return _scan_product_database().list_products()
+    except Exception:
+        warehouse = WarehouseDB(
+            os.getenv("WAREHOUSE_DB_PATH", str(ROOT / "database" / "warehouse.db"))
+        )
+        with warehouse.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, name, category FROM products ORDER BY name"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+
 @app.get("/api/v1/products")
 def list_scan_products() -> dict[str, Any]:
-    products = _scan_product_database().list_products()
+    products = _scan_products()
     return {"data": products, "meta": {"count": len(products)}}
 
 
@@ -6922,7 +6937,7 @@ def _training_search_start(
 @app.post("/api/v1/scan/start")
 async def start_block_scan(payload: BlockScanStart) -> dict[str, Any]:
     product = next(
-        (row for row in _scan_product_database().list_products()
+        (row for row in _scan_products()
          if int(row["id"]) == payload.product_id),
         None,
     )

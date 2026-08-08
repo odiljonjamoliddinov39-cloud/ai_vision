@@ -21,9 +21,33 @@ def _camera(camera_id, block_id, slot, name, active=True):
 
 def _scan_dependencies(monkeypatch):
     monkeypatch.setattr(
-        server, "_scan_product_database",
-        lambda: type("Products", (), {"list_products": lambda self: [{"id": 5, "name": "Baget Box"}]})(),
+        server, "_scan_products",
+        lambda: [{"id": 5, "name": "Baget Box"}],
     )
+
+
+def test_scan_products_falls_back_to_warehouse_database(monkeypatch):
+    class BrokenProducts:
+        def list_products(self):
+            raise RuntimeError("legacy recognition schema")
+
+    rows = type("Rows", (), {
+        "fetchall": lambda self: [{"id": 9, "name": "Baget Box", "category": "box"}]
+    })()
+    connection = type("Connection", (), {
+        "__enter__": lambda self: self,
+        "__exit__": lambda self, *args: None,
+        "execute": lambda self, *args: rows,
+    })()
+    database = type("DB", (), {"connect": lambda self: connection})()
+    warehouse = type("Warehouse", (), {"db": database})()
+
+    monkeypatch.setattr(server, "_scan_product_database", lambda: BrokenProducts())
+    monkeypatch.setattr(server, "WarehouseDB", lambda path: warehouse)
+
+    assert server._scan_products() == [
+        {"id": 9, "name": "Baget Box", "category": "box"}
+    ]
     monkeypatch.setattr(
         server, "VisionDB",
         lambda path: type("Audit", (), {"record_operator_action": lambda self, *args: 1})(),

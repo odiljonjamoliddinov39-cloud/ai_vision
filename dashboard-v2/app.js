@@ -4571,15 +4571,19 @@ async function renderYoloTraining(container) {
 async function renderTrainingAnalytics(container) {
   let blocks, products;
   try {
-    const [blocksPayload, productsPayload] = await Promise.all([
-      api("/api/v1/blocks", { force: true }),
-      api("/api/v1/products", { force: true }),
-    ]);
+    const blocksPayload = await api("/api/v1/blocks", { force: true });
     blocks = blocksPayload.data || [];
-    products = productsPayload.data || [];
   } catch {
     container.innerHTML = `<p class="empty">Block configuration is temporarily unavailable. Please try again.</p>`;
     return;
+  }
+  let productLoadError = false;
+  try {
+    const productsPayload = await api("/api/v1/products", { force: true });
+    products = productsPayload.data || [];
+  } catch {
+    products = [];
+    productLoadError = true;
   }
   container.innerHTML = `
     <div class="training-page recognition-workflow">
@@ -4606,13 +4610,15 @@ async function renderTrainingAnalytics(container) {
         <div class="search-bar recognition-search">
           <label>Target Product
             <select data-scan-product>
-              <option value="">Select a known product</option>
+              <option value="">${productLoadError ? "Products temporarily unavailable" : "Select a known product"}</option>
               ${products.map((product) => `<option value="${product.id}">${escapeHtml(product.name)}</option>`).join("")}
             </select>
           </label>
           <button type="button" class="export-button" data-recognize disabled>Start Scan</button>
         </div>
-        ${products.length ? "" : `<p class="chart-note">No products are available in the local product database.</p>`}
+        ${productLoadError
+          ? `<p class="chart-note">Product catalog could not be loaded. Refresh to retry.</p>`
+          : (products.length ? "" : `<p class="chart-note">No products are available in the local product database.</p>`)}
         <div class="recognition-status" data-scan-status role="status" aria-live="polite">
           <strong>Ready</strong><span>Waiting for a camera scan.</span>
         </div>
