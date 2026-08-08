@@ -28,6 +28,7 @@ class RuleConfig:
     minimum_track_age: int = 2
     ignore_zones: Tuple[Polygon, ...] = ()
     direction: int = 1
+    target_products: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.package_class_ids:
@@ -58,6 +59,8 @@ class TrackObservation:
     detector_version: str
     recognition_source: str
     processing_latency_ms: float
+    recognized_name: str | None = None
+    recognition_confidence: float = 0.0
 
     def __post_init__(self) -> None:
         if self.frame_timestamp.tzinfo is None or self.detection_timestamp.tzinfo is None:
@@ -80,3 +83,13 @@ class CountEvent:
     def from_observation(cls, observation: TrackObservation) -> "CountEvent":
         return cls(**{name: getattr(observation, name) for name in cls.__dataclass_fields__})
 
+
+@dataclass(frozen=True)
+class RuleDecision:
+    decision: str
+    reason: str
+    observation: TrackObservation
+
+    @property
+    def keep(self) -> bool:
+        return self.decision == "keep"

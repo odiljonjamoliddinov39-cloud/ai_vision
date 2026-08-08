@@ -19,6 +19,17 @@ def _camera(camera_id, block_id, slot, name, active=True):
     }
 
 
+def _scan_dependencies(monkeypatch):
+    monkeypatch.setattr(
+        server, "_scan_product_database",
+        lambda: type("Products", (), {"list_products": lambda self: [{"id": 5, "name": "Baget Box"}]})(),
+    )
+    monkeypatch.setattr(
+        server, "VisionDB",
+        lambda path: type("Audit", (), {"record_operator_action": lambda self, *args: 1})(),
+    )
+
+
 def test_block_camera_endpoint_returns_only_assigned_cameras(tmp_path, monkeypatch):
     vision_path = str(tmp_path / "vision.db")
     block = VisionConfigDB(vision_path).create_block("Warehouse A")
@@ -41,6 +52,7 @@ def test_block_camera_endpoint_returns_only_assigned_cameras(tmp_path, monkeypat
 
 
 def test_scan_start_passes_only_selected_block_slots(monkeypatch):
+    _scan_dependencies(monkeypatch)
     monkeypatch.setattr(
         server,
         "_camera_operations_payload",
@@ -60,13 +72,13 @@ def test_scan_start_passes_only_selected_block_slots(monkeypatch):
 
     response = asyncio.run(
         server.start_block_scan(
-            server.BlockScanStart(block_id=10, camera_ids=[1, 2], query="box")
+            server.BlockScanStart(block_id=10, camera_ids=[1, 2], product_id=5)
         )
     )
 
     assert response == {"status": "running"}
     assert captured == {
-        "query": "box",
+        "query": "Baget Box",
         "slots": {4, 7},
         "block_id": 10,
         "camera_ids": [1, 2],
@@ -74,6 +86,7 @@ def test_scan_start_passes_only_selected_block_slots(monkeypatch):
 
 
 def test_scan_start_rejects_camera_from_another_block(monkeypatch):
+    _scan_dependencies(monkeypatch)
     monkeypatch.setattr(
         server,
         "_camera_operations_payload",
@@ -83,7 +96,7 @@ def test_scan_start_rejects_camera_from_another_block(monkeypatch):
     with pytest.raises(HTTPException) as error:
         asyncio.run(
             server.start_block_scan(
-                server.BlockScanStart(block_id=10, camera_ids=[1, 2])
+                server.BlockScanStart(block_id=10, camera_ids=[1, 2], product_id=5)
             )
         )
 
@@ -123,8 +136,11 @@ def test_scan_ui_is_block_oriented_without_camera_checkboxes():
     ]
 
     assert 'api("/api/v1/blocks"' in section
+    assert 'api("/api/v1/products"' in section
     assert "/api/v1/blocks/${blockId}/cameras" in section
     assert 'catalogRequest("/api/v1/scan/start"' in section
     assert "data-scan-block" in section
+    assert "data-scan-product" in section
+    assert "Optional object name" not in section
     assert "No cameras are assigned to this Block." in section
     assert "data-block-camera-checkbox" not in section

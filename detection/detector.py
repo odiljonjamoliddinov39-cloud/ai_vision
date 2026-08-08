@@ -46,7 +46,9 @@ class Detector:
     ):
         self.confidence_threshold = float(confidence_threshold)
         self.device = _resolve_device(device)
-        self.classes_filter = set(classes) if classes else None
+        # Retained only as configuration metadata. Detection never applies a
+        # business allow-list; every valid model observation is forwarded.
+        self.configured_classes = tuple(classes or ())
         self.class_prompts = _clean_prompts(class_prompts or classes or [])
         self.image_size = int(image_size)
         self.class_agnostic_nms = bool(class_agnostic_nms)
@@ -165,8 +167,6 @@ class Detector:
                 if isinstance(names, dict)
                 else str(names[class_id] if class_id < len(names) else class_id)
             )
-            if self.classes_filter and class_name not in self.classes_filter:
-                continue
             x1, y1, x2, y2 = coordinates_xyxy
             detections.append(
                 Detection(

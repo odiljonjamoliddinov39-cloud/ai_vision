@@ -52,11 +52,13 @@ from tracking.tracker import TrackedObject
 from tracking.bytetrack_adapter import ByteTrackAdapter
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
+from recognition import RecognitionEngine
 from warehouse_engine import WarehouseEngine
 from database.vision_db import VisionDB
 from events import EventEngine
 from pipeline import LiveVisionPipeline
-from rules import CountingRuleEngine, Line, RuleConfig
+from rules import Line, ObjectRuleEngine, RuleConfig
+from counting import CountingEngine
 
 
 def load_config(path: str) -> dict:
@@ -150,12 +152,18 @@ def main():
     # --- Detector (FR-2) ---
     det_cfg = config["detection"]
     print(f"Loading model: {det_cfg['model_path']} ...")
+    universal_prompts = det_cfg.get("universal_prompts") or det_cfg.get(
+        "broad_discovery_prompts"
+    ) or [
+        "person", "box", "carton", "pallet", "forklift", "machine",
+        "helmet", "vehicle", "package", "bag", "container", "tool",
+    ]
     detector = Detector(
         model_path=det_cfg["model_path"],
         confidence_threshold=det_cfg.get("confidence_threshold", 0.5),
         device=det_cfg.get("device", "cpu"),
-        classes=det_cfg.get("classes"),
-        class_prompts=det_cfg.get("class_prompts"),
+        classes=None,
+        class_prompts=universal_prompts,
         image_size=det_cfg.get("image_size", 640),
         class_agnostic_nms=det_cfg.get("class_agnostic_nms", False),
         iou_threshold=det_cfg.get("iou_threshold", 0.55),
@@ -364,15 +372,18 @@ def main():
             minimum_confidence=float(counting_cfg.get("minimum_confidence", .35)),
             minimum_track_age=int(counting_cfg.get("minimum_track_age", 4)),
             direction=int(counting_cfg.get("direction", 1)),
+            target_products=frozenset({target_class}),
         )
+        object_rules = ObjectRuleEngine(rule_config)
         live_pipelines[camera_name] = LiveVisionPipeline(
             camera_id=camera_name, stream_id=stream_id, processor=processor,
-            rule_engine=CountingRuleEngine(rule_config, inventory_rules=warehouse_engine),
+            rule_engine=object_rules,
+            counting_engine=CountingEngine(rule_config),
+            recognition_engine=RecognitionEngine(product_recognizer),
             event_engine=EventEngine(vision_db, scan_id), database=vision_db,
             pipeline_version=str(pipeline_cfg.get("version", "1.0.0")),
             detector_version=str(pipeline_cfg.get("detector_version", detector.health().get("active_model"))),
             class_ids={target_class: target_class_id, "box": target_class_id},
-            recognizer=product_recognizer,
         )
     processors = {
         name: pipeline.process for name, pipeline in live_pipelines.items()

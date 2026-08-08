@@ -1,17 +1,13 @@
-"""Deterministic count-once package rule engine."""
-from typing import Dict, Optional
+"""Business filtering for recognized tracked objects.
 
-from .models import CountEvent, Line, Point, Polygon, RuleConfig, TrackObservation, TrackState
+This module never counts. It only returns KEEP or IGNORE decisions.
+"""
+from __future__ import annotations
 
-def _side(line: Line, point: Point) -> float:
-    return ((line.end[0] - line.start[0]) * (point[1] - line.start[1])
-            - (line.end[1] - line.start[1]) * (point[0] - line.start[0]))
+from .models import RuleConfig, RuleDecision, TrackObservation
 
-def _crossed(line: Line, previous: Point, current: Point, direction: int) -> bool:
-    before, after = _side(line, previous), _side(line, current)
-    return (before * direction) <= 0 < (after * direction)
 
-def _inside(point: Point, polygon: Polygon) -> bool:
+def _inside(point, polygon) -> bool:
     x, y = point
     contained = False
     previous = polygon[-1]
@@ -25,61 +21,46 @@ def _inside(point: Point, polygon: Polygon) -> bool:
         previous = current
     return contained
 
+
+class ObjectRuleEngine:
+    """Evaluates whether a recognized observation is eligible for counting."""
+
+    def __init__(self, config: RuleConfig) -> None:
+        self.config = config
+
+    def evaluate(self, observation: TrackObservation) -> RuleDecision:
+        normalize = lambda value: " ".join(value.replace("_", " ").split()).casefold()
+        recognized = normalize(observation.recognized_name or "")
+        targets = {normalize(name) for name in self.config.target_products}
+        if targets and recognized not in targets:
+            return RuleDecision("ignore", "product_not_selected", observation)
+        if not targets and observation.class_id not in self.config.package_class_ids:
+            return RuleDecision("ignore", "class_not_allowed", observation)
+        if observation.confidence < self.config.minimum_confidence:
+            return RuleDecision("ignore", "confidence_below_minimum", observation)
+        if observation.track_age < self.config.minimum_track_age:
+            return RuleDecision("ignore", "track_too_young", observation)
+        if any(_inside(observation.center, zone) for zone in self.config.ignore_zones):
+            return RuleDecision("ignore", "inside_ignore_zone", observation)
+        return RuleDecision("keep", "approved", observation)
+
+
 class CountingRuleEngine:
-    """Tracks each object through entry, zone, and exit exactly once."""
+    """Backward-compatible façade; new production code uses separate engines."""
 
     def __init__(self, config: RuleConfig, inventory_rules=None) -> None:
+        from counting.engine import CountingEngine
+
         self.config = config
-        self.inventory_rules = inventory_rules
-        self._states: Dict[int, TrackState] = {}
+        self.rules = ObjectRuleEngine(config)
+        self.counter = CountingEngine(config)
 
     def evaluate_tracked(self, camera_id: str, detections, timestamp: float):
-        """Canonical business-rule boundary for production tracked objects.
+        return []
 
-        The compatibility engine preserves identity/zone/direction parity while
-        its rules are migrated; callers never invoke it directly.
-        """
-        if self.inventory_rules is None:
-            return []
-        return self.inventory_rules.process(camera_id, detections, timestamp)
+    def state_for(self, track_id: int):
+        return self.counter.state_for(track_id)
 
-    def state_for(self, track_id: int) -> TrackState:
-        return self._states.get(track_id, TrackState.OUTSIDE)
-
-    def evaluate(self, observation: TrackObservation) -> Optional[CountEvent]:
-        if not self._eligible(observation):
-            return None
-        state = self.state_for(observation.track_id)
-        if state is TrackState.FINISHED:
-            return None
-        if state is TrackState.OUTSIDE and _crossed(
-            self.config.entry_line,
-            observation.previous_center,
-            observation.center,
-            self.config.direction,
-        ):
-            state = TrackState.ENTERED
-        if state is TrackState.ENTERED and _inside(
-            observation.center, self.config.counting_zone
-        ):
-            state = TrackState.INSIDE
-        if state is TrackState.INSIDE and _crossed(
-            self.config.exit_line,
-            observation.previous_center,
-            observation.center,
-            self.config.direction,
-        ):
-            state = TrackState.FINISHED
-            self._states[observation.track_id] = state
-            return CountEvent.from_observation(observation)
-        self._states[observation.track_id] = state
-        return None
-
-    def _eligible(self, observation: TrackObservation) -> bool:
-        if observation.class_id not in self.config.package_class_ids:
-            return False
-        if observation.confidence < self.config.minimum_confidence:
-            return False
-        if observation.track_age < self.config.minimum_track_age:
-            return False
-        return not any(_inside(observation.center, zone) for zone in self.config.ignore_zones)
+    def evaluate(self, observation: TrackObservation):
+        decision = self.rules.evaluate(observation)
+        return self.counter.evaluate(observation) if decision.keep else None

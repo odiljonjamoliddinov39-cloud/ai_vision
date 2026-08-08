@@ -4569,10 +4569,14 @@ async function renderYoloTraining(container) {
 }
 
 async function renderTrainingAnalytics(container) {
-  let blocks;
+  let blocks, products;
   try {
-    const payload = await api("/api/v1/blocks", { force: true });
-    blocks = payload.data || [];
+    const [blocksPayload, productsPayload] = await Promise.all([
+      api("/api/v1/blocks", { force: true }),
+      api("/api/v1/products", { force: true }),
+    ]);
+    blocks = blocksPayload.data || [];
+    products = productsPayload.data || [];
   } catch {
     container.innerHTML = `<p class="empty">Block configuration is temporarily unavailable. Please try again.</p>`;
     return;
@@ -4600,9 +4604,15 @@ async function renderTrainingAnalytics(container) {
           </div>
         </div>
         <div class="search-bar recognition-search">
-          <input type="search" data-search-input placeholder="Optional object name" aria-label="Optional object name" />
+          <label>Target Product
+            <select data-scan-product>
+              <option value="">Select a known product</option>
+              ${products.map((product) => `<option value="${product.id}">${escapeHtml(product.name)}</option>`).join("")}
+            </select>
+          </label>
           <button type="button" class="export-button" data-recognize disabled>Start Scan</button>
         </div>
+        ${products.length ? "" : `<p class="chart-note">No products are available in the local product database.</p>`}
         <div class="recognition-status" data-scan-status role="status" aria-live="polite">
           <strong>Ready</strong><span>Waiting for a camera scan.</span>
         </div>
@@ -4615,7 +4625,7 @@ async function renderTrainingAnalytics(container) {
     </div>`;
 
   // --- Recognition search (dataset-centered, per-location counting) ---
-  const searchInput = container.querySelector("[data-search-input]");
+  const productSelect = container.querySelector("[data-scan-product]");
   const blockSelect = container.querySelector("[data-scan-block]");
   const blockCameras = container.querySelector("[data-block-cameras]");
   const recognizeBtn = container.querySelector("[data-recognize]");
@@ -4649,18 +4659,21 @@ async function renderTrainingAnalytics(container) {
         return;
       }
       blockCameras.innerHTML = `<ul class="block-scan-camera-list">${selectedBlockCameras.map((camera) => `<li><span aria-hidden="true">✓</span>${escapeHtml(camera.camera_name)}</li>`).join("")}</ul>`;
-      recognizeBtn.disabled = false;
+      recognizeBtn.disabled = !productSelect.value;
     } catch {
       blockCameras.innerHTML = `<p class="chart-note">Could not load cameras for this Block. Please try again.</p>`;
     }
   };
   blockSelect.addEventListener("change", () => void loadBlockCameras());
+  productSelect.addEventListener("change", () => {
+    recognizeBtn.disabled = !productSelect.value || !selectedBlockCameras.length;
+  });
   const renderSearchState = (data) => {
     const status = data.status || "idle";
     const rows = data.rows || [];
     const prog = data.progress || {};
     const running = status === "running";
-    recognizeBtn.disabled = running || !selectedBlockCameras.length;
+    recognizeBtn.disabled = running || !selectedBlockCameras.length || !productSelect.value;
     recognizeBtn.textContent = "Start Scan";
     const done = Number(prog.done || 0);
     const total = Number(prog.total || 0);
@@ -4758,7 +4771,7 @@ async function renderTrainingAnalytics(container) {
         body: JSON.stringify({
           block_id: Number(blockSelect.value),
           camera_ids: selectedBlockCameras.map((camera) => Number(camera.camera_id)),
-          query: searchInput.value.trim(),
+          product_id: Number(productSelect.value),
         }),
       });
     } catch (error) {
@@ -4770,9 +4783,6 @@ async function renderTrainingAnalytics(container) {
     startPoll();
   };
   recognizeBtn?.addEventListener("click", () => void runSearch());
-  searchInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") void runSearch();
-  });
   // Restore whatever the background job is doing (running or last results) the
   // moment this page opens.
   startPoll();
