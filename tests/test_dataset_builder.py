@@ -52,3 +52,15 @@ def test_near_duplicate_capture_is_skipped(tmp_path: Path):
     second = builder.ingest(dataset["id"], image_bytes(), suffix=".jpg", source="camera")
     assert not first["skipped"]
     assert second == {"skipped": True, "reason": "near_duplicate", "duplicate_of": first["id"]}
+
+
+def test_frame_name_contains_block_and_camera_number(tmp_path: Path):
+    builder = DatasetBuilder(tmp_path, VisionDB(str(tmp_path / "vision.db")))
+    dataset = builder.create_dataset("1", "Baget Box")
+    result = builder.ingest(
+        dataset["id"], image_bytes(), suffix=".jpg", source="camera",
+        camera_id="camera-record-9", camera_number=12,
+        block_id="3", block_name="Warehouse A",
+    )
+    assert result["frame_name"].startswith("Warehouse-A_camera-12_")
+    assert Path(result["original_path"]).name == result["frame_name"]

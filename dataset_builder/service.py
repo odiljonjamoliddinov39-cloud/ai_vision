@@ -36,6 +36,11 @@ def _slug(value: str) -> str:
     return result
 
 
+def _frame_component(value: str | int | None, fallback: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value or "").strip()).strip("-")
+    return normalized or fallback
+
+
 def _dhash(image: np.ndarray) -> str:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     small = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
@@ -111,7 +116,9 @@ class DatasetBuilder:
         return row
 
     def ingest(self, dataset_id: str, content: bytes, *, suffix: str, source: str,
-               camera_id: str | None = None, block_id: str | None = None) -> dict:
+               camera_id: str | None = None, block_id: str | None = None,
+               camera_number: str | int | None = None,
+               block_name: str | None = None) -> dict:
         dataset = self.get_dataset(dataset_id)
         suffix = suffix.lower()
         if suffix not in self.allowed_extensions:
@@ -128,16 +135,24 @@ class DatasetBuilder:
         if duplicate:
             return {"skipped": True, "reason": "near_duplicate", "duplicate_of": duplicate["id"]}
         image_id = uuid.uuid4().hex
-        target = self.source_root / dataset_id / f"{image_id}{suffix}"
+        captured_at = datetime.now(timezone.utc)
+        block_label = _frame_component(block_name or block_id, "unassigned-block")
+        camera_label = _frame_component(camera_number or camera_id, "unassigned-camera")
+        timestamp = captured_at.strftime("%Y%m%dT%H%M%S%fZ")
+        frame_name = f"{block_label}_camera-{camera_label}_{timestamp}_{image_id[:8]}{suffix}"
+        target = self.source_root / dataset_id / frame_name
         target.write_bytes(content)
-        now = _now()
+        now = captured_at.isoformat()
         self.database.dataset_execute(
             "INSERT INTO vision_dataset_images(id,dataset_id,camera_id,block_id,source,original_path,content_hash,perceptual_hash,capture_timestamp,annotation_status,instance_count,split,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (image_id, dataset_id, camera_id, block_id, source, str(target), content_hash,
              perceptual_hash, now, "UNVERIFIED", 0, None, now, now),
         )
         self.database.dataset_execute("UPDATE vision_datasets SET updated_at=? WHERE id=?", (now, dataset_id))
-        return {"skipped": False, **self.get_image(dataset_id, image_id), "class_name": dataset["class_name"]}
+        return {
+            "skipped": False, **self.get_image(dataset_id, image_id),
+            "class_name": dataset["class_name"], "frame_name": frame_name,
+        }
 
     def save_annotations(self, dataset_id: str, image_id: str, annotations: list[dict]) -> dict:
         dataset, image = self.get_dataset(dataset_id), self.get_image(dataset_id, image_id)

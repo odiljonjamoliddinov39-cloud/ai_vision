@@ -7022,8 +7022,12 @@ def _capture_dataset_once(dataset_id: str, body: DatasetCapture) -> dict[str, An
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
     if not ok:
         raise DatasetError("Live frame could not be encoded.")
-    return _dataset_builder().ingest(dataset_id, encoded.tobytes(), suffix=".jpg", source="camera",
-                                     camera_id=body.camera_id, block_id=body.block_id)
+    return _dataset_builder().ingest(
+        dataset_id, encoded.tobytes(), suffix=".jpg", source="camera",
+        camera_id=body.camera_id, block_id=body.block_id,
+        camera_number=camera.get("slot_number") or camera.get("id"),
+        block_name=camera.get("block_name"),
+    )
 
 
 @app.post("/api/v1/datasets/{dataset_id}/capture")
