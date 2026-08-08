@@ -159,6 +159,20 @@ class ProductDatabase:
         candidates = [self._row_to_product(row) for row in rows]
         return top_matches(embedding, candidates, limit=limit)
 
+    def list_products(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Products available to rules and operator scan selection."""
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                self._sql(
+                    """SELECT id, name, category, brand, material, description,
+                              color, shape, estimated_size, possible_usage,
+                              confidence, image_hash, created_at
+                       FROM products ORDER BY name LIMIT ?"""
+                ),
+                (max(1, min(int(limit), 1000)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def _row_to_product(self, row) -> dict[str, Any]:
         data = dict(row)
         data["embedding"] = deserialize_embedding(data.get("embedding"))

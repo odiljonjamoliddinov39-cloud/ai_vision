@@ -68,6 +68,7 @@ from database.accounts_db import AccountsDB  # noqa: E402
 from database.catalog_db import CatalogDB  # noqa: E402
 from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
+from database.vision_db import VisionDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
 from detection.detector import Detector  # noqa: E402
 from detection.spatial import SpatialAnalyzer  # noqa: E402
@@ -6063,7 +6064,7 @@ class TrainingSearch(BaseModel):
 class BlockScanStart(BaseModel):
     block_id: int = Field(ge=1)
     camera_ids: list[int] = Field(min_length=1)
-    query: str = Field(default="", max_length=120)
+    product_id: int = Field(ge=1)
 
 
 def _training_gemini_suggestion(crop) -> tuple[str | None, float]:
@@ -6505,7 +6506,7 @@ def _training_scan_tracker(camera_name: str):
 
 
 def _training_detection_context(query: str) -> tuple[Any, dict[str, Any]]:
-    """Build one cached detector for the scan's explicit detection mode."""
+    """Build universal detection; the query is used only after recognition."""
     config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     detection = config.get("detection", {}) or {}
     configured = [str(value).strip() for value in detection.get("class_prompts") or [] if str(value).strip()]
@@ -6519,7 +6520,7 @@ def _training_detection_context(query: str) -> tuple[Any, dict[str, Any]]:
         if str(value).strip()
     ]
     query_prompt = " ".join(query.split()).strip()
-    requested_prompts = [query_prompt] if query_prompt else broad
+    requested_prompts = broad
     try:
         detector = _training_detector(requested_prompts)
     except TypeError:
@@ -6531,17 +6532,30 @@ def _training_detection_context(query: str) -> tuple[Any, dict[str, Any]]:
     return detector, {
         "query_prompt": query_prompt or None,
         "configured_prompts": configured,
-        "broad_discovery": bool(not query_prompt and open_vocabulary),
+        "broad_discovery": bool(open_vocabulary),
         "stock_closed_class": bool(detector is not None and not open_vocabulary),
         "active_prompts": requested_prompts if open_vocabulary else [],
         "detection_mode": (
-            "query_open_vocabulary"
-            if query_prompt and open_vocabulary
-            else "broad_prompt_discovery"
-            if not query_prompt and open_vocabulary
+            "universal_detection"
+            if open_vocabulary
             else "stock_closed_class"
         ),
     }
+
+
+def _scan_product_database():
+    from knowledge.product_database import ProductDatabase
+
+    config = _read_yaml(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    recognition = config.get("recognition", {}) or {}
+    path = os.getenv("PRODUCT_DB_PATH", recognition.get("db_path", "database/products.db"))
+    return ProductDatabase(path)
+
+
+@app.get("/api/v1/products")
+def list_scan_products() -> dict[str, Any]:
+    products = _scan_product_database().list_products()
+    return {"data": products, "meta": {"count": len(products)}}
 
 
 def _training_track_ids(detections, tracked_objects) -> dict[int, int]:
@@ -6907,6 +6921,13 @@ def _training_search_start(
 
 @app.post("/api/v1/scan/start")
 async def start_block_scan(payload: BlockScanStart) -> dict[str, Any]:
+    product = next(
+        (row for row in _scan_product_database().list_products()
+         if int(row["id"]) == payload.product_id),
+        None,
+    )
+    if product is None:
+        raise HTTPException(status_code=404, detail="Selected product was not found.")
     assigned = {
         int(row["camera_id"]): row
         for row in _camera_operations_payload()
@@ -6931,9 +6952,14 @@ async def start_block_scan(payload: BlockScanStart) -> dict[str, Any]:
             status_code=409,
             detail="This Block has no active cameras available to scan.",
         )
+    VisionDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db"))).record_operator_action(
+        "block_scan_started", "operator",
+        {"block_id": payload.block_id, "camera_ids": sorted(requested),
+         "product_id": payload.product_id, "product_name": product["name"]},
+    )
     return await asyncio.to_thread(
         _training_search_start,
-        payload.query,
+        str(product["name"]),
         selected_slots,
         payload.block_id,
         sorted(requested),

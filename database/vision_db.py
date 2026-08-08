@@ -37,6 +37,25 @@ class VisionDB:
                 stream_id TEXT NOT NULL, frame_uuid TEXT NOT NULL,
                 track_id INTEGER, payload TEXT NOT NULL, created_at {timestamp} NOT NULL,
                 FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS recognitions (
+                id {id_column_sql(self.db)}, scan_run_id INTEGER NOT NULL,
+                detection_id INTEGER NOT NULL, track_id INTEGER,
+                detector_class TEXT NOT NULL, identity TEXT NOT NULL,
+                confidence REAL NOT NULL, source TEXT NOT NULL,
+                known INTEGER NOT NULL, created_at {timestamp} NOT NULL,
+                FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id),
+                FOREIGN KEY(detection_id) REFERENCES detections(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS rule_decisions (
+                id {id_column_sql(self.db)}, scan_run_id INTEGER NOT NULL,
+                detection_id INTEGER NOT NULL, track_id INTEGER,
+                decision TEXT NOT NULL, reason TEXT NOT NULL,
+                identity TEXT, created_at {timestamp} NOT NULL,
+                FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id),
+                FOREIGN KEY(detection_id) REFERENCES detections(id))""")
+            conn.execute(f"""CREATE TABLE IF NOT EXISTS operator_actions (
+                id {id_column_sql(self.db)}, action TEXT NOT NULL,
+                actor TEXT NOT NULL, payload TEXT NOT NULL,
+                created_at {timestamp} NOT NULL)""")
             conn.execute(f"""CREATE TABLE IF NOT EXISTS counts (
                 id {id_column_sql(self.db)}, event_id INTEGER NOT NULL UNIQUE,
                 block_id TEXT, camera_id TEXT NOT NULL, class_id INTEGER NOT NULL,
@@ -87,6 +106,43 @@ class VisionDB:
                           int(event.get("inventory_delta", event.get("quantity", 1))), created_at))
             return event_id
 
+    def record_recognition(self, scan_run_id: int, detection_id: int, recognition) -> int:
+        values = (
+            scan_run_id, detection_id, recognition.track_id,
+            recognition.detector_class, recognition.identity,
+            float(recognition.confidence), recognition.source,
+            int(bool(recognition.known)), self.now(),
+        )
+        sql = """INSERT INTO recognitions(
+            scan_run_id,detection_id,track_id,detector_class,identity,
+            confidence,source,known,created_at) VALUES(?,?,?,?,?,?,?,?,?)"""
+        with self.db.connect() as conn:
+            if self.db.is_postgres:
+                return int(conn.execute(self.db.sql(sql) + " RETURNING id", values).fetchone()["id"])
+            return int(conn.execute(sql, values).lastrowid)
+
+    def record_rule_decision(self, scan_run_id: int, detection_id: int, decision) -> int:
+        values = (
+            scan_run_id, detection_id, decision.observation.track_id,
+            decision.decision, decision.reason,
+            decision.observation.recognized_name, self.now(),
+        )
+        sql = """INSERT INTO rule_decisions(
+            scan_run_id,detection_id,track_id,decision,reason,identity,created_at)
+            VALUES(?,?,?,?,?,?,?)"""
+        with self.db.connect() as conn:
+            if self.db.is_postgres:
+                return int(conn.execute(self.db.sql(sql) + " RETURNING id", values).fetchone()["id"])
+            return int(conn.execute(sql, values).lastrowid)
+
+    def record_operator_action(self, action: str, actor: str, payload: dict) -> int:
+        values = (action, actor, json.dumps(payload), self.now())
+        sql = "INSERT INTO operator_actions(action,actor,payload,created_at) VALUES(?,?,?,?)"
+        with self.db.connect() as conn:
+            if self.db.is_postgres:
+                return int(conn.execute(self.db.sql(sql) + " RETURNING id", values).fetchone()["id"])
+            return int(conn.execute(sql, values).lastrowid)
+
     def record_event(self, scan_run_id: int, detection_id: int | None, event: dict) -> int:
         """Persist any rule event; count events additionally update counts."""
         created_at = str(event.get("timestamp") or self.now())
@@ -127,11 +183,18 @@ class VisionDB:
             events = [dict(row) for row in conn.execute(
                 self.db.sql("SELECT * FROM events WHERE scan_run_id=? ORDER BY id"), (scan_run_id,)
             ).fetchall()]
+            recognitions = [dict(row) for row in conn.execute(
+                self.db.sql("SELECT * FROM recognitions WHERE scan_run_id=? ORDER BY id"), (scan_run_id,)
+            ).fetchall()]
+            decisions = [dict(row) for row in conn.execute(
+                self.db.sql("SELECT * FROM rule_decisions WHERE scan_run_id=? ORDER BY id"), (scan_run_id,)
+            ).fetchall()]
         for detection in detections:
             detection["bbox"] = json.loads(detection["bbox"])
         for event in events:
             event["payload"] = json.loads(event["payload"])
-        return {"scan": dict(scan), "detections": detections, "events": events}
+        return {"scan": dict(scan), "detections": detections, "recognitions": recognitions,
+                "rule_decisions": decisions, "events": events}
 
     def list_events(self, limit: int = 100, camera_id: str | None = None,
                     block_id: str | None = None, class_id: int | None = None,

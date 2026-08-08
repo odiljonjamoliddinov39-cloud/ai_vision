@@ -144,17 +144,17 @@ def test_empty_query_uses_broad_prompts_not_configured_single_prompt(monkeypatch
     assert mode["stock_closed_class"] is False
 
 
-def test_nonempty_query_is_detector_prompt_for_open_vocabulary_model(monkeypatch):
+def test_nonempty_product_query_does_not_filter_universal_detector(monkeypatch):
     captured = []
     detector = type("Detector", (), {"model": type("Model", (), {"set_classes": lambda self, prompts: None})()})()
-    monkeypatch.setattr(server, "_read_yaml", lambda path: {"detection": {"class_prompts": ["baget box"]}})
+    monkeypatch.setattr(server, "_read_yaml", lambda path: {"detection": {"broad_discovery_prompts": ["person", "box", "forklift"]}})
     monkeypatch.setattr(server, "_training_detector", lambda prompts: captured.append(prompts) or detector)
 
     _, mode = server._training_detection_context("  Red Pallet  ")
 
-    assert captured == [["Red Pallet"]]
+    assert captured == [["person", "box", "forklift"]]
     assert mode["query_prompt"] == "Red Pallet"
-    assert mode["detection_mode"] == "query_open_vocabulary"
+    assert mode["detection_mode"] == "universal_detection"
 
 
 def test_stale_snapshots_do_not_create_active_cameras(monkeypatch, tmp_path):
@@ -235,7 +235,9 @@ def test_analytics_ui_is_one_scan_workflow_without_fake_test_or_loading_state():
     source = (Path(__file__).parents[1] / "dashboard-v2" / "app.js").read_text(encoding="utf-8")
 
     assert "Scan Cameras" in source
-    assert "Optional object name" in source
+    assert "Target Product" in source
+    assert "data-scan-product" in source
+    assert "Optional object name" not in source
     assert "Object Preview" in source
     assert "Suggested Name" in source
     assert "Editable Final Name" in source
