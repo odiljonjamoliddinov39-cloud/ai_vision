@@ -28,9 +28,16 @@ const API_BASE = (() => {
     localStorage.setItem("ai_vision_v2_api_base", param.replace(/\/+$/, ""));
   }
   const saved = localStorage.getItem("ai_vision_v2_api_base");
-  if (saved) return saved;
+  // Migrate the retired sslip.io endpoint. Browser/network security products
+  // commonly block wildcard IP DNS services before fetch reaches the server.
+  // Production is already exposed through the dashboard's same-origin proxy.
+  if (saved === "https://67-205-160-8.sslip.io") {
+    localStorage.removeItem("ai_vision_v2_api_base");
+  } else if (saved) {
+    return saved;
+  }
   if (window.location.hostname.endsWith("vercel.app")) {
-    return "https://67-205-160-8.sslip.io";
+    return window.location.origin;
   }
   return window.location.origin;
 })();
