@@ -7015,15 +7015,27 @@ def _capture_dataset_once(dataset_id: str, body: DatasetCapture) -> dict[str, An
         raise DatasetError("Camera not found.")
     if body.block_id is not None and str(camera.get("block_id")) != body.block_id:
         raise DatasetError("Camera does not belong to the selected Block.")
-    frame = _catalog_live_frame_image(slot=camera.get("slot_number"), camera=camera.get("name"))
-    if frame is None:
-        raise DatasetError("No live frame is currently available from this camera.")
-    import cv2
-    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-    if not ok:
-        raise DatasetError("Live frame could not be encoded.")
+    encoded_frame: bytes | None = None
+    try:
+        encoded_frame = _get_stream_manager().latest_frame_bytes(
+            slot_number=camera.get("slot_number"),
+            name=camera.get("name"),
+        )
+    except Exception:  # noqa: BLE001 - the disk-backed live frame remains a valid fallback
+        encoded_frame = None
+
+    if not encoded_frame:
+        frame = _catalog_live_frame_image(slot=camera.get("slot_number"), camera=camera.get("name"))
+        if frame is None:
+            raise DatasetError("No live frame is currently available from this camera.")
+        import cv2
+        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        if not ok:
+            raise DatasetError("Live frame could not be encoded.")
+        encoded_frame = encoded.tobytes()
+
     return _dataset_builder().ingest(
-        dataset_id, encoded.tobytes(), suffix=".jpg", source="camera",
+        dataset_id, encoded_frame, suffix=".jpg", source="camera",
         camera_id=body.camera_id, block_id=body.block_id,
         camera_number=camera.get("slot_number") or camera.get("id"),
         block_name=camera.get("block_name"),
