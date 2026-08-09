@@ -749,10 +749,13 @@ let loadRetryTimer = null;
 // regardless of scroll position and avoids the browser's per-origin limit on
 // separate long-lived MJPEG requests.
 const LIVE_STREAM_RECONNECT_MS = 1500;
+const LIVE_FRAME_POLL_MS = 800;
 const LIVE_DETECTION_REFRESH_MS = 3000;
 let liveFrameSocket = null;
 let liveFrameSocketSlots = "";
 let liveFrameReconnectTimer = null;
+let liveFramePollTimer = null;
+let liveFramePollLoading = false;
 let liveDetectionTimer = null;
 let liveDetectionLoading = false;
 const liveFrameGenerations = new Map();
@@ -772,6 +775,36 @@ function liveWebSocketUrl(slots) {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("slots", slots);
   return url.toString();
+}
+
+function requiresLiveFramePolling() {
+  return API_BASE === window.location.origin && window.location.hostname.endsWith("vercel.app");
+}
+
+async function pollLiveFrames(slotNumbers) {
+  if (liveFramePollLoading) return;
+  liveFramePollLoading = true;
+  try {
+    await Promise.all(slotNumbers.map(async (slot) => {
+      try {
+        const response = await fetch(`${API_BASE}/api/live_frame?slot=${slot}&_=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+        renderLiveSocketFrame(slot, new Uint8Array(await response.arrayBuffer()));
+      } catch {
+        // A later poll recovers automatically when the proxy or camera returns.
+      }
+    }));
+  } finally {
+    liveFramePollLoading = false;
+  }
+}
+
+function startLiveFramePolling(slotNumbers) {
+  if (liveFramePollTimer !== null) return;
+  pollLiveFrames(slotNumbers);
+  liveFramePollTimer = window.setInterval(() => pollLiveFrames(slotNumbers), LIVE_FRAME_POLL_MS);
 }
 
 function normalizeLiveCameraKey(value) {
@@ -1030,6 +1063,12 @@ function reconcileLiveStreams() {
     const cachedFrame = liveFrameCache.get(slot);
     if (cachedFrame) renderLiveSocketFrame(slot, cachedFrame, false);
   });
+  if (requiresLiveFramePolling()) {
+    stopLiveFrameRefresh();
+    liveFrameSocketSlots = slots;
+    startLiveFramePolling(slotNumbers);
+    return;
+  }
   if (
     liveFrameSocket
     && liveFrameSocketSlots === slots
@@ -1062,6 +1101,10 @@ function stopLiveFrameRefresh() {
   if (liveFrameReconnectTimer !== null) {
     window.clearTimeout(liveFrameReconnectTimer);
     liveFrameReconnectTimer = null;
+  }
+  if (liveFramePollTimer !== null) {
+    window.clearInterval(liveFramePollTimer);
+    liveFramePollTimer = null;
   }
   const socket = liveFrameSocket;
   liveFrameSocket = null;
