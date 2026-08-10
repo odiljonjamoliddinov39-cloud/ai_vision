@@ -141,6 +141,10 @@ class DatasetBuilder:
         timestamp = captured_at.strftime("%Y%m%dT%H%M%S%fZ")
         frame_name = f"{block_label}_camera-{camera_label}_{timestamp}_{image_id[:8]}{suffix}"
         target = self.source_root / dataset_id / frame_name
+        # Dataset records are persistent, while the capture directory can be
+        # absent after a container rebuild.  Recreate it on demand so an
+        # existing dataset version can always accept a new live frame.
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         now = captured_at.isoformat()
         self.database.dataset_execute(
