@@ -6170,6 +6170,10 @@ class DatasetAnnotationSave(BaseModel):
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
 
 
+class DatasetSuggestionRequest(BaseModel):
+    roi: dict[str, float] | None = None
+
+
 class DatasetTrainingStart(BaseModel):
     model_name: str = Field(min_length=1, max_length=100)
     base_model: str = Field(default="yolov8s.pt", min_length=1, max_length=240)
@@ -7097,7 +7101,7 @@ def get_dataset_image(dataset_id: str, image_id: str, metadata: bool = False):
 
 
 @app.post("/api/v1/datasets/{dataset_id}/images/{image_id}/suggestions")
-def suggest_dataset_annotations(dataset_id: str, image_id: str) -> dict[str, Any]:
+def suggest_dataset_annotations(dataset_id: str, image_id: str, body: DatasetSuggestionRequest | None = None) -> dict[str, Any]:
     builder = _dataset_builder()
     try:
         dataset = builder.get_dataset(dataset_id)
@@ -7114,6 +7118,14 @@ def suggest_dataset_annotations(dataset_id: str, image_id: str) -> dict[str, Any
     if detector is None:
         raise HTTPException(status_code=503, detail="AI annotation suggestions are currently unavailable; manual annotation remains available.")
     height, width = frame.shape[:2]
+    roi = (body.roi if body else None) or {}
+    try:
+        roi_x1, roi_y1 = float(roi.get("x1", 0)), float(roi.get("y1", 0))
+        roi_x2, roi_y2 = float(roi.get("x2", 1)), float(roi.get("y2", 1))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="ROI must contain numeric normalized coordinates.") from exc
+    if not (0 <= roi_x1 < roi_x2 <= 1 and 0 <= roi_y1 < roi_y2 <= 1):
+        raise HTTPException(status_code=422, detail="ROI must be a normalized valid rectangle.")
     suggestions = []
     try:
         detections = detector.detect(frame)
@@ -7124,13 +7136,16 @@ def suggest_dataset_annotations(dataset_id: str, image_id: str) -> dict[str, Any
         if not box or len(box) != 4:
             continue
         x1, y1, x2, y2 = [float(value) for value in box]
+        center_x, center_y = (x1 + x2) / (2 * width), (y1 + y2) / (2 * height)
+        if not (roi_x1 <= center_x <= roi_x2 and roi_y1 <= center_y <= roi_y2):
+            continue
         suggestions.append({
             "x1": max(0.0, min(1.0, x1 / width)), "y1": max(0.0, min(1.0, y1 / height)),
             "x2": max(0.0, min(1.0, x2 / width)), "y2": max(0.0, min(1.0, y2 / height)),
             "provenance": "ai_suggested", "confidence": float(getattr(detection, "confidence", 0.0) or 0.0),
         })
     result = builder.save_annotations(dataset_id, image_id, suggestions)
-    return {"data": result, "meta": {"status": "UNVERIFIED", "count": len(suggestions)}}
+    return {"data": result, "meta": {"status": "UNVERIFIED", "count": len(suggestions), "roi_applied": bool(roi)}}
 
 
 @app.put("/api/v1/datasets/{dataset_id}/images/{image_id}/annotations")
