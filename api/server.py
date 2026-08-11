@@ -149,7 +149,12 @@ def _dataset_builder() -> DatasetBuilder:
     global _dataset_builder_obj
     if _dataset_builder_obj is None:
         database = VisionDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db")))
-        _dataset_builder_obj = DatasetBuilder(ROOT, database)
+        # Dataset source images must not be stored in the disposable application
+        # layer.  Docker deployments replace /app, while /app/data is a mounted
+        # host directory.  Keeping both source frames and materialized datasets
+        # here makes database rows and their JPEGs survive the same deployments.
+        storage_root = Path(os.getenv("DATASET_STORAGE_ROOT", str(ROOT / "data")))
+        _dataset_builder_obj = DatasetBuilder(storage_root, database)
     return _dataset_builder_obj
 
 
