@@ -8262,7 +8262,26 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
     screens stuck on "Waiting for frames" even when the backend is healthy.
     """
 
-    data = _get_stream_manager().latest_frame_bytes(slot_number=slot, name=camera)
+    manager = _get_stream_manager()
+    # A decoder can retain its last JPEG after an RTSP source has stopped.
+    # Never present that retained image as a live frame: clients must receive
+    # an explicit unavailable response and show "Waiting for video" instead.
+    max_age_ms = max(1000, int(float(os.getenv("LIVE_FRAME_MAX_AGE_SECONDS", "5")) * 1000))
+    stream_statuses = manager.status().get("streams", [])
+    matching_status = next(
+        (
+            item
+            for item in stream_statuses
+            if (slot is not None and item.get("slot_number") == slot)
+            or (camera is not None and item.get("name") == camera)
+        ),
+        None,
+    )
+    frame_age_ms = matching_status.get("frame_age_ms") if matching_status else None
+    if frame_age_ms is None or int(frame_age_ms) > max_age_ms:
+        raise HTTPException(status_code=503, detail="No current live frame is available.")
+
+    data = manager.latest_frame_bytes(slot_number=slot, name=camera)
     if data and data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
         return Response(
             content=data,
@@ -8271,6 +8290,7 @@ async def live_frame(slot: int | None = None, camera: str | None = None):
                 "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
                 "Pragma": "no-cache",
                 "X-AI-Frame-Source": "stream-manager",
+                "X-AI-Frame-Age-Ms": str(frame_age_ms),
             },
         )
 
