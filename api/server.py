@@ -7025,18 +7025,14 @@ def _capture_dataset_once(dataset_id: str, body: DatasetCapture) -> dict[str, An
             slot_number=camera.get("slot_number"),
             name=camera.get("name"),
         )
-    except Exception:  # noqa: BLE001 - the disk-backed live frame remains a valid fallback
-        encoded_frame = None
+    except Exception as exc:  # noqa: BLE001
+        raise DatasetError(f"IMAGE_CAPTURE_FAILED: live stream access failed: {exc}") from exc
 
+    # Dataset captures are training inputs and must be traceable to a current
+    # camera frame. Historical snapshot files are evidence only and are never
+    # a valid fallback for a capture request.
     if not encoded_frame:
-        frame = _catalog_live_frame_image(slot=camera.get("slot_number"), camera=camera.get("name"))
-        if frame is None:
-            raise DatasetError("No live frame is currently available from this camera.")
-        import cv2
-        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-        if not ok:
-            raise DatasetError("Live frame could not be encoded.")
-        encoded_frame = encoded.tobytes()
+        raise DatasetError("IMAGE_CAPTURE_FAILED: no current live frame is available from this camera.")
 
     return _dataset_builder().ingest(
         dataset_id, encoded_frame, suffix=".jpg", source="camera",
