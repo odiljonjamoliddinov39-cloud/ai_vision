@@ -1,4 +1,7 @@
 services:
+      - ai-vision-dataset-sources:/app/data
+            - ai-vision-dataset-sources:/app/data
+              ai-vision-dataset-sources:
   mediamtx:
     image: bluenviron/mediamtx:1
     restart: unless-stopped
