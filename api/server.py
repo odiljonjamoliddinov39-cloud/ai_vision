@@ -7095,14 +7095,34 @@ async def upload_dataset_images(dataset_id: str, files: list[UploadFile] = File(
 @app.get("/api/v1/datasets/{dataset_id}/images/{image_id}")
 def get_dataset_image(dataset_id: str, image_id: str, metadata: bool = False):
     try:
-        row = _dataset_builder().get_image(dataset_id, image_id)
+        builder = _dataset_builder()
+        row = builder.get_image(dataset_id, image_id)
     except DatasetError as exc:
         raise _dataset_error(exc, 404) from exc
     if metadata:
         return {"data": row}
     image_path = Path(row["original_path"])
     if not image_path.is_file():
-        raise HTTPException(status_code=404, detail="IMAGE_STORAGE_FAILED: dataset image file is missing.")
+        # Old deployments stored source JPEGs in /app, while their database
+        # rows lived on a volume.  Those rows are recoverable only when they
+        # are still unverified camera captures: replace the absent evidence
+        # with a new live frame, move it to persistent storage, and update the
+        # record atomically enough for the annotation workspace to open.
+        live = None
+        if row.get("source") == "camera" and row.get("annotation_status") == "UNVERIFIED" and row.get("camera_id"):
+            live = _get_stream_manager().latest_frame_bytes(channel_id=str(row["camera_id"]))
+        if not live or not live.startswith(b"\xff\xd8"):
+            raise HTTPException(status_code=404, detail="IMAGE_STORAGE_FAILED: dataset image file is missing and no current live frame is available for recovery.")
+        recovered_at = datetime.now(timezone.utc)
+        recovered = builder.source_root / dataset_id / f"recovered_{row['camera_id']}_{recovered_at.strftime('%Y%m%dT%H%M%S%fZ')}_{image_id[:8]}.jpg"
+        recovered.parent.mkdir(parents=True, exist_ok=True)
+        recovered.write_bytes(live)
+        now = recovered_at.isoformat()
+        builder.database.dataset_execute(
+            "UPDATE vision_dataset_images SET original_path=?,content_hash=?,capture_timestamp=?,updated_at=? WHERE id=?",
+            (str(recovered), hashlib.sha256(live).hexdigest(), now, now, image_id),
+        )
+        image_path = recovered
     media_type = {
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
     }.get(image_path.suffix.lower(), "application/octet-stream")
