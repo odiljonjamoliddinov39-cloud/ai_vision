@@ -7110,7 +7110,15 @@ def get_dataset_image(dataset_id: str, image_id: str, metadata: bool = False):
         # record atomically enough for the annotation workspace to open.
         live = None
         if row.get("source") == "camera" and row.get("annotation_status") == "UNVERIFIED" and row.get("camera_id"):
-            live = _get_stream_manager().latest_frame_bytes(channel_id=str(row["camera_id"]))
+            # The Dataset Builder can be opened before its camera has been
+            # requested anywhere else in the dashboard. Ensure active streams
+            # exist, then support both database-camera IDs and NVR slot IDs.
+            _ensure_streams_from_active_cameras()
+            manager = _get_stream_manager()
+            camera_key = str(row["camera_id"])
+            live = manager.latest_frame_bytes(channel_id=camera_key)
+            if live is None and camera_key.isdigit():
+                live = manager.latest_frame_bytes(slot_number=int(camera_key))
         if not live or not live.startswith(b"\xff\xd8"):
             raise HTTPException(status_code=404, detail="IMAGE_STORAGE_FAILED: dataset image file is missing and no current live frame is available for recovery.")
         recovered_at = datetime.now(timezone.utc)
