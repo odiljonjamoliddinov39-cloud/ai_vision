@@ -1,7 +1,4 @@
 services:
-      - ai-vision-dataset-sources:/app/data
-            - ai-vision-dataset-sources:/app/data
-              ai-vision-dataset-sources:
   mediamtx:
     image: bluenviron/mediamtx:1
     restart: unless-stopped
@@ -27,8 +24,6 @@ services:
       - .env
     environment:
       PORT: "8080"
-      # Production requirement: camera processing must recover after every
-      # container/server restart even if an older persistent .env disabled it.
       AUTO_START_DETECTION: "true"
       DETECTION_WATCHDOG_ENABLED: "true"
       CATALOG_RECOGNITION_SCHEDULER_ENABLED: "true"
@@ -45,6 +40,7 @@ services:
       AI_STREAM_FPS: "${AI_STREAM_FPS:-6}"
       DASHBOARD_STREAM_WIDTH: "${DASHBOARD_STREAM_WIDTH:-1920}"
       DASHBOARD_STREAM_FPS: "${DASHBOARD_STREAM_FPS:-20}"
+      DATASET_STORAGE_ROOT: "/app/data"
     depends_on:
       - mediamtx
     ports:
@@ -56,12 +52,9 @@ services:
       - ./database:/app/database
       - ./config:/app/config
       - ./recordings:/recordings
-      # Persistent named volume: the labeled training dataset must survive
-      # container rebuilds/recreates and `git reset --hard` in deploy.sh.
       - ai-vision-datasets:/app/datasets
+      - ai-vision-dataset-sources:/app/data
 
-  # Optional: enable with `docker compose --profile worker up -d --build ai-worker`
-  # only if you want a separate detector process instead of backend autostart.
   ai-worker:
     build:
       context: .
@@ -77,6 +70,7 @@ services:
       MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-false}"
       MEDIAMTX_API_URL: "http://mediamtx:9997"
       MEDIAMTX_RTSP_URL: "rtsp://mediamtx:8554"
+      DATASET_STORAGE_ROOT: "/app/data"
     command: ["python", "main.py", "--config", "config/config.yaml", "--no-display"]
     volumes:
       - ./models:/app/models
@@ -86,11 +80,8 @@ services:
       - ./config:/app/config
       - ./recordings:/recordings
       - ai-vision-datasets:/app/datasets
+      - ai-vision-dataset-sources:/app/data
 
 volumes:
-  # Holds the training dataset (/app/datasets) AND its in-volume backups
-  # (/app/datasets/_backups). This is the source of truth for labelled data and
-  # is expensive to recreate. It survives `git reset` and `docker compose up`.
-  # NEVER run `docker compose down -v` or `docker volume rm ai-vision-datasets`
-  # without an off-server export first (dashboard: Training → Download dataset).
   ai-vision-datasets:
+  ai-vision-dataset-sources:
