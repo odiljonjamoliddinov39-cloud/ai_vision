@@ -760,6 +760,7 @@ let liveDetectionTimer = null;
 let liveDetectionLoading = false;
 const liveFrameGenerations = new Map();
 const liveFrameCache = new Map();
+const LIVE_FRAME_CACHE_MAX_AGE_MS = 3000;
 const liveDetectionsByCamera = new Map();
 const liveDetectionsBySlot = new Map();
 
@@ -768,6 +769,19 @@ function setFeedBadgeLive(image, isLive) {
   if (!badge) return;
   badge.textContent = isLive ? t("status.live") : t("status.waiting_video");
   badge.classList.toggle("feed-stale-badge", !isLive);
+}
+
+function clearStaleLiveFrame(slot) {
+  liveFrameCache.delete(slot);
+  els.moduleContent.querySelectorAll(`[data-live-frame][data-live-slot="${slot}"]`).forEach((canvas) => {
+    const context = canvas.getContext("2d", { alpha: false });
+    context.fillStyle = "#101827";
+    context.fillRect(0, 0, canvas.width || 1, canvas.height || 1);
+    canvas.classList.add("feed-stale");
+    canvas.dataset.liveLastUpdate = "";
+    canvas.title = "Waiting for a current live frame";
+    setFeedBadgeLive(canvas, false);
+  });
 }
 
 function liveWebSocketUrl(slots) {
@@ -790,7 +804,10 @@ async function pollLiveFrames(slotNumbers) {
         const response = await fetch(`${API_BASE}/api/live_frame?slot=${slot}&_=${Date.now()}`, {
           cache: "no-store",
         });
-        if (!response.ok) return;
+        if (!response.ok) {
+          clearStaleLiveFrame(slot);
+          return;
+        }
         renderLiveSocketFrame(slot, new Uint8Array(await response.arrayBuffer()));
       } catch {
         // A later poll recovers automatically when the proxy or camera returns.
@@ -1004,7 +1021,7 @@ function stopLiveDetectionRefresh() {
 }
 
 function renderLiveSocketFrame(slot, jpegBytes, cacheFrame = true) {
-  if (cacheFrame) liveFrameCache.set(slot, jpegBytes);
+  if (cacheFrame) liveFrameCache.set(slot, { bytes: jpegBytes, receivedAt: Date.now() });
   const generation = (liveFrameGenerations.get(slot) || 0) + 1;
   liveFrameGenerations.set(slot, generation);
   createImageBitmap(new Blob([jpegBytes], { type: "image/jpeg" }))
@@ -1061,7 +1078,11 @@ function reconcileLiveStreams() {
   // feed grid. A fresh WebSocket frame will replace it on the next server tick.
   slotNumbers.forEach((slot) => {
     const cachedFrame = liveFrameCache.get(slot);
-    if (cachedFrame) renderLiveSocketFrame(slot, cachedFrame, false);
+    if (cachedFrame && Date.now() - cachedFrame.receivedAt <= LIVE_FRAME_CACHE_MAX_AGE_MS) {
+      renderLiveSocketFrame(slot, cachedFrame.bytes, false);
+    } else if (cachedFrame) {
+      clearStaleLiveFrame(slot);
+    }
   });
   if (requiresLiveFramePolling()) {
     stopLiveFrameRefresh();
