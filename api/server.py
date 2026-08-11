@@ -7093,7 +7093,19 @@ def get_dataset_image(dataset_id: str, image_id: str, metadata: bool = False):
         row = _dataset_builder().get_image(dataset_id, image_id)
     except DatasetError as exc:
         raise _dataset_error(exc, 404) from exc
-    return {"data": row} if metadata else FileResponse(row["original_path"])
+    if metadata:
+        return {"data": row}
+    image_path = Path(row["original_path"])
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="IMAGE_STORAGE_FAILED: dataset image file is missing.")
+    media_type = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+    }.get(image_path.suffix.lower(), "application/octet-stream")
+    return Response(
+        content=image_path.read_bytes(),
+        media_type=media_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 @app.post("/api/v1/datasets/{dataset_id}/images/{image_id}/suggestions")
