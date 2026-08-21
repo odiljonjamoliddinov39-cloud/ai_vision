@@ -71,6 +71,15 @@ class Detector:
         self._load_model()
 
     def _load_model(self) -> None:
+        if self.requested_model_path.strip().lower() == "dummy":
+            # Explicit no-model sentinel used by deterministic demo configs
+            # (e.g. config/demo.yaml). Skip loading/downloading any weights
+            # so main.py's dummy-detector branch (model is None) activates.
+            self.model = None
+            self.model_path = self.requested_model_path
+            self.load_error = None
+            print("Detector: model_path is 'dummy', running without a model.")
+            return
         errors: list[str] = []
         # Ordered, de-duplicated candidate list. We try, in order:
         #   1. the requested model (config's model_path),

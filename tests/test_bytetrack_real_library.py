@@ -2,6 +2,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 from detection.detector import Detection
 from tracking.bytetrack_adapter import ByteTrackAdapter
@@ -21,7 +22,11 @@ def _detection():
 
 
 def test_real_ultralytics_84115_uses_isolated_camera_track_classes():
-    assert version("ultralytics") == "8.4.115"
+    # requirements.txt allows ultralytics>=8.4.115,<8.5 - match that range
+    # instead of pinning an exact patch version the installed one will drift
+    # past on every routine dependency update.
+    installed = Version(version("ultralytics"))
+    assert Version("8.4.115") <= installed < Version("8.5")
 
     first = ByteTrackAdapter("camera-one", _config())
     second = ByteTrackAdapter("camera-two", _config())

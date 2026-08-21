@@ -385,9 +385,40 @@ def main():
             detector_version=str(pipeline_cfg.get("detector_version", detector.health().get("active_model"))),
             class_ids={target_class: target_class_id, "box": target_class_id},
         )
-    processors = {
-        name: pipeline.process for name, pipeline in live_pipelines.items()
-    }
+    if detector.model is None:
+        # No YOLO weights configured (config/demo.yaml): route the
+        # deterministic synthetic box through the same rule/counting/event
+        # pipeline real cameras use, so the demo actually exercises and
+        # persists a real line-crossing count instead of doing nothing.
+        demo_rule_config = RuleConfig(
+            package_class_ids=frozenset({target_class_id}), counting_zone=zone,
+            entry_line=Line(tuple(entry[0]), tuple(entry[1])),
+            exit_line=Line(tuple(exit_line[0]), tuple(exit_line[1])),
+            minimum_confidence=float(counting_cfg.get("minimum_confidence", .35)),
+            minimum_track_age=int(counting_cfg.get("minimum_track_age", 4)),
+            direction=int(counting_cfg.get("direction", 1)),
+            target_products=frozenset({target_class}),
+        )
+        for cam in cameras:
+            stream_id = f"dummy:{cam.name}"
+            scan_id = vision_db.start_scan(stream_id, cam.name)
+            scan_runs[cam.name] = scan_id
+            live_pipelines[cam.name] = LiveVisionPipeline(
+                camera_id=cam.name, stream_id=stream_id,
+                processor=_DemoCanonicalProcessor(target_class, target_class_id),
+                rule_engine=ObjectRuleEngine(demo_rule_config),
+                counting_engine=CountingEngine(demo_rule_config),
+                recognition_engine=RecognitionEngine(None),
+                event_engine=EventEngine(vision_db, scan_id), database=vision_db,
+                pipeline_version=str(pipeline_cfg.get("version", "1.0.0")),
+                detector_version="dummy",
+                class_ids={target_class: target_class_id, "box": target_class_id},
+            )
+    # Only real, model-backed cameras go through the async scheduler; the
+    # dummy/demo pipelines above are called synchronously in the main loop
+    # so the deterministic demo stays deterministic (no worker-thread
+    # timing or queue drops).
+    processors = {name: live_pipelines[name].process for name in camera_processors}
     inference_scheduler = (
         LatestFrameInferenceScheduler(
             processors,
@@ -469,7 +500,9 @@ def main():
                         "error": inference_result.error,
                     }
                 elif detector.model is None:
-                    tracked_objects = _demo_tracked_objects(dummy_positions[cam.name])
+                    tracked_objects = live_pipelines[cam.name].process(
+                        frame, dummy_positions[cam.name], frame_at
+                    )
                     downstream_objects = tracked_objects
                     dummy_positions[cam.name] += 1
                     last_tracked_count = len(tracked_objects)
@@ -511,6 +544,8 @@ def main():
                         print(
                             f"[{cam.name}] Check-in: #{event.track_id} {event.class_name}"
                         )
+                elif tracked_objects is not None:
+                    last_tracked_count = len(tracked_objects)
                 else:
                     last_tracked_count = 0
 
@@ -657,9 +692,39 @@ def main():
         print("Stopped.")
 
 
-def _demo_tracked_objects(frame_index: int) -> list[TrackedObject]:
-    y = min(520, 170 + frame_index * 5)
-    return [TrackedObject(track_id=1, class_name="box", confidence=0.95, box=(430, y, 530, y + 80))]
+def _demo_tracked_objects(
+    frame_index: int, class_name: str = "box", class_id: int | None = None
+) -> list[TrackedObject]:
+    # Speed tuned to fully cross the default counting_rules geometry
+    # (entry line y=180, zone to y=500, exit line y=500) within the
+    # README's documented `--max-frames 40` demo run.
+    center_y = 100 + frame_index * 12
+    y = max(0, center_y - 40)
+    return [
+        TrackedObject(
+            track_id=1,
+            class_name=class_name,
+            confidence=0.95,
+            box=(430, y, 530, y + 80),
+            class_id=class_id,
+        )
+    ]
+
+
+class _DemoCanonicalProcessor:
+    """Stands in for detection + ByteTrack in the deterministic demo: emits
+    the same synthetic box _demo_tracked_objects draws, labeled to match the
+    configured target class/product so it passes the real rule engine."""
+
+    def __init__(self, class_name: str, class_id: int):
+        self.class_name = class_name
+        self.class_id = class_id
+
+    def process(self, image, frame_sequence, observed_at) -> list[TrackedObject]:
+        return _demo_tracked_objects(frame_sequence, self.class_name, self.class_id)
+
+    def reset(self, reason: str = "camera_reconnect") -> None:
+        pass
 
 
 def _serialize_detection(det, frame) -> dict:

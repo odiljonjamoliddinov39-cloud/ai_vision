@@ -84,7 +84,7 @@ def test_main_routes_inventory_through_live_pipeline():
         encoding="utf-8"
     )
 
-    assert "pipeline.process for name, pipeline in live_pipelines.items()" in source
+    assert "live_pipelines[name].process for name in camera_processors" in source
     assert "warehouse_engine.process(" not in source
     assert "_process_warehouse_counting(" not in source.split('if __name__ == "__main__":')[0]
 
