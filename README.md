@@ -132,15 +132,17 @@ zipped/committed even before those phases are built.
 
    A window opens per camera showing live detections when display is available. Press **q** to quit.
 
-   To verify the warehouse stock-counting flow without a physical camera
+   To verify the entry/zone/exit counting flow without a physical camera
    or YOLO weights, run the deterministic demo:
 
    ```bash
    python main.py --config config/demo.yaml --no-display --max-frames 40
    ```
 
-   This uses a synthetic tracked box crossing the counting line and writes
-   stock movements to `database/warehouse.db`.
+   This routes a synthetic tracked box through the same rule engine,
+   counting engine, and event pipeline real cameras use, crossing the
+   configured entry line, zone, and exit line, and records one count
+   event in `database/vision.db` (table `counts`).
 
 6. **Run the JavaScript control panel:**
 
