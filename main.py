@@ -511,6 +511,8 @@ def main():
                         print(
                             f"[{cam.name}] Check-in: #{event.track_id} {event.class_name}"
                         )
+                elif tracked_objects is not None:
+                    last_tracked_count = len(tracked_objects)
                 else:
                     last_tracked_count = 0
 

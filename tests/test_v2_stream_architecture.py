@@ -177,6 +177,9 @@ def test_live_frame_prefers_stream_manager_memory(monkeypatch, tmp_path):
     data = b"\xff\xd8from-memory\xff\xd9"
 
     class FakeStreamManager:
+        def status(self):
+            return {"streams": [{"slot_number": 7, "name": None, "frame_age_ms": 0}]}
+
         def latest_frame_bytes(self, channel_id=None, slot_number=None, name=None):
             assert slot_number == 7
             return data

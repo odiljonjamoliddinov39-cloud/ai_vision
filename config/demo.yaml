@@ -15,7 +15,7 @@ display:
   live_feed_enabled: false
 tracking:
   enabled: true
-  tracker_config: bytetrack.yaml
+  tracker_config: config/warehouse_bytetrack.yaml
   classes: null
   grace_period_seconds: 5.0
   db_path: database/tracking.db

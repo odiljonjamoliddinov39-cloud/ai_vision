@@ -66,7 +66,13 @@ def test_dashboard_uses_first_free_camera_slot_for_new_nvr():
     assert '.drawImage(bitmap, 0, 0);' in source
     assert "function stopLiveFrameRefresh()" in source
     assert 'data-live-priming="true" role="img"' in source
-    assert "/api/live_frame?slot=${slot}" not in source
+    # The WebSocket transport is the default path. /api/live_frame polling
+    # still exists, but only as a fallback for Vercel deployments, where
+    # serverless functions can't hold a long-lived WebSocket connection
+    # (requiresLiveFramePolling() gates it) - so it must stay gated behind
+    # that check rather than disappearing or running unconditionally.
+    assert "function requiresLiveFramePolling()" in source
+    assert "/api/live_frame?slot=${slot}" in source
     assert "image.complete && image.naturalWidth > 0" not in source
 
 

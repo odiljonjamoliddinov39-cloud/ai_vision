@@ -156,6 +156,9 @@ def test_live_frame_returns_stable_jpeg_bytes(tmp_path, monkeypatch):
     jpeg = b"\xff\xd8stable-frame\xff\xd9"
 
     class FakeStreamManager:
+        def status(self):
+            return {"streams": [{"slot_number": 6, "name": None, "frame_age_ms": 0}]}
+
         def latest_frame_bytes(self, slot_number=None, name=None):
             assert slot_number == 6
             assert name is None
