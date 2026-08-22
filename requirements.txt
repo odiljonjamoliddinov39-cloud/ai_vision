@@ -1,6 +1,6 @@
 # Core (Phase 1 MVP)
 PyYAML>=6.0
-fastapi>=0.115.0
+fastapi>=0.115.0,<0.142.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 openpyxl>=3.1.5

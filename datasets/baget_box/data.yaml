@@ -2,4 +2,4 @@ path: datasets/baget_box
 train: images/train
 val: images/val
 names:
-  0: baget_box
+  0: baget_box_stack_individual
