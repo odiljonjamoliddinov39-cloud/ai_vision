@@ -55,33 +55,6 @@ services:
       - ai-vision-datasets:/app/datasets
       - ai-vision-dataset-sources:/app/data
 
-  ai-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ai-vision-backend:local
-    restart: unless-stopped
-    profiles:
-      - worker
-    env_file:
-      - .env
-    environment:
-      AI_VISION_ENTERPRISE_STREAMING: "${AI_VISION_ENTERPRISE_STREAMING:-true}"
-      MEDIAMTX_REQUIRED: "${MEDIAMTX_REQUIRED:-false}"
-      MEDIAMTX_API_URL: "http://mediamtx:9997"
-      MEDIAMTX_RTSP_URL: "rtsp://mediamtx:8554"
-      DATASET_STORAGE_ROOT: "/app/data"
-    command: ["python", "main.py", "--config", "config/config.yaml", "--no-display"]
-    volumes:
-      - ./models:/app/models
-      - ./logs:/app/logs
-      - ./snapshots:/app/snapshots
-      - ./database:/app/database
-      - ./config:/app/config
-      - ./recordings:/recordings
-      - ai-vision-datasets:/app/datasets
-      - ai-vision-dataset-sources:/app/data
-
 volumes:
   ai-vision-datasets:
   ai-vision-dataset-sources:

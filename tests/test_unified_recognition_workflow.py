@@ -254,7 +254,7 @@ def test_analytics_ui_is_one_scan_workflow_without_fake_test_or_loading_state():
 
 
 def test_legacy_instant_analytics_endpoint_is_removed():
-    paths = {route.path for route in server.app.routes}
+    paths = {route.path for route in server.app.routes if hasattr(route, "path")}
     assert "/api/training/analytics/run" not in paths
     assert "/api/training/search" in paths
     assert "/api/training/search/status" in paths
