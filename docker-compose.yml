@@ -40,7 +40,6 @@ services:
       AI_STREAM_FPS: "${AI_STREAM_FPS:-6}"
       DASHBOARD_STREAM_WIDTH: "${DASHBOARD_STREAM_WIDTH:-1920}"
       DASHBOARD_STREAM_FPS: "${DASHBOARD_STREAM_FPS:-20}"
-      DATASET_STORAGE_ROOT: "/app/data"
     depends_on:
       - mediamtx
     ports:
@@ -53,8 +52,6 @@ services:
       - ./config:/app/config
       - ./recordings:/recordings
       - ai-vision-datasets:/app/datasets
-      - ai-vision-dataset-sources:/app/data
 
 volumes:
   ai-vision-datasets:
-  ai-vision-dataset-sources:

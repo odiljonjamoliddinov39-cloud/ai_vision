@@ -110,8 +110,6 @@ recognition:
   model: old-model
 tracking:
   enabled: true
-warehouse_counting:
-  confidence_threshold: 0.55
 snapshots:
   trigger_classes:
   - person
@@ -132,7 +130,6 @@ logging:
             recognition_model="gemini-test",
             recognition_similarity_threshold=0.71,
             tracking_grace_period_seconds=9,
-            warehouse_confidence_threshold=0.63,
             snapshot_trigger_classes=["box", "sack"],
             logging_enabled=False,
         )
@@ -146,7 +143,6 @@ logging:
     assert saved["recognition"]["model"] == "gemini-test"
     assert saved["recognition"]["similarity_threshold"] == 0.71
     assert saved["tracking"]["grace_period_seconds"] == 9
-    assert saved["warehouse_counting"]["confidence_threshold"] == 0.63
     assert saved["snapshots"]["trigger_classes"] == ["box", "sack"]
     assert saved["logging"]["enabled"] is False
     assert result["recognition"]["model"] == "gemini-test"

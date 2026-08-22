@@ -47,13 +47,11 @@ from detection.spatial import SpatialAnalyzer
 from detection.snapshot import SnapshotSaver
 from database.event_log import EventLogger
 from database.tracking_db import TrackingDB
-from database.warehouse_db import WarehouseDB
 from tracking.tracker import TrackedObject
 from tracking.bytetrack_adapter import ByteTrackAdapter
 from tracking.presence import PresenceTracker
 from recognition.product_recognizer import ProductRecognizer
 from recognition import RecognitionEngine
-from warehouse_engine import WarehouseEngine
 from database.vision_db import VisionDB
 from events import EventEngine
 from pipeline import LiveVisionPipeline
@@ -219,55 +217,6 @@ def main():
         print(
             f"Tracking enabled ({track_cfg.get('tracker_config', 'bytetrack.yaml')}), "
             f"grace period {track_cfg.get('grace_period_seconds', 5.0)}s."
-        )
-
-    # --- Warehouse Intelligence Engine ---
-    warehouse_cfg = config.get("warehouse_counting", {})
-    engine_cfg = {**warehouse_cfg, **config.get("warehouse_engine", {})}
-    warehouse_enabled = engine_cfg.get("enabled", warehouse_cfg.get("enabled", False))
-    warehouse_db = None
-    warehouse_engine = None
-    if warehouse_enabled:
-        warehouse_db = WarehouseDB(db_path=warehouse_cfg.get("db_path", "database/warehouse.db"))
-
-        def accepted_movement_sink(event, detection):
-            warehouse_db.record_movement(
-                product_name=event.product_name,
-                direction="IN" if event.inventory_delta > 0 else "OUT",
-                camera_id=event.camera_id,
-                tracking_id=getattr(detection, "track_id", None),
-                confidence=event.confidence,
-                quantity=abs(event.inventory_delta),
-                object_type=getattr(detection, "object_type", None),
-                dimensions_m=(
-                    getattr(detection, "width_m", None),
-                    getattr(detection, "height_m", None),
-                    getattr(detection, "depth_m", None),
-                )
-                if all(
-                    getattr(detection, field, None) is not None
-                    for field in ("width_m", "height_m", "depth_m")
-                )
-                else None,
-                distance_m=getattr(detection, "distance_m", None),
-                quantity_grid=getattr(detection, "quantity_grid", (1, 1, 1)),
-                measurement_method=getattr(detection, "method", None),
-            )
-        warehouse_engine = WarehouseEngine(
-            {
-                **engine_cfg,
-                "db_path": engine_cfg.get("engine_db_path", "database/warehouse_engine.db"),
-                "minimum_confidence": engine_cfg.get(
-                    "minimum_confidence",
-                    warehouse_cfg.get("confidence_threshold", 0.8),
-                ),
-            },
-            movement_sink=accepted_movement_sink,
-        )
-        print(
-            "Warehouse Intelligence Engine enabled. "
-            f"Engine DB: {warehouse_engine.database.path}; "
-            f"compatibility stock DB: {warehouse_db.db_path}"
         )
 
     # --- Product recognition knowledge engine ---
@@ -650,10 +599,6 @@ def main():
                     "tracking_by_camera": {
                         name: tracker.health() for name, tracker in object_trackers.items()
                     },
-                    "warehouse_counting_enabled": warehouse_enabled,
-                    "warehouse_counting_mode": warehouse_cfg.get("mode", "appearance")
-                    if warehouse_enabled
-                    else None,
                     "product_recognition_enabled": product_recognizer is not None,
                     "product_recognition_provider": recognition_cfg.get("provider")
                     if product_recognizer is not None
