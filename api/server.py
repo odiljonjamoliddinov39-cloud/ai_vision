@@ -70,14 +70,11 @@ from database.security_audit_db import SecurityAuditDB  # noqa: E402
 from database.tracking_db import TrackingDB  # noqa: E402
 from database.vision_db import VisionDB  # noqa: E402
 from database.warehouse_db import WarehouseDB  # noqa: E402
-from dataset_builder import DatasetBuilder, DatasetError, DatasetTrainingManager  # noqa: E402
 from detection.detector import Detector  # noqa: E402
 from detection.spatial import SpatialAnalyzer  # noqa: E402
 from inventory import InventoryCandidate, VisibleInventoryCounter  # noqa: E402
 from streams import StreamManager, StreamSessionConfig  # noqa: E402
 from api.vision_routes import router as vision_router  # noqa: E402
-from warehouse_engine.database import EngineDatabase  # noqa: E402
-from warehouse_engine.rules import parse_task_prompt  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "config.yaml"
@@ -97,7 +94,6 @@ CATALOG_DB_PATH = ROOT / "database" / "catalog.db"
 CATALOG_PROMPTS_PATH = ROOT / "logs" / "catalog_prompts.json"
 PRODUCT_FINGERPRINTS_PATH = ROOT / "logs" / "product_fingerprints.json"
 ACTIVE_MODELS_PATH = ROOT / "models" / "active_models.json"
-WAREHOUSE_ENGINE_DB_PATH = ROOT / "database" / "warehouse_engine.db"
 ACCOUNTS_DB_PATH = ROOT / "database" / "accounts.db"
 DETECTION_STDOUT_PATH = ROOT / "logs" / "detection_stdout.log"
 DETECTION_STDERR_PATH = ROOT / "logs" / "detection_stderr.log"
@@ -138,30 +134,9 @@ _catalog_recognition_task: asyncio.Task | None = None
 _catalog_run_lock: asyncio.Lock | None = None
 _manual_stop_requested = False
 _watchdog_last_start_attempt = 0.0
-_dataset_builder_obj: DatasetBuilder | None = None
-_dataset_training_obj: DatasetTrainingManager | None = None
-_dataset_capture_jobs: dict[str, dict[str, Any]] = {}
 _active_product_detectors: dict[tuple[str, str], Detector] = {}
 
 
-def _dataset_builder() -> DatasetBuilder:
-    global _dataset_builder_obj
-    if _dataset_builder_obj is None:
-        database = VisionDB(os.getenv("VISION_DB_PATH", str(ROOT / "database" / "vision.db")))
-        # Dataset source images must not be stored in the disposable application
-        # layer.  Docker deployments replace /app, while /app/data is a mounted
-        # host directory.  Keeping both source frames and materialized datasets
-        # here makes database rows and their JPEGs survive the same deployments.
-        storage_root = Path(os.getenv("DATASET_STORAGE_ROOT", str(ROOT / "data")))
-        _dataset_builder_obj = DatasetBuilder(storage_root, database)
-    return _dataset_builder_obj
-
-
-def _dataset_training() -> DatasetTrainingManager:
-    global _dataset_training_obj
-    if _dataset_training_obj is None:
-        _dataset_training_obj = DatasetTrainingManager(_dataset_builder())
-    return _dataset_training_obj
 
 # On-demand "run recognition for a few minutes" mode (POST
 # /api/catalog/recognition/run-live): in-memory only, keyed by scope_id.
@@ -851,9 +826,6 @@ class ConfigPatch(BaseModel):
     max_units_per_detection: int | None = Field(default=None, ge=1, le=10000)
     tracking_enabled: bool | None = None
     tracking_grace_period_seconds: float | None = Field(default=None, ge=0.0, le=600.0)
-    warehouse_counting_enabled: bool | None = None
-    warehouse_confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
-    count_low_confidence_as_unknown: bool | None = None
     snapshots_enabled: bool | None = None
     snapshot_trigger_classes: list[str] | None = None
     snapshot_cooldown_seconds: int | None = Field(default=None, ge=0)
@@ -940,9 +912,6 @@ class ProductLearningSave(BaseModel):
     view_indices: list[int] = Field(min_length=1, max_length=8)
     existing_item_id: str | None = Field(default=None, max_length=120)
 
-
-class WarehouseTaskRequest(BaseModel):
-    prompt: str = Field(min_length=3, max_length=500)
 
 
 class CameraCreate(BaseModel):
@@ -3101,41 +3070,6 @@ def warehouse_movements(limit: int = 50) -> dict[str, Any]:
     return {"movements": db.recent_movements(limit=max(1, min(limit, 500)))}
 
 
-@app.get("/api/warehouse-engine/overview")
-def warehouse_engine_overview(limit: int = 100) -> dict[str, Any]:
-    db = EngineDatabase(str(WAREHOUSE_ENGINE_DB_PATH))
-    objects = db.objects(limit=max(1, min(limit, 500)))
-    events = db.events(limit=max(1, min(limit, 500)))
-    active = [row for row in objects if row.get("current_status") == "active"]
-    zones: dict[str, int] = {}
-    for row in active:
-        zone = str(row.get("current_zone") or "Unassigned")
-        zones[zone] = zones.get(zone, 0) + 1
-    return {
-        "detected_objects": len(objects),
-        "tracked_objects": len(active),
-        "inventory_objects": len(
-            [row for row in active if row.get("product_name")]
-        ),
-        "active_events": len(events),
-        "zone_statistics": zones,
-        "objects": objects,
-        "events": events,
-    }
-
-
-@app.get("/api/warehouse-engine/events")
-def warehouse_engine_events(limit: int = 200) -> dict[str, Any]:
-    return {
-        "events": EngineDatabase(str(WAREHOUSE_ENGINE_DB_PATH)).events(
-            limit=max(1, min(limit, 1000))
-        )
-    }
-
-
-@app.post("/api/warehouse-engine/tasks/parse")
-def warehouse_engine_parse_task(request: WarehouseTaskRequest) -> dict[str, Any]:
-    return {"prompt": request.prompt, "task": parse_task_prompt(request.prompt)}
 
 
 def _poll_process() -> None:
@@ -3933,7 +3867,6 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
     snapshots = data.setdefault("snapshots", {})
     logging_cfg = data.setdefault("logging", {})
     tracking = data.setdefault("tracking", {})
-    warehouse_counting = data.setdefault("warehouse_counting", {})
     recognition = data.setdefault("recognition", {})
 
     values = patch.model_dump(exclude_unset=True)
@@ -3991,12 +3924,6 @@ def update_config(patch: ConfigPatch) -> dict[str, Any]:
         tracking["enabled"] = values["tracking_enabled"]
     if "tracking_grace_period_seconds" in values:
         tracking["grace_period_seconds"] = values["tracking_grace_period_seconds"]
-    if "warehouse_counting_enabled" in values:
-        warehouse_counting["enabled"] = values["warehouse_counting_enabled"]
-    if "warehouse_confidence_threshold" in values:
-        warehouse_counting["confidence_threshold"] = values["warehouse_confidence_threshold"]
-    if "count_low_confidence_as_unknown" in values:
-        warehouse_counting["count_low_confidence_as_unknown"] = values["count_low_confidence_as_unknown"]
     if "snapshots_enabled" in values:
         snapshots["enabled"] = values["snapshots_enabled"]
     if "snapshot_trigger_classes" in values:
@@ -6155,48 +6082,6 @@ class BenchmarkSubmission(BaseModel):
     notes: str | None = Field(default=None, max_length=1000)
 
 
-class DatasetCreate(BaseModel):
-    product_id: str = Field(min_length=1, max_length=120)
-    product_name: str = Field(min_length=1, max_length=160)
-
-
-class DatasetCapture(BaseModel):
-    camera_id: str = Field(min_length=1, max_length=120)
-    block_id: str | None = Field(default=None, max_length=120)
-
-
-class DatasetAutoCapture(DatasetCapture):
-    interval_seconds: float = Field(default=3, ge=0.5, le=3600)
-    frames: int = Field(default=30, ge=1, le=1000)
-
-
-class DatasetAnnotationSave(BaseModel):
-    annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
-
-
-class DatasetSuggestionRequest(BaseModel):
-    roi: dict[str, float] | None = None
-
-
-class DatasetTrainingStart(BaseModel):
-    model_name: str = Field(min_length=1, max_length=100)
-    base_model: str = Field(default="yolov8s.pt", min_length=1, max_length=240)
-    epochs: int = Field(default=100, ge=1, le=1000)
-    image_size: int = Field(default=960, ge=320, le=2048)
-
-
-class DatasetModelBenchmark(BaseModel):
-    benchmark_ids: list[int] = Field(min_length=1, max_length=10000)
-
-
-class ReviewQueueCreate(BaseModel):
-    product_id: str = Field(min_length=1, max_length=120)
-    dataset_id: str | None = Field(default=None, max_length=160)
-    camera_id: str | None = Field(default=None, max_length=120)
-    image_path: str = Field(min_length=1, max_length=1000)
-    reason: str = Field(min_length=1, max_length=240)
-    confidence: float | None = Field(default=None, ge=0, le=1)
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 def _training_gemini_suggestion(crop) -> tuple[str | None, float]:
@@ -6743,482 +6628,6 @@ def list_scan_products() -> dict[str, Any]:
     return {"data": products, "meta": {"count": len(products)}}
 
 
-def _dataset_error(exc: DatasetError, status: int = 400) -> HTTPException:
-    return HTTPException(status_code=status, detail=str(exc))
-
-
-@app.get("/api/v1/datasets/models")
-def list_dataset_models() -> dict[str, Any]:
-    rows = _dataset_training().models()
-    return {"data": rows, "meta": {"count": len(rows)}}
-
-
-@app.get("/api/v1/datasets/models/{model_id}")
-def get_dataset_model(model_id: str) -> dict[str, Any]:
-    try:
-        return {"data": _dataset_training().model(model_id)}
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-
-
-@app.post("/api/v1/datasets/models/{model_id}/benchmark")
-def benchmark_dataset_model(model_id: str, body: DatasetModelBenchmark) -> dict[str, Any]:
-    manager = _dataset_training()
-    try:
-        model = manager.model(model_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    if model["status"] != "COMPLETED":
-        raise HTTPException(status_code=409, detail="Only completed models can be benchmarked.")
-    dataset = manager.builder.get_dataset(model["dataset_id"])
-    placeholders = ",".join("?" for _ in body.benchmark_ids)
-    rows = manager.builder.database.dataset_fetchall(
-        f"SELECT * FROM vision_benchmarks WHERE id IN ({placeholders})", tuple(body.benchmark_ids)
-    )
-    if len(rows) != len(set(body.benchmark_ids)):
-        raise HTTPException(status_code=404, detail="One or more real-camera benchmark records were not found.")
-    if any(_catalog_normalize_name(row.get("target_product")) != _catalog_normalize_name(dataset["product_name"]) for row in rows):
-        raise HTTPException(status_code=400, detail="Every benchmark record must belong to the model Product.")
-    truth = sum(int(row["ground_truth_count"]) for row in rows)
-    predicted = sum(int(row["predicted_count"]) for row in rows)
-    accuracy = 1.0 if truth == predicted == 0 else (max(0.0, 1.0 - abs(predicted - truth) / truth) if truth else 0.0)
-    metrics = dict(model.get("metrics") or {})
-    metrics["real_camera_benchmark"] = {
-        "benchmark_ids": body.benchmark_ids, "ground_truth": truth,
-        "predicted": predicted, "accuracy": accuracy,
-    }
-    manager.builder.database.dataset_execute(
-        "UPDATE vision_models SET benchmark_accuracy=?,metrics=? WHERE id=?",
-        (accuracy, json.dumps(metrics), model_id),
-    )
-    return {"data": manager.model(model_id)}
-
-
-def _activate_dataset_model(model: dict) -> None:
-    global _baget_detector_obj, _baget_detector_key
-    weights = Path(str(model.get("weights_path") or ""))
-    if model["status"] != "COMPLETED" or not weights.exists():
-        raise DatasetError("Completed model weights are unavailable.")
-    if float(model.get("benchmark_accuracy") or 0) < 0.90:
-        raise DatasetError("Real-camera benchmark accuracy must be at least 90% before deployment.")
-    dataset = _dataset_builder().get_dataset(model["dataset_id"])
-    active = _read_json(ACTIVE_MODELS_PATH) or {}
-    product_key = dataset["class_name"]
-    previous = (active.get(product_key) or {}).get("model_id")
-    active[product_key] = {
-        "model_id": model["id"], "model_name": model["name"],
-        "weights_path": str(weights), "detector_mode": f"{product_key}_custom",
-        "benchmark_accuracy": model["benchmark_accuracy"], "deployed_at": datetime.now(timezone.utc).isoformat(),
-    }
-    ACTIVE_MODELS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = ACTIVE_MODELS_PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(active, indent=2), encoding="utf-8")
-    temporary.replace(ACTIVE_MODELS_PATH)
-    database = _dataset_builder().database
-    database.dataset_execute(
-        "UPDATE vision_models SET deployment_status='INACTIVE' WHERE dataset_id IN (SELECT id FROM vision_datasets WHERE product_id=?)",
-        (dataset["product_id"],),
-    )
-    deployed_at = datetime.now(timezone.utc).isoformat()
-    database.dataset_execute(
-        "UPDATE vision_models SET deployment_status='ACTIVE',deployed_at=? WHERE id=?", (deployed_at, model["id"])
-    )
-    database.dataset_execute(
-        "INSERT INTO vision_model_deployments(product_id,model_id,previous_model_id,deployed_at) VALUES(?,?,?,?)",
-        (dataset["product_id"], model["id"], previous, deployed_at),
-    )
-    _active_product_detectors.clear()
-    _baget_detector_obj = _baget_detector_key = None
-
-
-@app.post("/api/v1/datasets/models/{model_id}/deploy")
-def deploy_dataset_model(model_id: str) -> dict[str, Any]:
-    try:
-        model = _dataset_training().model(model_id)
-        _activate_dataset_model(model)
-        return {"data": _dataset_training().model(model_id)}
-    except DatasetError as exc:
-        raise _dataset_error(exc, 409) from exc
-
-
-@app.post("/api/v1/datasets/models/{model_id}/rollback")
-def rollback_dataset_model(model_id: str) -> dict[str, Any]:
-    manager = _dataset_training()
-    try:
-        current = manager.model(model_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    dataset = manager.builder.get_dataset(current["dataset_id"])
-    row = manager.builder.database.dataset_fetchone(
-        "SELECT previous_model_id FROM vision_model_deployments WHERE product_id=? AND model_id=? ORDER BY id DESC LIMIT 1",
-        (dataset["product_id"], model_id),
-    )
-    if not row or not row.get("previous_model_id"):
-        raise HTTPException(status_code=409, detail="No previous deployed model is available.")
-    try:
-        previous = manager.model(row["previous_model_id"])
-        _activate_dataset_model(previous)
-        return {"data": previous}
-    except DatasetError as exc:
-        raise _dataset_error(exc, 409) from exc
-
-
-@app.get("/api/v1/datasets/review-queue")
-def list_dataset_review_queue(status: str = "PENDING") -> dict[str, Any]:
-    rows = _dataset_builder().database.dataset_fetchall(
-        "SELECT * FROM vision_review_queue WHERE status=? ORDER BY created_at DESC", (status.upper(),)
-    )
-    for row in rows:
-        row["payload"] = json.loads(row.get("payload") or "{}")
-    return {"data": rows, "meta": {"count": len(rows)}}
-
-
-@app.post("/api/v1/datasets/review-queue")
-def create_dataset_review_case(body: ReviewQueueCreate) -> dict[str, Any]:
-    case_id, now = secrets.token_hex(16), datetime.now(timezone.utc).isoformat()
-    _dataset_builder().database.dataset_execute(
-        "INSERT INTO vision_review_queue(id,product_id,dataset_id,camera_id,image_path,reason,confidence,status,payload,created_at,reviewed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        (case_id, body.product_id, body.dataset_id, body.camera_id, body.image_path,
-         body.reason, body.confidence, "PENDING", json.dumps(body.payload), now, None),
-    )
-    return {"data": {"id": case_id, "status": "PENDING"}}
-
-
-@app.post("/api/v1/datasets/review-queue/{case_id}/approve")
-def approve_dataset_review_case(case_id: str) -> dict[str, Any]:
-    database = _dataset_builder().database
-    row = database.dataset_fetchone("SELECT * FROM vision_review_queue WHERE id=?", (case_id,))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Review case not found.")
-    database.dataset_execute(
-        "UPDATE vision_review_queue SET status='APPROVED',reviewed_at=? WHERE id=?",
-        (datetime.now(timezone.utc).isoformat(), case_id),
-    )
-    return {"data": {"id": case_id, "status": "APPROVED", "dataset_id": row.get("dataset_id")}}
-
-
-@app.get("/api/v1/datasets/capture-jobs/{job_id}")
-def get_dataset_capture_job(job_id: str) -> dict[str, Any]:
-    job = _dataset_capture_jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Capture job not found.")
-    return {"data": job}
-
-
-@app.get("/api/v1/datasets")
-def list_datasets(include_archived: bool = False) -> dict[str, Any]:
-    rows = _dataset_builder().list_datasets(include_archived)
-    return {"data": rows, "meta": {"count": len(rows)}}
-
-
-@app.post("/api/v1/datasets")
-def create_dataset(body: DatasetCreate) -> dict[str, Any]:
-    product = next((row for row in _scan_products() if str(row.get("id")) == body.product_id), None)
-    if product is None or _catalog_normalize_name(product.get("name")) != _catalog_normalize_name(body.product_name):
-        raise HTTPException(status_code=400, detail="Dataset product must match the existing Product database.")
-    try:
-        return {"data": _dataset_builder().create_dataset(body.product_id, str(product["name"]))}
-    except DatasetError as exc:
-        raise _dataset_error(exc) from exc
-
-
-@app.get("/api/v1/datasets/{dataset_id}")
-def get_dataset(dataset_id: str) -> dict[str, Any]:
-    try:
-        dataset = _dataset_builder().get_dataset(dataset_id)
-        dataset["images"] = _dataset_builder().images(dataset_id)
-        return {"data": dataset}
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-
-
-@app.get("/api/v1/datasets/{dataset_id}/health")
-def get_dataset_health(dataset_id: str) -> dict[str, Any]:
-    try:
-        return {"data": _dataset_builder().health(dataset_id)}
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-
-
-@app.post("/api/v1/datasets/{dataset_id}/archive")
-def archive_dataset(dataset_id: str) -> dict[str, Any]:
-    try:
-        _dataset_builder().get_dataset(dataset_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    now = datetime.now(timezone.utc).isoformat()
-    _dataset_builder().database.dataset_execute(
-        "UPDATE vision_datasets SET archived=1,status='ARCHIVED',updated_at=? WHERE id=?", (now, dataset_id)
-    )
-    return {"data": _dataset_builder().get_dataset(dataset_id)}
-
-
-@app.post("/api/v1/datasets/{dataset_id}/duplicate")
-def duplicate_dataset(dataset_id: str) -> dict[str, Any]:
-    builder = _dataset_builder()
-    try:
-        source = builder.get_dataset(dataset_id)
-        target = builder.create_dataset(source["product_id"], source["product_name"])
-        for source_image in builder.images(dataset_id):
-            imported = builder.ingest(
-                target["id"], Path(source_image["original_path"]).read_bytes(),
-                suffix=Path(source_image["original_path"]).suffix, source="dataset_version",
-                camera_id=source_image.get("camera_id"), block_id=source_image.get("block_id"),
-            )
-            if imported.get("skipped") or source_image["annotation_status"] != "VERIFIED":
-                continue
-            boxes = builder.get_image(dataset_id, source_image["id"])["annotations"]
-            builder.save_annotations(target["id"], imported["id"], [{
-                "x1": box["x1"], "y1": box["y1"], "x2": box["x2"], "y2": box["y2"],
-                "provenance": "manual", "confidence": box.get("confidence"),
-            } for box in boxes if box["status"] == "VERIFIED"])
-            builder.approve(target["id"], imported["id"])
-        return {"data": builder.get_dataset(target["id"])}
-    except (DatasetError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/v1/datasets/{dataset_id}/export")
-def export_dataset(dataset_id: str) -> StreamingResponse:
-    import zipfile
-    builder = _dataset_builder()
-    try:
-        dataset = builder.get_dataset(dataset_id)
-        root = builder.materialize(dataset_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in root.rglob("*"):
-            if path.is_file():
-                archive.write(path, path.relative_to(root))
-    output.seek(0)
-    return StreamingResponse(output, media_type="application/zip", headers={
-        "Content-Disposition": f'attachment; filename="{dataset["class_name"]}_v{dataset["version"]}.zip"'
-    })
-
-
-@app.post("/api/v1/datasets/{dataset_id}/import-legacy")
-def import_legacy_dataset_images(dataset_id: str) -> dict[str, Any]:
-    """Import legacy images only; historical labels/classes are intentionally ignored."""
-    builder = _dataset_builder()
-    try:
-        dataset = builder.get_dataset(dataset_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    candidates = [ROOT / "datasets" / dataset["class_name"], ROOT / "datasets" / "baget_box"]
-    paths = sorted({path.resolve() for root in candidates if root.exists() for path in root.rglob("*") if path.suffix.lower() in builder.allowed_extensions})
-    results = []
-    for path in paths:
-        # Do not re-import Dataset Builder's own materialized version.
-        if f"{os.sep}v{dataset['version']}{os.sep}" in str(path):
-            continue
-        results.append(builder.ingest(dataset_id, path.read_bytes(), suffix=path.suffix, source="legacy_import"))
-    return {"data": results, "meta": {"found": len(paths), "accepted": sum(not row.get("skipped") for row in results), "labels_imported": 0}}
-
-
-def _capture_dataset_once(dataset_id: str, body: DatasetCapture) -> dict[str, Any]:
-    camera = next((row for row in _camera_operations_payload() if str(row.get("id")) == body.camera_id), None)
-    if camera is None:
-        raise DatasetError("Camera not found.")
-    if body.block_id is not None and str(camera.get("block_id")) != body.block_id:
-        raise DatasetError("Camera does not belong to the selected Block.")
-    encoded_frame: bytes | None = None
-    try:
-        encoded_frame = _get_stream_manager().latest_frame_bytes(
-            slot_number=camera.get("slot_number"),
-            name=camera.get("name"),
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise DatasetError(f"IMAGE_CAPTURE_FAILED: live stream access failed: {exc}") from exc
-
-    # Dataset captures are training inputs and must be traceable to a current
-    # camera frame. Historical snapshot files are evidence only and are never
-    # a valid fallback for a capture request.
-    if not encoded_frame:
-        raise DatasetError("IMAGE_CAPTURE_FAILED: no current live frame is available from this camera.")
-
-    return _dataset_builder().ingest(
-        dataset_id, encoded_frame, suffix=".jpg", source="camera",
-        camera_id=body.camera_id, block_id=body.block_id,
-        camera_number=camera.get("slot_number") or camera.get("id"),
-        block_name=camera.get("block_name"),
-    )
-
-
-@app.post("/api/v1/datasets/{dataset_id}/capture")
-def capture_dataset_frame(dataset_id: str, body: DatasetCapture) -> dict[str, Any]:
-    try:
-        return {"data": _capture_dataset_once(dataset_id, body)}
-    except DatasetError as exc:
-        raise _dataset_error(exc) from exc
-
-
-@app.post("/api/v1/datasets/{dataset_id}/auto-capture")
-def start_dataset_auto_capture(dataset_id: str, body: DatasetAutoCapture) -> dict[str, Any]:
-    try:
-        _dataset_builder().get_dataset(dataset_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    job_id = secrets.token_hex(12)
-    _dataset_capture_jobs[job_id] = {"id": job_id, "status": "RUNNING", "requested": body.frames, "accepted": 0, "skipped": 0, "errors": []}
-
-    def worker() -> None:
-        job = _dataset_capture_jobs[job_id]
-        for index in range(body.frames):
-            try:
-                result = _capture_dataset_once(dataset_id, body)
-                job["skipped" if result.get("skipped") else "accepted"] += 1
-            except Exception as exc:  # noqa: BLE001
-                job["errors"].append(str(exc))
-            if index + 1 < body.frames:
-                time.sleep(body.interval_seconds)
-        job["status"] = "COMPLETED" if not job["errors"] else "COMPLETED_WITH_ERRORS"
-
-    threading.Thread(target=worker, daemon=True).start()
-    return {"data": _dataset_capture_jobs[job_id]}
-
-
-@app.post("/api/v1/datasets/{dataset_id}/upload")
-async def upload_dataset_images(dataset_id: str, files: list[UploadFile] = File(...)) -> dict[str, Any]:
-    results = []
-    for upload in files:
-        suffix = Path(upload.filename or "").suffix.lower()
-        try:
-            results.append(_dataset_builder().ingest(dataset_id, await upload.read(), suffix=suffix, source="upload"))
-        except DatasetError as exc:
-            results.append({"filename": upload.filename, "error": str(exc)})
-    return {"data": results, "meta": {"accepted": sum(not row.get("skipped") and not row.get("error") for row in results)}}
-
-
-@app.get("/api/v1/datasets/{dataset_id}/images/{image_id}")
-def get_dataset_image(dataset_id: str, image_id: str, metadata: bool = False):
-    try:
-        builder = _dataset_builder()
-        row = builder.get_image(dataset_id, image_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    if metadata:
-        return {"data": row}
-    image_path = Path(row["original_path"])
-    if not image_path.is_file():
-        # Old deployments stored source JPEGs in /app, while their database
-        # rows lived on a volume.  Those rows are recoverable only when they
-        # are still unverified camera captures: replace the absent evidence
-        # with a new live frame, move it to persistent storage, and update the
-        # record atomically enough for the annotation workspace to open.
-        live = None
-        if row.get("source") == "camera" and row.get("annotation_status") == "UNVERIFIED" and row.get("camera_id"):
-            # The Dataset Builder can be opened before its camera has been
-            # requested anywhere else in the dashboard. Ensure active streams
-            # exist, then support both database-camera IDs and NVR slot IDs.
-            _ensure_streams_from_active_cameras()
-            manager = _get_stream_manager()
-            camera_key = str(row["camera_id"])
-            live = manager.latest_frame_bytes(channel_id=camera_key)
-            if live is None and camera_key.isdigit():
-                live = manager.latest_frame_bytes(slot_number=int(camera_key))
-        if not live or not live.startswith(b"\xff\xd8"):
-            raise HTTPException(status_code=404, detail="IMAGE_STORAGE_FAILED: dataset image file is missing and no current live frame is available for recovery.")
-        recovered_at = datetime.now(timezone.utc)
-        recovered = builder.source_root / dataset_id / f"recovered_{row['camera_id']}_{recovered_at.strftime('%Y%m%dT%H%M%S%fZ')}_{image_id[:8]}.jpg"
-        recovered.parent.mkdir(parents=True, exist_ok=True)
-        recovered.write_bytes(live)
-        now = recovered_at.isoformat()
-        builder.database.dataset_execute(
-            "UPDATE vision_dataset_images SET original_path=?,content_hash=?,capture_timestamp=?,updated_at=? WHERE id=?",
-            (str(recovered), hashlib.sha256(live).hexdigest(), now, now, image_id),
-        )
-        image_path = recovered
-    media_type = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
-    }.get(image_path.suffix.lower(), "application/octet-stream")
-    return Response(
-        content=image_path.read_bytes(),
-        media_type=media_type,
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
-    )
-
-
-@app.post("/api/v1/datasets/{dataset_id}/images/{image_id}/suggestions")
-def suggest_dataset_annotations(dataset_id: str, image_id: str, body: DatasetSuggestionRequest | None = None) -> dict[str, Any]:
-    builder = _dataset_builder()
-    try:
-        dataset = builder.get_dataset(dataset_id)
-        image_row = builder.get_image(dataset_id, image_id)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-    if image_row["annotations"]:
-        raise HTTPException(status_code=409, detail="Resolve or delete the existing annotation draft before requesting suggestions.")
-    import cv2
-    frame = cv2.imread(image_row["original_path"])
-    if frame is None:
-        raise HTTPException(status_code=500, detail="Dataset image cannot be decoded.")
-    detector = _training_detector([dataset["product_name"]])
-    if detector is None:
-        raise HTTPException(status_code=503, detail="AI annotation suggestions are currently unavailable; manual annotation remains available.")
-    height, width = frame.shape[:2]
-    roi = (body.roi if body else None) or {}
-    try:
-        roi_x1, roi_y1 = float(roi.get("x1", 0)), float(roi.get("y1", 0))
-        roi_x2, roi_y2 = float(roi.get("x2", 1)), float(roi.get("y2", 1))
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail="ROI must contain numeric normalized coordinates.") from exc
-    if not (0 <= roi_x1 < roi_x2 <= 1 and 0 <= roi_y1 < roi_y2 <= 1):
-        raise HTTPException(status_code=422, detail="ROI must be a normalized valid rectangle.")
-    suggestions = []
-    try:
-        detections = detector.detect(frame)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"AI annotation suggestions failed: {exc}") from exc
-    for detection in detections:
-        box = getattr(detection, "box", None)
-        if not box or len(box) != 4:
-            continue
-        x1, y1, x2, y2 = [float(value) for value in box]
-        center_x, center_y = (x1 + x2) / (2 * width), (y1 + y2) / (2 * height)
-        if not (roi_x1 <= center_x <= roi_x2 and roi_y1 <= center_y <= roi_y2):
-            continue
-        suggestions.append({
-            "x1": max(0.0, min(1.0, x1 / width)), "y1": max(0.0, min(1.0, y1 / height)),
-            "x2": max(0.0, min(1.0, x2 / width)), "y2": max(0.0, min(1.0, y2 / height)),
-            "provenance": "ai_suggested", "confidence": float(getattr(detection, "confidence", 0.0) or 0.0),
-        })
-    result = builder.save_annotations(dataset_id, image_id, suggestions)
-    return {"data": result, "meta": {"status": "UNVERIFIED", "count": len(suggestions), "roi_applied": bool(roi)}}
-
-
-@app.put("/api/v1/datasets/{dataset_id}/images/{image_id}/annotations")
-def save_dataset_annotations(dataset_id: str, image_id: str, body: DatasetAnnotationSave) -> dict[str, Any]:
-    try:
-        return {"data": _dataset_builder().save_annotations(dataset_id, image_id, body.annotations)}
-    except DatasetError as exc:
-        raise _dataset_error(exc) from exc
-
-
-@app.post("/api/v1/datasets/{dataset_id}/images/{image_id}/approve")
-def approve_dataset_image(dataset_id: str, image_id: str) -> dict[str, Any]:
-    try:
-        return {"data": _dataset_builder().approve(dataset_id, image_id)}
-    except DatasetError as exc:
-        raise _dataset_error(exc, 409) from exc
-
-
-@app.delete("/api/v1/datasets/{dataset_id}/images/{image_id}", status_code=204)
-def reject_dataset_image(dataset_id: str, image_id: str) -> Response:
-    try:
-        _dataset_builder().reject(dataset_id, image_id)
-        return Response(status_code=204)
-    except DatasetError as exc:
-        raise _dataset_error(exc, 404) from exc
-
-
-@app.post("/api/v1/datasets/{dataset_id}/train")
-def train_dataset_model(dataset_id: str, body: DatasetTrainingStart) -> dict[str, Any]:
-    try:
-        return {"data": _dataset_training().start(dataset_id, body.model_name, body.base_model, body.epochs, body.image_size)}
-    except DatasetError as exc:
-        raise _dataset_error(exc, 409) from exc
 
 
 @app.get("/api/v1/benchmarks")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import shutil
 from typing import Any
@@ -159,6 +160,27 @@ def update_runtime_config(config_path: Path, model_path: Path, image_size: int, 
     write_yaml(config_path, config)
 
 
+def register_active_model(active_models_path: Path, key: str, model_path: Path) -> None:
+    """Point the on-demand detector loaders (Scan Cameras, product search) at
+    this trained model. api/server.py's _baget_inventory_detector() and
+    _deployed_product_detector() both read this file; training is the only
+    thing that should ever write to it."""
+    try:
+        model_value = model_path.resolve().relative_to(repo_root()).as_posix()
+    except ValueError:
+        model_value = model_path.as_posix()
+
+    active: dict[str, Any] = {}
+    if active_models_path.exists():
+        try:
+            active = json.loads(active_models_path.read_text(encoding="utf-8")) or {}
+        except (json.JSONDecodeError, OSError):
+            active = {}
+    active[key] = {"weights_path": model_value}
+    active_models_path.parent.mkdir(parents=True, exist_ok=True)
+    active_models_path.write_text(json.dumps(active, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def train(args: argparse.Namespace) -> Path:
     dataset_yaml = Path(args.dataset).resolve()
     reports = validate_dataset(dataset_yaml)
@@ -197,6 +219,11 @@ def train(args: argparse.Namespace) -> Path:
     if args.apply_config:
         update_runtime_config(Path(args.apply_config), output, args.imgsz, args.runtime_confidence)
         print(f"Updated runtime detection config: {args.apply_config}")
+
+    if args.register_active_model:
+        active_models_path = Path(args.active_models_path)
+        register_active_model(active_models_path, args.active_model_key, output)
+        print(f"Registered '{args.active_model_key}' -> {output} in {active_models_path}")
     return output
 
 
@@ -219,6 +246,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apply-config", default=None, help="Optional runtime config path to update after training.")
     parser.add_argument("--runtime-confidence", type=float, default=0.25)
     parser.add_argument("--validate-only", action="store_true", help="Validate dataset without training.")
+    parser.add_argument(
+        "--register-active-model",
+        dest="register_active_model",
+        action="store_true",
+        default=True,
+        help="Register the trained weights in active_models.json so the Scan "
+        "Cameras button and on-demand product search pick them up (default: on).",
+    )
+    parser.add_argument(
+        "--no-register-active-model",
+        dest="register_active_model",
+        action="store_false",
+        help="Skip updating active_models.json (train without promoting the result).",
+    )
+    parser.add_argument("--active-model-key", default="baget_box", help="Key to register the model under in active_models.json.")
+    parser.add_argument("--active-models-path", default="models/active_models.json")
     return parser.parse_args()
 
 

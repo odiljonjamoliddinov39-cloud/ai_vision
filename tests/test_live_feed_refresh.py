@@ -281,7 +281,6 @@ def test_dashboard_settings_page_edits_system_config_dynamically():
     assert "recognition_similarity_threshold" in source
     assert "live_frame_jpeg_quality" in source
     assert "spatial_enabled" in source
-    assert "warehouse_confidence_threshold" in source
     assert ".settings-config-form" in styles
     assert ".settings-field-grid" in styles
 
