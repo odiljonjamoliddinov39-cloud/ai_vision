@@ -1,8 +1,13 @@
 services:
   mediamtx:
-    image: bluenviron/mediamtx:1
+    # Pinned (not the floating ":1" tag): that tag silently drifted to a
+    # newer MediaMTX release whose stricter CLI parsing broke the command
+    # below (see: it reads as "/mediamtx /mediamtx /mediamtx.yml" once
+    # Docker appends this command to the image's own ENTRYPOINT ["/mediamtx"],
+    # and only one confpath positional argument is accepted).
+    image: bluenviron/mediamtx:1.19.3
     restart: unless-stopped
-    command: ["/mediamtx", "/mediamtx.yml"]
+    command: ["/mediamtx.yml"]
     volumes:
       - ./infrastructure/mediamtx.yml:/mediamtx.yml:ro
       - ./recordings:/recordings
